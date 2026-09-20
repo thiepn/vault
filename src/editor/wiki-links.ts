@@ -76,7 +76,7 @@ function decorations(view: EditorView, bridge: WikiEditorBridge, references: Ret
 export function wikiPreviewExtension(bridge: WikiEditorBridge) {
   return ViewPlugin.fromClass(class {
     decorations: DecorationSet;
-    private references: ReturnType<typeof parseWikiReferences>;
+    references: ReturnType<typeof parseWikiReferences>;
     constructor(view: EditorView) {
       this.references = parseWikiReferences(view.state.doc.toString());
       this.decorations = decorations(view, bridge, this.references);
