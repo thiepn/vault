@@ -973,6 +973,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       ] as const) {
         const option = new Option(label, value);
         if (value === property.kind) option.selected = true;
+        if (value === 'unsupported' && property.kind !== 'unsupported') option.disabled = true;
         type.add(option);
       }
       type.disabled = selected.deletedAt !== null || !property.editable;
@@ -1444,6 +1445,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           const name = await ask('Add property', 'Property name');
           if (name === null) return;
           const normalizedName = name.trim();
+          const current = inspectFrontmatter(source);
+          if (current.properties.some(property => property.name === normalizedName)) throw new VaultError('COLLISION', `A property named "${normalizedName}" already exists.`);
           const next = setFrontmatterProperty(source, normalizedName, '');
           await commitPropertySource(next);
           const row = [...root.querySelectorAll<HTMLElement>('.property-row')].find(item => item.dataset.propertyName === normalizedName);
@@ -1642,30 +1645,34 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!row || !oldName || !role) return;
 
     perform(async () => {
-      const source = propertySourceText();
-      if (source === null) return;
-      if (role === 'name') {
-        const nextName = (control as HTMLInputElement).value;
-        await commitPropertySource(renameFrontmatterProperty(source, oldName, nextName));
-        return;
+      try {
+        const source = propertySourceText();
+        if (source === null) return;
+        if (role === 'name') {
+          const nextName = (control as HTMLInputElement).value;
+          await commitPropertySource(renameFrontmatterProperty(source, oldName, nextName));
+          return;
+        }
+
+        const view = inspectFrontmatter(source);
+        const property = view.properties.find(item => item.name === oldName);
+        if (!property || !property.editable) return;
+        const typeControl = row.querySelector<HTMLSelectElement>('.property-type');
+        const valueControl = row.querySelector<HTMLInputElement>('.property-value');
+        const kind = (role === 'type' ? (control as HTMLSelectElement).value : typeControl?.value) as PropertyKind | undefined;
+        if (!kind || kind === 'unsupported') return;
+
+        const raw = role === 'type'
+          ? rawValueForProperty(property)
+          : valueControl?.type === 'checkbox' ? '' : valueControl?.value ?? rawValueForProperty(property);
+        const checked = role === 'type'
+          ? property.value === true
+          : valueControl?.type === 'checkbox' ? valueControl.checked : false;
+        const value = valueForKind(kind, raw, checked);
+        await commitPropertySource(setFrontmatterProperty(source, oldName, value));
+      } finally {
+        renderPropertiesPanel();
       }
-
-      const view = inspectFrontmatter(source);
-      const property = view.properties.find(item => item.name === oldName);
-      if (!property || !property.editable) return;
-      const typeControl = row.querySelector<HTMLSelectElement>('.property-type');
-      const valueControl = row.querySelector<HTMLInputElement>('.property-value');
-      const kind = (role === 'type' ? (control as HTMLSelectElement).value : typeControl?.value) as PropertyKind | undefined;
-      if (!kind || kind === 'unsupported') return;
-
-      const raw = role === 'type'
-        ? rawValueForProperty(property)
-        : valueControl?.type === 'checkbox' ? '' : valueControl?.value ?? rawValueForProperty(property);
-      const checked = role === 'type'
-        ? property.value === true
-        : valueControl?.type === 'checkbox' ? valueControl.checked : false;
-      const value = valueForKind(kind, raw, checked);
-      await commitPropertySource(setFrontmatterProperty(source, oldName, value));
     });
   }, { signal: abort.signal });
 
