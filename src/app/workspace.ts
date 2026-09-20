@@ -314,6 +314,34 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (panel === 'tags') tagFilter.focus();
   }
 
+  function appendHighlightedText(target: HTMLElement, text: string, needles: readonly string[]): void {
+    const candidates = [...new Set(needles.map(value => value.trim()).filter(Boolean))];
+    if (!candidates.length) { target.textContent = text; return; }
+    const lower = text.toLocaleLowerCase();
+    const lowered = candidates.map(value => ({ raw: value, lower: value.toLocaleLowerCase() }));
+    let cursor = 0;
+    while (cursor < text.length) {
+      let nextIndex = -1;
+      let nextLength = 0;
+      for (const candidate of lowered) {
+        const index = lower.indexOf(candidate.lower, cursor);
+        if (index >= 0 && (nextIndex < 0 || index < nextIndex || (index === nextIndex && candidate.raw.length > nextLength))) {
+          nextIndex = index;
+          nextLength = candidate.raw.length;
+        }
+      }
+      if (nextIndex < 0) {
+        target.append(document.createTextNode(text.slice(cursor)));
+        break;
+      }
+      if (nextIndex > cursor) target.append(document.createTextNode(text.slice(cursor, nextIndex)));
+      const mark = document.createElement('mark');
+      mark.textContent = text.slice(nextIndex, nextIndex + nextLength);
+      target.append(mark);
+      cursor = nextIndex + nextLength;
+    }
+  }
+
   function renderSearchResults(): void {
     searchResultsElement.replaceChildren();
     if (!globalSearch.value.trim()) {
@@ -348,7 +376,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       path.textContent = result.path;
       const snippet = document.createElement('span');
       snippet.className = 'search-result-snippet';
-      snippet.textContent = result.snippet || result.matches.slice(0, 3).map(match => match.text).join(' · ');
+      const snippetText = result.snippet || result.matches.slice(0, 3).map(match => match.text).join(' · ');
+      appendHighlightedText(snippet, snippetText, result.matches.filter(match => match.field === 'body').map(match => match.text));
       const count = document.createElement('span');
       count.className = 'search-result-count';
       count.textContent = result.matchCount > 1 ? String(result.matchCount) : '';
