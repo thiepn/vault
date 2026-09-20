@@ -2,100 +2,77 @@
 
 **Vault** is a browser-first, local-first Markdown knowledge system.
 
-The long-term product goal is an original web application with linked Markdown notes, cloud synchronization, tasks, queries, calendar, graph, Canvas, mobile/PWA support, and open-data portability. The current repository is intentionally earlier than that: it contains the **Phase 1 vault + file-system foundation**.
+The goal is an original web application with linked Markdown notes, cross-device synchronization, tasks, queries, calendar, graph, Canvas, mobile/PWA support, and ordinary Markdown portability. The repository currently includes the browser-certified **Phase 1 file system** and **Phase 2 professional Markdown editor**.
 
-## Phase 1
+## Current capabilities
 
-Implemented:
-
-- multiple local vaults
-- create and rename vaults
-- nested folders
-- Markdown notes with stable immutable IDs
-- local IndexedDB persistence
-- create, edit, rename and move notes/folders
-- recursive folder duplication
-- deterministic collision-safe copy names
+### Vault and file system
+- multiple local vaults and nested folders
+- stable immutable file/folder IDs
+- create, edit, rename, move and recursively duplicate
+- drag/drop movement and collision-safe names
 - collapsible/filterable/sortable explorer
-- folders-first preference
-- drag/drop moves
-- per-vault explorer preferences
-- Trash and recursive restore
-- local revision checkpoints
-- recovery drafts for stale/deleted/failed writes
-- local-change indicators for later cloud sync
-- active-vault Markdown ZIP export
-- recovery JSON export
-- Unicode filenames
+- Trash and restore
+- local IndexedDB persistence
+- autosave version checks, recovery drafts and checkpoints
+- Markdown ZIP and recovery export
 - responsive desktop/mobile shell
 
-Markdown text is canonical note content. Paths are derived from stable file IDs and parent relationships; a rename or move does not change file identity.
+### Markdown editor
+- CodeMirror 6
+- Source mode
+- syntax-tree-driven Live Preview foundation
+- Reading mode
+- GFM Markdown rendering
+- undo/redo and editor history
+- find/replace
+- multi-cursor and standard CodeMirror editing
+- word wrap, indentation and syntax highlighting
+- optional line numbers
+- word/character/selection/line/column statistics
+- desktop formatting shortcuts and mobile toolbar
+- headings, lists, tasks, quotes and links
+- fenced code with highlighting and copy control
+- GFM tables
+- KaTeX inline/block mathematics
+- callouts
+- Mermaid diagrams loaded on demand
 
-## Not Phase 1
+### Rendering security
+Reading mode never treats note HTML as trusted application code. The pipeline is Markdown -> Marked/KaTeX -> DOMPurify -> controlled callout/code/Mermaid enhancements. Script elements, inline event handlers, iframes, objects, embeds and forms are not trusted. Mermaid uses strict security and its SVG output is sanitized before insertion.
 
-The following are intentionally not claimed yet:
+## Data model
+Markdown remains canonical. CodeMirror transactions feed the existing SaveCoordinator, which writes through LocalRepository into IndexedDB. The editor is not a second database, and changing editor mode never creates a proprietary alternate note representation.
 
-- CodeMirror 6 / professional editor
-- Live Preview and Reading mode
-- Wiki links and backlinks
-- full-text indexing/search
-- properties/frontmatter UI
+## Deliberately not implemented yet
+- Wiki links/backlinks/transclusion
+- full-text worker indexing/search
+- visual YAML properties
 - templates/daily notes/calendar/tasks
-- accounts and cross-device synchronization
-- conflict merge UI
-- attachments
+- cloud accounts and cross-device synchronization
+- attachment management
 - graph/local graph
 - Kanban
 - Canvas
 - PWA cold-start/offline shell
-- Markdown/Obsidian vault import
-
-Those are subsequent roadmap phases.
-
-## Architecture
-
-```text
-UI
-↓
-Workspace / commands
-↓
-VaultRepository + FileRepository + RevisionRepository
-↓
-LocalRepository
-↓
-IndexedDB transaction driver
-```
-
-Important invariants:
-
-- Markdown content, file version and local dirty state commit together.
-- Stale writes never silently overwrite the winning version.
-- Failed/stale/deleted-note edits are preserved as recovery drafts when storage is available.
-- File and folder IDs remain stable across rename/move.
-- Active sibling names are collision checked.
-- Folder cycles and cross-vault ancestry are rejected.
-- Derived indexes remain rebuildable from canonical Markdown.
-- Signing in later must not automatically adopt/upload a local vault.
-
-See `docs/ARCHITECTURE.md` and `docs/PHASE_1_RESULTS.md`.
+- external Markdown/Obsidian import
 
 ## Development
 
 Requires Node 22.12+.
 
-```bash
-npm install
-npm test
-npm run build
-npm run dev
-```
+    npm ci
+    npm test
+    npm run build
+    npm run test:e2e
 
-The first two commands validate the Phase 1 core and repository contract; the production build validates the React/Vite shell.
+GitHub CI uses the committed lockfile, strict TypeScript, the production Vite build, and real Chromium desktop/mobile acceptance against native IndexedDB.
+
+See `docs/ARCHITECTURE.md`, `docs/PHASE_1_RESULTS.md`, `docs/PHASE_2_RESULTS.md`, and `docs/PHASE_2_ACCEPTANCE.md`.
 
 ## Product identity
-
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
 
-No Obsidian branding, source code, proprietary assets, or third-party plugin runtime is used.
+Vault does not use Obsidian branding, proprietary source code/assets, or the Obsidian third-party plugin runtime.
