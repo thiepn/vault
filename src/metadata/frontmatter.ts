@@ -210,7 +210,15 @@ export function renameFrontmatterProperty(source: string, rawOldName: string, ra
 
   const pair = doc.contents.items.find(item => isScalar(item.key) && String(item.key.value) === oldName);
   if (!pair) throw new VaultError('NOT_FOUND', `Property "${oldName}" no longer exists.`);
-  pair.key = doc.createNode(newName);
+
+  const previousKey = pair.key;
+  const nextKey = doc.createNode(newName);
+  if (isScalar(previousKey) && isScalar(nextKey)) {
+    nextKey.commentBefore = previousKey.commentBefore;
+    nextKey.comment = previousKey.comment;
+    nextKey.spaceBefore = previousKey.spaceBefore;
+  }
+  pair.key = nextKey;
   return serialize(doc, env);
 }
 

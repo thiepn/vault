@@ -67,6 +67,11 @@ test('rename/delete mutate only the requested frontmatter key', () => {
     '---',
     '# Note',
   ].join('\n');
+  const directDelete = deleteFrontmatterProperty(source, 'status');
+  assert.match(directDelete, /# preserve before first key/u);
+  assert.doesNotMatch(directDelete, /status:/u);
+  assert.match(directDelete, /rating: 5/u);
+
   const renamed = renameFrontmatterProperty(source, 'status', 'state');
   assert.match(renamed, /state: active/u);
   assert.doesNotMatch(renamed, /status:/u);
