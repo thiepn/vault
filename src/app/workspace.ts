@@ -87,6 +87,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button class="mobile-toggle" data-action="files" aria-label="Toggle files" aria-expanded="false">\u2630</button>
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
+        <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
         <span class="stage">Phase 4 \u00b7 Search & index</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
@@ -1367,6 +1368,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const action = button.dataset.action;
     if (!action) return;
     if (action === 'files') { const open = workspace.dataset.sidebarOpen !== 'true'; workspace.dataset.sidebarOpen = String(open); button.setAttribute('aria-expanded', String(open)); return; }
+    if (action === 'quick-switcher') { void openQuickSwitcher().catch(showError); return; }
     if (action === 'knowledge-panel') { workspace.dataset.knowledgeOpen = String(workspace.dataset.knowledgeOpen !== 'true'); return; }
     if (action === 'export-draft') { downloadDraft(); return; }
     perform(async () => {

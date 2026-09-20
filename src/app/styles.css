@@ -116,3 +116,8 @@
   .quick-result{min-height:48px}
   .search-index-status{display:none}
 }
+
+.quick-toggle{margin-left:auto;width:34px;height:34px;padding:0;display:grid;place-items:center;font-size:19px;background:transparent}
+.search-result-snippet mark{background:#dfeee4;color:inherit;border-radius:2px;padding:0 1px}
+@media(min-width:641px){.quick-toggle{margin-left:auto}.quick-toggle+.stage{margin-left:0}}
+@media(max-width:640px){.quick-toggle{min-width:40px;min-height:40px;margin-left:auto}.quick-toggle+.stage{margin-left:0}}
