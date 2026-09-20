@@ -61,6 +61,7 @@ test('Phase 5 preserves comments, property order and complex YAML while editing 
 test('rename/delete mutate only the requested frontmatter key', () => {
   const source = [
     '---',
+    '# preserve before first key',
     'status: active',
     'rating: 5',
     '---',
@@ -72,6 +73,7 @@ test('rename/delete mutate only the requested frontmatter key', () => {
   assert.match(renamed, /rating: 5/u);
 
   const deleted = deleteFrontmatterProperty(renamed, 'rating');
+  assert.match(deleted, /# preserve before first key/u);
   assert.match(deleted, /state: active/u);
   assert.doesNotMatch(deleted, /rating:/u);
   assert.equal(deleted.endsWith('# Note'), true);

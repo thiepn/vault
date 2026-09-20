@@ -177,6 +177,24 @@ export function setFrontmatterProperty(source: string, rawName: string, value: K
 export function deleteFrontmatterProperty(source: string, rawName: string): string {
   const name = validatePropertyName(rawName);
   const { doc, env } = documentForMutation(source);
+
+  if (isMap(doc.contents)) {
+    const pair = doc.contents.items.find(item => isScalar(item.key) && String(item.key.value) === name);
+    if (pair && isScalar(pair.key)) {
+      const index = doc.contents.items.indexOf(pair);
+      const commentBefore = pair.key.commentBefore;
+      const spaceBefore = pair.key.spaceBefore;
+      const next = doc.contents.items[index + 1];
+
+      if ((commentBefore || spaceBefore) && next && isScalar(next.key)) {
+        if (commentBefore) next.key.commentBefore = [commentBefore, next.key.commentBefore].filter(Boolean).join('\n');
+        if (spaceBefore) next.key.spaceBefore = true;
+      } else if (commentBefore || spaceBefore) {
+        if (commentBefore) doc.commentBefore = [doc.commentBefore, commentBefore].filter(Boolean).join('\n');
+      }
+    }
+  }
+
   doc.delete(name);
   return serialize(doc, env);
 }
