@@ -26,7 +26,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
   const knowledge = new KnowledgeIndexService(db);
-  const searchIndex = new SearchIndexClient();
+  const searchIndex = new SearchIndexClient({
+    onWorkerRestart() {
+      searchReady = false;
+      searchVaultId = undefined;
+      searchBuildTarget = undefined;
+      searchIndexStatus.textContent = 'Restarting index…';
+      queueSearchRebuild(true);
+    },
+    onWorkerFailure(error) {
+      searchReady = false;
+      searchIndexStatus.textContent = 'Index unavailable';
+      searchStatus.textContent = error.message;
+    },
+  });
   const abort = new AbortController();
   const registry = new CommandRegistry();
   let vaults: Vault[] = [];

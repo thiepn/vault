@@ -6,15 +6,26 @@ type SearchWorkerCommand = SearchWorkerRequest extends infer Request
   ? Request extends { id: number } ? Omit<Request, 'id'> : never
   : never;
 
+export interface SearchIndexClientOptions {
+  onWorkerRestart?(): void;
+  onWorkerFailure?(error: Error): void;
+}
+
 export class SearchIndexClient {
-  private readonly worker: Worker;
+  private worker: Worker;
   private sequence = 0;
+  private restartAttempts = 0;
   private readonly pending = new Map<number, { resolve(value: SearchWorkerValue): void; reject(error: unknown): void }>();
   private closed = false;
 
-  constructor() {
-    this.worker = new Worker(new URL('./search-worker.ts', import.meta.url), { type: 'module', name: 'vault-search-index' });
-    this.worker.onmessage = (event: MessageEvent<SearchWorkerResponse>) => {
+  constructor(private readonly options: SearchIndexClientOptions = {}) {
+    this.worker = this.createWorker();
+  }
+
+  private createWorker(): Worker {
+    const worker = new Worker(new URL('./search-worker.ts', import.meta.url), { type: 'module', name: 'vault-search-index' });
+    worker.onmessage = (event: MessageEvent<SearchWorkerResponse>) => {
+      this.restartAttempts = 0;
       const response = event.data;
       const pending = this.pending.get(response.id);
       if (!pending) return;
@@ -22,11 +33,24 @@ export class SearchIndexClient {
       if (response.ok) pending.resolve(response.value);
       else pending.reject(new Error(response.error));
     };
-    this.worker.onerror = event => {
+    worker.onerror = event => {
       const error = new Error(event.message || 'Search worker crashed.');
       for (const pending of this.pending.values()) pending.reject(error);
       this.pending.clear();
+      if (this.closed) return;
+      worker.terminate();
+      this.restartAttempts++;
+      if (this.restartAttempts <= 3) {
+        this.worker = this.createWorker();
+        this.options.onWorkerRestart?.();
+      } else {
+        this.options.onWorkerFailure?.(error);
+      }
     };
+    worker.onmessageerror = () => {
+      this.options.onWorkerFailure?.(new Error('Search worker returned an unreadable message.'));
+    };
+    return worker;
   }
 
   async rebuild(inputs: readonly SearchInput[], onProgress?: (indexed: number, total: number) => void): Promise<SearchStats> {
