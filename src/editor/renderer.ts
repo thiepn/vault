@@ -112,7 +112,7 @@ async function enhanceMermaid(root: HTMLElement): Promise<void> {
   const blocks = [...root.querySelectorAll<HTMLElement>('pre > code.language-mermaid')];
   if (!blocks.length) return;
 
-  const { default: mermaid } = await import('mermaid');
+  const { default: mermaid } = await import('./mermaid-runtime.js');
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict',

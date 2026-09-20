@@ -76,7 +76,7 @@ function prefixLine(view: EditorView, prefix: string): boolean {
 export class MarkdownEditor {
   readonly view: EditorView;
   private readonly onChange: (text: string) => void;
-  private readonly onStats?: (stats: EditorStats) => void;
+  private readonly onStats: ((stats: EditorStats) => void) | undefined;
   private suppressChange = false;
   private mode: EditMode;
   private cachedCharacters = 0;
