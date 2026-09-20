@@ -11,8 +11,10 @@ function wordish(character: string | undefined): boolean {
 }
 
 function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^\x24{}()|[\]\\]/g, '\\function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^\x24{}()|[\]\\]/g, '\\function wordish(character: string | undefined): boolean {
   return !!character && /[\p{L}\p{N}_]/u.test(character);
+}');
 }');
 }
 
