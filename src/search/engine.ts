@@ -353,6 +353,10 @@ export class SearchEngine {
         if (fold(title) === foldedNeedle) score += 120;
         else if (fold(title).startsWith(foldedNeedle)) score += 80;
         else if (fold(title).includes(foldedNeedle)) score += 55;
+        if (fold(document.path).includes(foldedNeedle)) {
+          score += 24;
+          matches.push({ field: 'path', from: null, to: null, text: document.path });
+        }
         for (const alias of document.knowledge.aliases) {
           if (fold(alias) === foldedNeedle) { score += 70; matches.push({ field: 'alias', from: null, to: null, text: alias }); }
           else if (fold(alias).includes(foldedNeedle)) score += 30;
@@ -369,6 +373,25 @@ export class SearchEngine {
           score += 18 + Math.min(30, bodyMatches.length * 3);
           for (const match of bodyMatches.slice(0, 6)) {
             matches.push({ field: 'body', from: match.from, to: match.to, text: document.knowledge.bodyText.slice(match.from, match.to) });
+          }
+        }
+        for (const tag of document.knowledge.tags) {
+          if (fold(tag).includes(foldedNeedle)) {
+            score += 22;
+            matches.push({ field: 'tag', from: null, to: null, text: '#' + tag });
+          }
+        }
+        for (const task of document.knowledge.tasks) {
+          if (fold(task.text).includes(foldedNeedle)) {
+            score += 20;
+            matches.push({ field: 'task', from: task.from, to: task.to, text: task.text });
+          }
+        }
+        for (const [name, property] of Object.entries(document.knowledge.properties)) {
+          const values = propertyValues(property);
+          if (fold(name).includes(foldedNeedle) || values.some(value => fold(stringValue(value)).includes(foldedNeedle))) {
+            score += 18;
+            matches.push({ field: 'property', from: null, to: null, text: name });
           }
         }
       } else if (clause.kind === 'tag' && document.knowledge.tags.some(tag => fold(tag) === fold(clause.value.replace(/^#/u, '')))) {
