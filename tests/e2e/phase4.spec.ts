@@ -14,14 +14,18 @@ async function ensureFilesOpen(page: Page): Promise<void> {
   const noteButton = page.locator('.sidebar [data-command="file.create"]');
   if (await noteButton.isVisible()) return;
 
-  const filesPanel = page.locator('[data-sidebar-panel="files"]');
-  if (await filesPanel.isVisible()) {
-    await filesPanel.click();
-  } else {
-    const mobileToggle = page.locator('[data-action="files"]');
-    await expect(mobileToggle).toBeVisible();
+  const workspace = page.locator('.workspace');
+  const mobileToggle = page.locator('[data-action="files"]');
+  if (await mobileToggle.isVisible()) {
+    // Note/search navigation closes the drawer at the end of its serialized action.
+    // Wait for that transition before reopening Files to avoid racing a stale visible tab.
+    await expect(workspace).toHaveAttribute('data-sidebar-open', 'false');
     await mobileToggle.click();
-    await expect(page.locator('.workspace')).toHaveAttribute('data-sidebar-open', 'true');
+    await expect(workspace).toHaveAttribute('data-sidebar-open', 'true');
+  } else {
+    const filesPanel = page.locator('[data-sidebar-panel="files"]');
+    await expect(filesPanel).toBeVisible();
+    await filesPanel.click();
   }
   await expect(noteButton).toBeVisible();
 }
