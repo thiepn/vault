@@ -22,13 +22,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install Phase 5 dependencies and emit lockfile
-        run: |
-          npm install --ignore-scripts --no-audit --no-fund
-          echo "VAULT_PHASE5_LOCK_BEGIN"
-          base64 -w0 package-lock.json
-          echo
-          echo "VAULT_PHASE5_LOCK_END"
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Core contract tests
         run: npm test
       - name: 10k search benchmark
