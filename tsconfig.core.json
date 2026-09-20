@@ -26,6 +26,7 @@
     "src/commands/**/*.ts",
     "src/markdown/**/*.ts",
     "src/adapters/supabase-auth.ts",
+    "src/knowledge/**/*.ts",
     "src/app/workspace.ts",
     "src/editor/**/*.ts"
   ]

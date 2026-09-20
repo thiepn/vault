@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import { Marked } from 'marked';
 import markedKatex from 'marked-katex-extension';
+import { parseWikiReferences } from '../knowledge/parser.js';
 
 const markdown = new Marked({
   gfm: true,
@@ -14,6 +15,50 @@ markdown.use(markedKatex({
   trust: false,
   strict: 'warn',
 }));
+
+export interface WikiRenderBridge {
+  status(target: string, sourceEntryId?: string): 'resolved' | 'ambiguous' | 'unresolved';
+  load(target: string, sourceEntryId?: string): Promise<{ entryId: string; markdown: string } | null>;
+}
+export interface RenderMarkdownOptions {
+  wiki?: WikiRenderBridge;
+  stack?: readonly string[];
+  depth?: number;
+  sourceEntryId?: string;
+}
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] ?? character);
+}
+async function compileWikiAware(source: string, options: RenderMarkdownOptions): Promise<string> {
+  const wiki = options.wiki;
+  let prepared = source;
+  if (wiki) {
+    const stack = [...(options.stack ?? [])];
+    const depth = options.depth ?? 0;
+    for (const reference of parseWikiReferences(source).sort((a, b) => b.from - a.from)) {
+      let replacement: string;
+      if (!reference.embed) {
+        const status = wiki.status(reference.targetText, options.sourceEntryId);
+        replacement = `<a href="#" class="vault-wiki-link vault-wiki-${status}" data-vault-target="${escapeHtml(reference.targetText)}" data-vault-source="${escapeHtml(options.sourceEntryId ?? '')}">${escapeHtml(reference.alias ?? reference.targetText)}</a>`;
+      } else if (depth >= 6) {
+        replacement = `<aside class="vault-embed vault-embed-cycle">Embed depth limit reached: ${escapeHtml(reference.targetText)}</aside>`;
+      } else {
+        const loaded = await wiki.load(reference.targetText, options.sourceEntryId);
+        if (!loaded) {
+          replacement = `<aside class="vault-embed vault-embed-unresolved" data-vault-target="${escapeHtml(reference.targetText)}" data-vault-source="${escapeHtml(options.sourceEntryId ?? '')}">Unresolved embed: ${escapeHtml(reference.targetText)}</aside>`;
+        } else if (stack.includes(loaded.entryId)) {
+          replacement = `<aside class="vault-embed vault-embed-cycle">Embed cycle: ${escapeHtml(reference.targetText)}</aside>`;
+        } else {
+          const nested = await compileWikiAware(loaded.markdown, { wiki, stack: [...stack, loaded.entryId], depth: depth + 1, sourceEntryId: loaded.entryId });
+          replacement = `<section class="vault-embed vault-embed-resolved"><a href="#" class="vault-embed-label" data-vault-target="${escapeHtml(reference.targetText)}" data-vault-source="${escapeHtml(options.sourceEntryId ?? '')}">${escapeHtml(reference.targetText)}</a><div class="vault-embed-content">${nested}</div></section>`;
+        }
+      }
+      prepared = prepared.slice(0, reference.from) + replacement + prepared.slice(reference.to);
+    }
+  }
+  const compiled = markdown.parse(prepared);
+  return typeof compiled === 'string' ? compiled : await compiled;
+}
 
 const calloutTypes = new Set([
   'note', 'info', 'tip', 'warning', 'danger', 'example',
@@ -147,12 +192,11 @@ async function enhanceMermaid(root: HTMLElement): Promise<void> {
  * Compile Markdown into a detached, sanitized reading surface.
  * The caller swaps this into the document only after async enhancements finish.
  */
-export async function renderMarkdown(markdownSource: string): Promise<HTMLElement> {
+export async function renderMarkdown(markdownSource: string, options: RenderMarkdownOptions = {}): Promise<HTMLElement> {
   const container = document.createElement('div');
   container.className = 'reading-document';
 
-  const compiled = markdown.parse(markdownSource);
-  const html = typeof compiled === 'string' ? compiled : await compiled;
+  const html = await compileWikiAware(markdownSource, options);
   container.innerHTML = String(DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true, svg: true, svgFilters: true, mathMl: true },
     FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form'],

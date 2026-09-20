@@ -10,14 +10,20 @@ import { CommandRegistry } from '../commands/registry.js';
 import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file-tree.js';
 import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
 import { renderMarkdown } from '../editor/renderer.js';
+import { KnowledgeIndexService } from '../knowledge/index-service.js';
+import { extractFragment } from '../knowledge/fragments.js';
+import { updateInboundLinksAfterMove } from '../knowledge/link-updater.js';
+import { canonicalWikiNote } from '../knowledge/resolver.js';
+import type { WikiResolution } from '../knowledge/types.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 2 browser workspace: Phase 1 storage plus the professional Markdown editor/rendering surface. */
+/** Phase 3 browser workspace: linked Markdown knowledge on the accepted Phase 1/2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
+  const knowledge = new KnowledgeIndexService(db);
   const abort = new AbortController();
   const registry = new CommandRegistry();
   let vaults: Vault[] = [];
@@ -29,14 +35,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let showingTrash = false;
   let sortMode: FileSort = 'name-asc';
   let foldersFirst = true;
+  let autoUpdateLinks = true;
   let collapsed = new Set<EntryId>();
   let filterText = '';
   let dirtyIds = new Set<EntryId>();
   let preferencesVaultId: VaultId | undefined;
+  let knowledgeVaultId: VaultId | undefined;
   let draggedEntryId: EntryId | undefined;
   let editorMode: EditorMode = 'live';
   let lineNumbers = false;
-  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0 };
+  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0 };
   let renderGeneration = 0;
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
@@ -48,7 +56,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button class="mobile-toggle" data-action="files" aria-label="Toggle files" aria-expanded="false">\u2630</button>
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
-        <span class="stage">Phase 2 \u00b7 Markdown editor</span>
+        <span class="stage">Phase 3 \u00b7 Linked knowledge</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -71,12 +79,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Knowledge</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 2</p><h1>Markdown, without leaving the browser.</h1>
-          <p>Create a vault and write in Source, Live Preview, or Reading mode. CodeMirror handles editing while ordinary Markdown remains the canonical note format.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 3</p><h1>Notes that know how they connect.</h1>
+          <p>Create Wiki links with [[, follow them, inspect backlinks and outline structure, and embed notes while ordinary Markdown remains canonical.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -84,8 +92,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <article class="reading-view" hidden aria-label="Rendered Markdown"></article>
         <div class="folder-message" hidden></div>
       </main>
-      <aside class="inspector" aria-label="Storage information">
+      <aside class="inspector" aria-label="Knowledge and storage information"><button type="button" class="inspector-close" data-action="knowledge-panel" aria-label="Close knowledge panel">\u00d7</button>
         <p class="label">FILE INFORMATION</p><dl class="file-info"></dl>
+        <div class="rule"></div><section class="outline-panel"><div class="panel-heading"><p class="label">OUTLINE</p><span class="outline-count"></span></div><div class="outline-list"></div></section>
+        <div class="rule"></div><section class="backlinks-panel"><div class="panel-heading"><p class="label">BACKLINKS</p><span class="backlink-count"></span></div><div class="backlink-list"></div><div class="unlinked-heading">UNLINKED MENTIONS</div><div class="unlinked-list"></div></section>
+        <label class="knowledge-setting"><input class="auto-update-links" type="checkbox" checked /> Update links on rename/move</label>
         <div class="rule"></div><p class="label">DATA OWNERSHIP</p>
         <button data-command="vault.export" disabled>Markdown ZIP</button>
         <button data-command="vault.backup" disabled>Recovery backup</button>
@@ -93,7 +104,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 1</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 2</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
@@ -129,12 +140,28 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const fileFilter = element<HTMLInputElement>('.file-filter');
   const fileSort = element<HTMLSelectElement>('.file-sort');
   const foldersFirstToggle = element<HTMLInputElement>('.folders-first');
+  const autoUpdateLinksToggle = element<HTMLInputElement>('.auto-update-links');
   const fileTree = element<HTMLElement>('.file-tree');
   const pathOf = (id: EntryId): string => new VaultTree(entries).path(id);
   const editor = new MarkdownEditor(editorHost, {
     text: '', mode: 'live', readOnly: true, lineNumbers: false,
+    wiki: {
+      suggest(query) {
+        return selected?.kind === 'markdown'
+          ? knowledge.suggestions(query, selected.id, entries)
+          : [];
+      },
+      resolve(target) {
+        return selected?.kind === 'markdown'
+          ? knowledge.resolveRaw(target, selected.id, entries).status
+          : 'unresolved';
+      },
+      activate(target) {
+        if (selected?.kind === 'markdown') perform(() => activateWikiTarget(target, selected!.id));
+      },
+    },
     onChange(text) { saver?.update(text); updateCounts(); },
-    onStats(stats) { editorStats = stats; updateCounts(); },
+    onStats(stats) { editorStats = stats; updateCounts(); highlightCurrentOutline(); },
   });
 
   function showError(error: unknown): void {
@@ -197,14 +224,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const rawSort = await setting(`treeSort:${vault.id}`);
     const rawFoldersFirst = await setting(`foldersFirst:${vault.id}`);
     const rawCollapsed = await setting(`collapsedFolders:${vault.id}`);
+    const rawAutoUpdateLinks = await setting(`autoUpdateLinks:${vault.id}`);
     const rawFilter = await setting(`treeFilter:${vault.id}`);
     sortMode = isFileSort(rawSort) ? rawSort : 'name-asc';
     foldersFirst = typeof rawFoldersFirst === 'boolean' ? rawFoldersFirst : true;
+    autoUpdateLinks = typeof rawAutoUpdateLinks === 'boolean' ? rawAutoUpdateLinks : true;
     collapsed = new Set(Array.isArray(rawCollapsed) ? rawCollapsed.filter((id): id is EntryId => typeof id === 'string') : []);
     filterText = typeof rawFilter === 'string' ? rawFilter : '';
     preferencesVaultId = vault.id;
     fileSort.value = sortMode;
     foldersFirstToggle.checked = foldersFirst;
+    autoUpdateLinksToggle.checked = autoUpdateLinks;
     fileFilter.value = filterText;
   }
   async function refresh(): Promise<void> {
@@ -218,15 +248,21 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await loadTreePreferences();
       entries = await repository.listEntries(vault.id, true);
       dirtyIds = new Set((await repository.listDirtyEntries(vault.id)).map(item => item.entryId));
+      if (knowledgeVaultId !== vault.id) {
+        await knowledge.loadVault(vault.id, entries);
+        knowledgeVaultId = vault.id;
+      }
+      await knowledge.ensureVault(entries, repository);
     } else {
       entries = [];
       dirtyIds.clear();
       preferencesVaultId = undefined;
+      knowledgeVaultId = undefined;
       fileFilter.value = '';
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); updateVaultCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); updateVaultCounts();
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
@@ -317,16 +353,50 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     } catch (error) { showError(error); }
     element<HTMLButtonElement>('[data-action="trash-view"]').textContent = showingTrash ? 'Back to files' : 'Open Trash';
   }
+  async function moveEntryWithLinkUpdates(entry: Entry, parentId: EntryId | null, name: string): Promise<Entry> {
+    const oldEntries = entries.map(item => ({ ...item }));
+    const oldRecords = knowledge.records();
+    const affectedIds: EntryId[] = entry.kind === 'markdown'
+      ? [entry.id]
+      : new VaultTree(oldEntries).descendants(entry.id)
+          .filter(item => item.kind === 'markdown' && item.deletedAt === null)
+          .map(item => item.id);
+
+    const moved = await repository.move(entry.id, parentId, name, entry.localVersion);
+    const locationChanged = moved.parentId !== entry.parentId || moved.name !== entry.name;
+    await refresh();
+
+    if (autoUpdateLinks && locationChanged && affectedIds.length) {
+      for (const targetEntryId of affectedIds) {
+        await updateInboundLinksAfterMove({
+          targetEntryId,
+          oldEntries,
+          newEntries: entries,
+          oldRecords,
+          repository,
+          index: knowledge,
+        });
+      }
+      await refresh();
+    }
+    return entries.find(item => item.id === moved.id) ?? moved;
+  }
+
   async function moveByDrop(sourceId: EntryId, parentId: EntryId | null): Promise<void> {
     const source = entries.find(entry => entry.id === sourceId && entry.deletedAt === null);
     if (!source) return;
-    if (selected?.id === source.id && saver) await saver.flush();
+    if (selected?.id === source.id && saver) {
+      await saver.flush();
+      await saver.close();
+      saver = undefined;
+      await refreshKnowledgeEntry(source.id);
+    }
     const current = entries.find(entry => entry.id === sourceId) ?? source;
-    const moved = await repository.move(current.id, parentId, current.name, current.localVersion);
-    if (selected?.id === moved.id) selected = moved;
-    collapsed.delete(parentId as EntryId);
-    await refresh();
-    if (selected?.id === moved.id) await openEntry(moved.id);
+    const wasSelected = selected?.id === source.id;
+    const moved = await moveEntryWithLinkUpdates(current, parentId, current.name);
+    if (wasSelected) selected = moved;
+    if (parentId) collapsed.delete(parentId);
+    if (wasSelected) await openEntry(moved.id);
   }
   async function openRecovery(): Promise<void> {
     if (!vault) return;
@@ -351,11 +421,246 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const data = selected ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]] : [['Files', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
     for (const [key, value] of data) { const dt = document.createElement('dt'); dt.textContent = key!; const dd = document.createElement('dd'); dd.textContent = value!; info.append(dt, dd); }
   }
+  function highlightCurrentOutline(): void {
+    const record = selected?.kind === 'markdown' ? knowledge.get(selected.id) : undefined;
+    const current = record?.headings.filter(heading => heading.from <= editorStats.position).at(-1);
+    for (const button of root.querySelectorAll<HTMLButtonElement>('.outline-item')) {
+      button.classList.toggle('current', current !== undefined && button.dataset.outlineOffset === String(current.from));
+      if (current !== undefined && button.dataset.outlineOffset === String(current.from)) button.setAttribute('aria-current', 'location');
+      else button.removeAttribute('aria-current');
+    }
+  }
+
+  function renderKnowledgePanels(): void {
+    const outlineList = element<HTMLElement>('.outline-list');
+    const backlinkList = element<HTMLElement>('.backlink-list');
+    const unlinkedList = element<HTMLElement>('.unlinked-list');
+    outlineList.replaceChildren();
+    backlinkList.replaceChildren();
+    unlinkedList.replaceChildren();
+
+    const record = selected?.kind === 'markdown' ? knowledge.get(selected.id) : undefined;
+    const outlineCount = element<HTMLElement>('.outline-count');
+    const backlinkCount = element<HTMLElement>('.backlink-count');
+
+    if (!selected || selected.kind !== 'markdown' || !record) {
+      outlineCount.textContent = '';
+      backlinkCount.textContent = '';
+      const emptyOutline = document.createElement('p');
+      emptyOutline.className = 'panel-empty';
+      emptyOutline.textContent = 'Open a Markdown note to see its outline.';
+      outlineList.append(emptyOutline);
+      const emptyBacklinks = document.createElement('p');
+      emptyBacklinks.className = 'panel-empty';
+      emptyBacklinks.textContent = 'No note selected.';
+      backlinkList.append(emptyBacklinks);
+      return;
+    }
+
+    outlineCount.textContent = String(record.headings.length);
+    for (const heading of record.headings) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'outline-item';
+      button.style.paddingInlineStart = `${Math.max(0, heading.depth - 1) * 10 + 4}px`;
+      button.dataset.outlineOffset = String(heading.from);
+      button.textContent = heading.text;
+      button.title = `H${heading.depth} · ${heading.text}`;
+      outlineList.append(button);
+    }
+    if (!record.headings.length) {
+      const empty = document.createElement('p');
+      empty.className = 'panel-empty';
+      empty.textContent = 'No headings.';
+      outlineList.append(empty);
+    }
+
+    const backlinks = knowledge.backlinks(selected.id, entries);
+    backlinkCount.textContent = String(backlinks.length);
+    for (const mention of backlinks.slice(0, 40)) {
+      const source = entries.find(entry => entry.id === mention.sourceEntryId);
+      if (!source) continue;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'backlink-item';
+      button.dataset.backlinkEntry = source.id;
+      const title = document.createElement('span');
+      title.className = 'backlink-title';
+      title.textContent = source.name.replace(/\.md$/i, '');
+      const detail = document.createElement('span');
+      detail.className = 'backlink-detail';
+      detail.textContent = mention.reference.raw;
+      button.append(title, detail);
+      backlinkList.append(button);
+    }
+    if (!backlinks.length) {
+      const empty = document.createElement('p');
+      empty.className = 'panel-empty';
+      empty.textContent = 'No linked mentions.';
+      backlinkList.append(empty);
+    }
+
+    const unlinked = knowledge.unlinkedMentions(selected.id, entries);
+    for (const mention of unlinked.slice(0, 30)) {
+      const source = entries.find(entry => entry.id === mention.sourceEntryId);
+      if (!source) continue;
+      const row = document.createElement('div');
+      row.className = 'unlinked-item';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'unlinked-open';
+      open.dataset.backlinkEntry = source.id;
+      open.textContent = `${source.name.replace(/\.md$/i, '')}: ${mention.term}`;
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'unlinked-link';
+      link.dataset.unlinkedSource = source.id;
+      link.dataset.unlinkedFrom = String(mention.from);
+      link.dataset.unlinkedTo = String(mention.to);
+      link.dataset.unlinkedTerm = mention.term;
+      link.textContent = 'Link';
+      row.append(open, link);
+      unlinkedList.append(row);
+    }
+    if (!unlinked.length) {
+      const empty = document.createElement('p');
+      empty.className = 'panel-empty';
+      empty.textContent = 'No unlinked mentions.';
+      unlinkedList.append(empty);
+    }
+    highlightCurrentOutline();
+  }
+
+  async function refreshKnowledgeEntry(entryId: EntryId): Promise<void> {
+    const file = await repository.read(entryId);
+    if (file.entry.kind === 'markdown' && file.content && file.entry.deletedAt === null) {
+      await knowledge.upsert(file.entry, file.content.text);
+    }
+    renderKnowledgePanels();
+  }
+
+  function fragmentOffset(resolution: WikiResolution): number | null {
+    if (resolution.status !== 'resolved') return null;
+    const record = knowledge.get(resolution.entryId);
+    if (!record) return null;
+    if (resolution.block) return record.blocks.find(block => block.id.normalize('NFC').toLocaleLowerCase() === resolution.block!.normalize('NFC').toLocaleLowerCase())?.from ?? null;
+    if (resolution.heading) return record.headings.find(heading => heading.text.normalize('NFC').toLocaleLowerCase() === resolution.heading!.normalize('NFC').toLocaleLowerCase())?.from ?? null;
+    return null;
+  }
+
+  async function revealResolution(resolution: WikiResolution): Promise<void> {
+    if (resolution.status !== 'resolved' || (!resolution.heading && !resolution.block)) return;
+    const offset = fragmentOffset(resolution);
+    if (offset === null) return;
+    if (editorMode === 'reading' && resolution.heading) {
+      const wanted = resolution.heading.normalize('NFC').toLocaleLowerCase();
+      const heading = [...readingView.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')]
+        .find(item => (item.textContent ?? '').trim().normalize('NFC').toLocaleLowerCase() === wanted);
+      if (heading) { heading.scrollIntoView({ block: 'start' }); return; }
+    }
+    if (editorMode === 'reading') await setEditorMode('live');
+    editor.revealOffset(offset);
+  }
+
+  async function createLinkedNote(rawTarget: string, sourceEntryId: EntryId): Promise<void> {
+    if (!vault) return;
+    const hash = rawTarget.indexOf('#');
+    const notePart = (hash >= 0 ? rawTarget.slice(0, hash) : rawTarget).trim().replace(/\.md$/iu, '');
+    if (!notePart) throw new VaultError('NOT_FOUND', 'The linked heading or block does not exist in this note.');
+
+    const segments = notePart.split('/').map(segment => segment.trim()).filter(Boolean);
+    if (!segments.length || segments.some(segment => segment === '.' || segment === '..')) {
+      throw new VaultError('INVALID_NAME', 'This unresolved link is not a safe note path.');
+    }
+
+    let parentId: EntryId | null = null;
+    if (segments.length === 1) {
+      parentId = entries.find(entry => entry.id === sourceEntryId)?.parentId ?? null;
+    } else {
+      for (const segment of segments.slice(0, -1)) {
+        const existing = entries.find(entry => entry.kind === 'directory' && entry.deletedAt === null && entry.parentId === parentId && entry.name.normalize('NFC').toLocaleLowerCase() === segment.normalize('NFC').toLocaleLowerCase());
+        if (existing) parentId = existing.id;
+        else {
+          const folder = await repository.createEntry(vault.id, parentId, segment, 'directory');
+          parentId = folder.id;
+          entries.push(folder);
+        }
+      }
+    }
+
+    const label = segments.at(-1)!;
+    const name = await ask('Create linked note', 'Note name', label);
+    if (name === null) return;
+    const created = await repository.createEntry(vault.id, parentId, name, 'markdown');
+    await refresh();
+    await openEntry(created.id);
+  }
+
+  async function activateWikiTarget(target: string, sourceEntryId: EntryId): Promise<void> {
+    const resolution = knowledge.resolveRaw(target, sourceEntryId, entries);
+    if (resolution.status === 'ambiguous') {
+      throw new VaultError('COLLISION', 'This Wiki link is ambiguous. Use a folder-qualified path to choose the intended note.');
+    }
+    if (resolution.status === 'unresolved') {
+      await createLinkedNote(target, sourceEntryId);
+      return;
+    }
+    await openEntry(resolution.entryId);
+    await revealResolution(resolution);
+  }
+
+  async function convertUnlinkedMention(sourceEntryId: EntryId, from: number, to: number, expectedTerm: string): Promise<void> {
+    if (!selected || selected.kind !== 'markdown') return;
+    if (saver) await saver.flush();
+    const targetId = selected.id;
+    const source = await repository.read(sourceEntryId);
+    if (!source.content || source.entry.deletedAt !== null) throw new VaultError('NOT_FOUND', 'The source note is unavailable.');
+    const visible = source.content.text.slice(from, to);
+    if (visible.normalize('NFC').toLocaleLowerCase() !== expectedTerm.normalize('NFC').toLocaleLowerCase()) {
+      throw new VaultError('STALE_WRITE', 'The unlinked mention changed. Refresh backlinks before converting it.');
+    }
+    const canonical = canonicalWikiNote(targetId, entries);
+    if (!canonical) throw new VaultError('NOT_FOUND', 'The target note is unavailable.');
+    const replacement = visible.normalize('NFC').toLocaleLowerCase() === canonical.normalize('NFC').toLocaleLowerCase()
+      ? `[[${canonical}]]`
+      : `[[${canonical}|${visible}]]`;
+    const text = source.content.text.slice(0, from) + replacement + source.content.text.slice(to);
+    const saved = await repository.saveMarkdown(source.entry.id, text, source.entry.localVersion);
+    await knowledge.upsert(saved, text);
+    const at = entries.findIndex(entry => entry.id === saved.id);
+    if (at >= 0) entries[at] = saved;
+    dirtyIds.add(saved.id);
+    renderTree();
+    renderKnowledgePanels();
+  }
+
   async function renderReadingCurrent(): Promise<void> {
     if (!selected || selected.kind !== 'markdown' || editorMode !== 'reading') return;
     const generation = ++renderGeneration;
     readingView.dataset.loading = 'true';
-    const rendered = await renderMarkdown(saver?.draft ?? editor.getText());
+    const rootEntryId = selected.id;
+    const rendered = await renderMarkdown(saver?.draft ?? editor.getText(), {
+      sourceEntryId: rootEntryId,
+      stack: [rootEntryId],
+      wiki: {
+        status(target, sourceEntryId) {
+          const source = entries.find(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : rootEntryId;
+          return knowledge.resolveRaw(target, source, entries).status;
+        },
+        async load(target, sourceEntryId) {
+          const source = entries.find(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : rootEntryId;
+          const resolution = knowledge.resolveRaw(target, source, entries);
+          if (resolution.status !== 'resolved') return null;
+          const file = await repository.read(resolution.entryId);
+          if (!file.content || file.entry.deletedAt !== null) return null;
+          const markdown = extractFragment(file.content.text, knowledge.get(resolution.entryId), {
+            heading: resolution.heading,
+            block: resolution.block,
+          });
+          return markdown === null ? null : { entryId: resolution.entryId, markdown };
+        },
+      },
+    });
     if (generation !== renderGeneration || editorMode !== 'reading' || selected?.kind !== 'markdown') return;
     readingView.replaceChildren(rendered);
     delete readingView.dataset.loading;
@@ -391,11 +696,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function openEntry(id: EntryId, preserveCurrent = false): Promise<void> {
     // Validate the destination before closing a functioning editor. Failed navigation
     // must not leave the previous editor attached to a closed save coordinator.
+    const previousEntryId = selected?.kind === 'markdown' ? selected.id : undefined;
     if (saver) { try { await saver.flush(); } catch (error) { if (!preserveCurrent) throw error; } }
     const item = await repository.read(id);
     const targetPath = pathOf(id);
     if (saver) { if (preserveCurrent) await saver.closeToRecovery(); else await saver.close(); }
     saver = undefined;
+    if (previousEntryId && entries.some(entry => entry.id === previousEntryId && entry.deletedAt === null)) {
+      await refreshKnowledgeEntry(previousEntryId);
+    }
     selected = item.entry;
     errorBox.hidden = true;
     element<HTMLElement>('[data-action="reopen"]').hidden = true;
@@ -419,7 +728,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           element<HTMLElement>('.save-status').textContent = state.kind === 'saving' ? 'Saving locally\u2026' : state.kind === 'error'
             ? state.recovery === 'stored' ? 'Draft preserved \u00b7 canonical save blocked' : state.recovery === 'pending' ? 'Preserving recovery draft\u2026' : 'Not saved \u00b7 export your draft'
             : 'Saved locally \u00b7 not synced';
-          if (updated) { selected = updated; const at = entries.findIndex(entry => entry.id === updated.id); if (at >= 0) entries[at] = updated; renderInfo(); }
+          if (updated) { selected = updated; const at = entries.findIndex(entry => entry.id === updated.id); if (at >= 0) entries[at] = updated; renderInfo(); void refreshKnowledgeEntry(updated.id).catch(showError); }
           element<HTMLElement>('[data-action="retry-save"]').hidden = state.kind !== 'error' || !saver?.canRetry;
           if (state.kind === 'error') {
             showError(state.error);
@@ -430,18 +739,22 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
     }
     await syncEditorSurface();
-    renderTree(); renderInfo(); updateCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); updateCounts();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
     workspace.dataset.sidebarOpen = 'false';
+    workspace.dataset.knowledgeOpen = 'false';
     element<HTMLElement>('[data-action="files"]').setAttribute('aria-expanded', 'false');
   }
   function updateCounts(): void {
     element<HTMLElement>('.counts').textContent = selected?.kind === 'markdown' ? `${editorStats.words.toLocaleString()} words \u00b7 ${editorStats.characters.toLocaleString()} characters \u00b7 Ln ${editorStats.line}, Col ${editorStats.column}${editorStats.selectedWords ? ` \u00b7 ${editorStats.selectedWords} selected` : ''}` : '';
   }
   async function clearSelection(): Promise<void> {
+    const previousEntryId = selected?.kind === 'markdown' ? selected.id : undefined;
     if (saver) await saver.close();
-    saver = undefined; selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); editor.setReadOnly(true); editor.setText('');
+    saver = undefined;
+    if (previousEntryId && entries.some(entry => entry.id === previousEntryId && entry.deletedAt === null)) await refreshKnowledgeEntry(previousEntryId);
+    selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); editor.setReadOnly(true); editor.setText('');
     element<HTMLElement>('.empty-state').hidden = false;
     element<HTMLElement>('.folder-message').hidden = true;
     element<HTMLElement>('.breadcrumb').textContent = 'No file selected';
@@ -479,8 +792,36 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   } });
 
   root.addEventListener('click', event => {
+    const targetElement = (event.target as Element).closest<HTMLElement>('[data-vault-target]');
+    if (targetElement && readingView.contains(targetElement)) {
+      event.preventDefault();
+      const source = targetElement.dataset.vaultSource as EntryId | undefined;
+      const sourceEntryId = entries.some(entry => entry.id === source) ? source! : selected?.id;
+      if (sourceEntryId && targetElement.dataset.vaultTarget) perform(() => activateWikiTarget(targetElement.dataset.vaultTarget!, sourceEntryId));
+      return;
+    }
+
     const button = (event.target as Element).closest<HTMLButtonElement>('button');
     if (!button || button.disabled) return;
+    if (button.dataset.outlineOffset) {
+      const offset = Number(button.dataset.outlineOffset);
+      if (Number.isFinite(offset)) perform(async () => {
+        if (editorMode === 'reading') await setEditorMode('live');
+        editor.revealOffset(offset);
+      });
+      return;
+    }
+    if (button.dataset.backlinkEntry) {
+      perform(() => openEntry(button.dataset.backlinkEntry as EntryId));
+      return;
+    }
+    if (button.dataset.unlinkedSource) {
+      const from = Number(button.dataset.unlinkedFrom);
+      const to = Number(button.dataset.unlinkedTo);
+      const term = button.dataset.unlinkedTerm ?? '';
+      if (Number.isInteger(from) && Number.isInteger(to)) perform(() => convertUnlinkedMention(button.dataset.unlinkedSource as EntryId, from, to, term));
+      return;
+    }
     if (button.dataset.recoveryAction) {
       const draft = recoveryDrafts.find(item => item.id === recoverySelect.value); if (!draft) return;
       if (button.dataset.recoveryAction === 'download') { download('recovery-draft.md', draft.text, 'text/markdown;charset=utf-8'); return; }
@@ -511,6 +852,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const action = button.dataset.action;
     if (!action) return;
     if (action === 'files') { const open = workspace.dataset.sidebarOpen !== 'true'; workspace.dataset.sidebarOpen = String(open); button.setAttribute('aria-expanded', String(open)); return; }
+    if (action === 'knowledge-panel') { workspace.dataset.knowledgeOpen = String(workspace.dataset.knowledgeOpen !== 'true'); return; }
     if (action === 'export-draft') { downloadDraft(); return; }
     perform(async () => {
       if (action === 'recovery') { await openRecovery(); return; }
@@ -540,8 +882,19 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (action === 'rename' || action === 'move') {
         const value = await ask(action === 'rename' ? 'Rename' : 'Move', action === 'rename' ? 'New name' : 'Destination folder', selected.name, action === 'move');
         if (value === null) return;
-        await repository.move(selected.id, action === 'move' ? (value || null) as EntryId | null : selected.parentId, action === 'rename' ? value : selected.name, selected.localVersion);
-        const id = selected.id; if (saver) await saver.close(); saver = undefined; await refresh(); await openEntry(id);
+        const current = selected;
+        if (saver) {
+          await saver.close();
+          saver = undefined;
+          if (current.kind === 'markdown') await refreshKnowledgeEntry(current.id);
+        }
+        const moved = await moveEntryWithLinkUpdates(
+          current,
+          action === 'move' ? (value || null) as EntryId | null : current.parentId,
+          action === 'rename' ? value : current.name,
+        );
+        selected = moved;
+        await openEntry(moved.id);
       }
       if (action === 'delete') { await repository.trash(selected.id, selected.localVersion); if (saver) await saver.close(); saver = undefined; await clearSelection(); await refresh(); }
       if (action === 'restore') { await repository.restore(selected.id); const id = selected.id; showingTrash = false; await refresh(); await openEntry(id); }
@@ -563,6 +916,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     foldersFirst = foldersFirstToggle.checked;
     renderTree();
     if (vault) void setting(`foldersFirst:${vault.id}`, foldersFirst).catch(showError);
+  }, { signal: abort.signal });
+  autoUpdateLinksToggle.addEventListener('change', () => {
+    autoUpdateLinks = autoUpdateLinksToggle.checked;
+    if (vault) void setting(`autoUpdateLinks:${vault.id}`, autoUpdateLinks).catch(showError);
   }, { signal: abort.signal });
   fileTree.addEventListener('dragover', event => {
     if (!draggedEntryId || showingTrash || (event.target as Element).closest('.file-row-shell')) return;

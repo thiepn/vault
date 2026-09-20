@@ -5,12 +5,13 @@ import { markdown } from '@codemirror/lang-markdown';
 import { openSearchPanel } from '@codemirror/search';
 import { basicSetup } from 'codemirror';
 import { livePreviewExtension } from './live-preview.js';
+import { wikiCompletionExtension, wikiPreviewExtension, type WikiEditorBridge } from './wiki-links.js';
 
 export type EditMode = 'source' | 'live';
 export type MarkdownCommand =
   | 'bold' | 'italic' | 'inline-code' | 'link'
   | 'heading' | 'task' | 'bullet' | 'quote'
-  | 'code-block' | 'math-block' | 'callout' | 'table';
+  | 'code-block' | 'math-block' | 'callout' | 'table' | 'wiki-link';
 
 export interface EditorStats {
   characters: number;
@@ -18,6 +19,7 @@ export interface EditorStats {
   line: number;
   column: number;
   selectedWords: number;
+  position: number;
 }
 
 export interface MarkdownEditorOptions {
@@ -25,6 +27,7 @@ export interface MarkdownEditorOptions {
   mode?: EditMode;
   readOnly?: boolean;
   lineNumbers?: boolean;
+  wiki?: WikiEditorBridge;
   onChange(text: string): void;
   onStats?(stats: EditorStats): void;
 }
@@ -79,6 +82,7 @@ export class MarkdownEditor {
   private readonly onStats: ((stats: EditorStats) => void) | undefined;
   private suppressChange = false;
   private mode: EditMode;
+  private readonly wiki: WikiEditorBridge | undefined;
   private cachedCharacters = 0;
   private cachedWords = 0;
 
@@ -86,6 +90,7 @@ export class MarkdownEditor {
     this.onChange = options.onChange;
     this.onStats = options.onStats;
     this.mode = options.mode ?? 'live';
+    this.wiki = options.wiki;
     host.dataset.lineNumbers = String(options.lineNumbers ?? false);
     host.dataset.mode = this.mode;
 
@@ -106,7 +111,8 @@ export class MarkdownEditor {
         markdownKeys,
         readOnlyCompartment.of(EditorState.readOnly.of(options.readOnly ?? false)),
         editableCompartment.of(EditorView.editable.of(!(options.readOnly ?? false))),
-        previewCompartment.of(this.mode === 'live' ? livePreviewExtension : []),
+        previewCompartment.of(this.mode === 'live' ? [livePreviewExtension, ...(this.wiki ? [wikiPreviewExtension(this.wiki)] : [])] : []),
+        this.wiki ? wikiCompletionExtension(this.wiki) : [],
         EditorView.updateListener.of(update => {
           if (update.docChanged) {
             this.recount(update.state);
@@ -162,7 +168,7 @@ export class MarkdownEditor {
     if (mode === this.mode) return;
     this.mode = mode;
     this.view.dispatch({
-      effects: previewCompartment.reconfigure(mode === 'live' ? livePreviewExtension : []),
+      effects: previewCompartment.reconfigure(mode === 'live' ? [livePreviewExtension, ...(this.wiki ? [wikiPreviewExtension(this.wiki)] : [])] : []),
     });
     this.host.dataset.mode = mode;
   }
@@ -207,7 +213,14 @@ export class MarkdownEditor {
       case 'math-block': return replaceSelection(view, '$$\n\n$$', 3);
       case 'callout': return replaceSelection(view, '> [!NOTE]\n> ', 12);
       case 'table': return replaceSelection(view, '| Column 1 | Column 2 |\n| --- | --- |\n| Value | Value |\n');
+      case 'wiki-link': return wrapSelection(view, '[[', ']]', 'Note');
     }
+  }
+
+  revealOffset(offset: number): void {
+    const position = Math.max(0, Math.min(offset, this.view.state.doc.length));
+    this.view.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+    this.view.focus();
   }
 
   destroy(): void {
@@ -231,6 +244,7 @@ export class MarkdownEditor {
       line: line.number,
       column: head - line.from + 1,
       selectedWords: countWords(selectedText),
+      position: head,
     };
   }
 
