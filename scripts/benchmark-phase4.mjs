@@ -37,7 +37,7 @@ assert.equal(engine.stats().documents, count);
 const queries = [
   'continuity theorem',
   'tag:#subject/7',
-  'property:status=active property:rating>=4',
+  'property:status=reference property:rating>=4',
   'task:open path:Subject-4',
   '"continuity theorem" NOT tag:#subject/3',
 ];
