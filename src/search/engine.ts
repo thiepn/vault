@@ -363,7 +363,10 @@ export class SearchEngine {
         }
         for (const alias of document.knowledge.aliases) {
           if (fold(alias) === foldedNeedle) { score += 70; matches.push({ field: 'alias', from: null, to: null, text: alias }); }
-          else if (fold(alias).includes(foldedNeedle)) score += 30;
+          else if (fold(alias).includes(foldedNeedle)) {
+            score += 30;
+            matches.push({ field: 'alias', from: null, to: null, text: alias });
+          }
         }
         for (const heading of document.knowledge.headings) {
           if (fold(heading.text).includes(foldedNeedle)) {
