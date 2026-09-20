@@ -27,7 +27,18 @@ async function createNote(page: Page): Promise<void> {
   await page.goto('/');
   await page.locator('.empty-state [data-command="vault.create"]').click();
   await confirmTextDialog(page, 'Phase 2');
-  await page.locator('[data-command="file.create"]').click();
+  await expect(page.locator('#vault-vault')).toHaveValue(/.+/);
+
+  const noteButton = page.locator('.sidebar [data-command="file.create"]');
+  if (!(await noteButton.isVisible())) {
+    const filesToggle = page.locator('[data-action="files"]');
+    await expect(filesToggle).toBeVisible();
+    await filesToggle.click();
+    await expect(page.locator('.workspace')).toHaveAttribute('data-sidebar-open', 'true');
+  }
+  await expect(noteButton).toBeVisible();
+  await expect(noteButton).toBeEnabled();
+  await noteButton.click();
   await confirmTextDialog(page, 'Editor');
 }
 
