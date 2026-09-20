@@ -86,7 +86,7 @@ test('Phase 3 linked knowledge works end to end on desktop', async ({ page }, te
 
   await openNote(page, 'Newton');
   await expect(page.locator('.outline-item', { hasText: 'Laws' })).toBeVisible();
-  await expect(page.locator('.backlink-item', { hasText: 'Mechanics' })).toBeVisible();
+  await expect(page.locator('.backlink-item', { hasText: 'Mechanics' }).first()).toBeVisible();
   await expect(page.locator('.unlinked-item', { hasText: 'History' })).toBeVisible();
 
   await page.locator('.outline-item', { hasText: 'Laws' }).click();
