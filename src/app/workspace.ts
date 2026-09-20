@@ -351,6 +351,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       button.type = 'button';
       button.className = 'facet-item';
       button.dataset.searchQuery = 'tag:#' + facet.tag;
+      button.style.paddingInlineStart = String(6 + Math.max(0, facet.tag.split('/').length - 1) * 10) + 'px';
       const label = document.createElement('span');
       label.textContent = '#' + facet.tag;
       const count = document.createElement('span');

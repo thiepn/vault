@@ -22,6 +22,13 @@ function wordTokens(value: string): string[] {
   return [...new Set((fold(value).match(/[\p{L}\p{N}_-]+/gu) ?? []).filter(Boolean))];
 }
 
+function tagKeys(value: string): string[] {
+  const parts = value.replace(/^#/u, '').split('/').map(part => fold(part.trim())).filter(Boolean);
+  const keys: string[] = [];
+  for (let index = 1; index <= parts.length; index++) keys.push(parts.slice(0, index).join('/'));
+  return keys;
+}
+
 function propertyValues(value: KnowledgePropertyValue | undefined): KnowledgeScalar[] {
   if (value === undefined) return [];
   return Array.isArray(value) ? value : [value];
@@ -175,10 +182,11 @@ export class SearchEngine {
       this.inverted.set(token, bucket);
     }
     for (const tag of document.knowledge.tags) {
-      const key = fold(tag.replace(/^#/u, ''));
-      const bucket = this.tags.get(key) ?? new Set<EntryId>();
-      bucket.add(document.entryId);
-      this.tags.set(key, bucket);
+      for (const key of tagKeys(tag)) {
+        const bucket = this.tags.get(key) ?? new Set<EntryId>();
+        bucket.add(document.entryId);
+        this.tags.set(key, bucket);
+      }
     }
     for (const name of Object.keys(document.knowledge.properties)) {
       const key = fold(name);
@@ -205,10 +213,11 @@ export class SearchEngine {
     }
     this.documentTokens.delete(entryId);
     for (const tag of current.knowledge.tags) {
-      const key = fold(tag.replace(/^#/u, ''));
-      const bucket = this.tags.get(key);
-      bucket?.delete(entryId);
-      if (bucket?.size === 0) this.tags.delete(key);
+      for (const key of tagKeys(tag)) {
+        const bucket = this.tags.get(key);
+        bucket?.delete(entryId);
+        if (bucket?.size === 0) this.tags.delete(key);
+      }
     }
     for (const name of Object.keys(current.knowledge.properties)) {
       const key = fold(name);
