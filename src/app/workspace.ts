@@ -577,6 +577,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchMetadata.set(entry.id, inputMetadataKey(input));
     }
     await refreshFacets();
+    if (globalSearch.value.trim()) await runGlobalSearch();
   }
 
   async function refreshSearchEntry(entryId: EntryId): Promise<void> {
@@ -598,6 +599,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     searchIndexedVersions.set(entryId, input.localVersion);
     searchMetadata.set(entryId, inputMetadataKey(input));
     await refreshFacets();
+    if (globalSearch.value.trim()) await runGlobalSearch();
   }
 
   function localQuickResults(query: string): QuickSwitchResult[] {
