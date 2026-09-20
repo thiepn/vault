@@ -62,6 +62,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let searchBuildGeneration = 0;
   let searchRequestGeneration = 0;
   let searchIndexedIds = new Set<EntryId>();
+  let searchIndexedVersions = new Map<EntryId, number>();
   let searchMetadata = new Map<EntryId, string>();
   let recentEntries: EntryId[] = [];
   let sidebarPanel: 'files' | 'search' | 'tags' = 'files';
@@ -288,6 +289,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     return [entry.name, path, entry.createdAt, entry.updatedAt].join('\u0000');
   }
 
+  function inputMetadataKey(input: SearchInput): string {
+    return [input.title, input.path, input.createdAt, input.updatedAt].join('\u0000');
+  }
+
   function searchInput(entry: Entry, text: string, tree = new VaultTree(entries)): SearchInput {
     return {
       entryId: entry.id,
@@ -509,10 +514,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchReady = true;
       searchStats = stats;
       searchIndexedIds = new Set(inputs.map(input => input.entryId));
-      searchMetadata = new Map(inputs.map(input => {
-        const entry = entries.find(item => item.id === input.entryId)!;
-        return [input.entryId, metadataKey(entry, input.path)];
-      }));
+      searchIndexedVersions = new Map(inputs.map(input => [input.entryId, input.localVersion]));
+      searchMetadata = new Map(inputs.map(input => [input.entryId, inputMetadataKey(input)]));
+      // Catch notes created, saved, renamed, moved, or deleted while the worker was building.
+      await reconcileSearchIndex();
       await refreshFacets();
       searchStatus.textContent = stats.documents.toLocaleString() + ' notes indexed.';
       if (globalSearch.value.trim()) await runGlobalSearch();
@@ -536,18 +541,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await searchIndex.remove(removed);
       for (const entryId of removed) {
         searchIndexedIds.delete(entryId);
+        searchIndexedVersions.delete(entryId);
         searchMetadata.delete(entryId);
       }
     }
 
     const tree = new VaultTree(entries);
     const updates = [];
-    const newEntries: Entry[] = [];
+    const contentUpdates: Entry[] = [];
     for (const entry of active) {
       const path = tree.path(entry.id);
       const key = metadataKey(entry, path);
-      if (!searchIndexedIds.has(entry.id)) newEntries.push(entry);
-      else if (searchMetadata.get(entry.id) !== key) {
+      if (!searchIndexedIds.has(entry.id) || searchIndexedVersions.get(entry.id) !== entry.localVersion) {
+        contentUpdates.push(entry);
+      } else if (searchMetadata.get(entry.id) !== key) {
         updates.push({
           entryId: entry.id,
           title: entry.name,
@@ -560,13 +567,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
     }
     if (updates.length) await searchIndex.updateMetadata(updates);
-    for (const entry of newEntries) {
+    for (const entry of contentUpdates) {
       const file = await repository.read(entry.id);
       if (!file.content) continue;
-      const input = searchInput(entry, file.content.text, tree);
+      const input = searchInput(file.entry, file.content.text, tree);
       await searchIndex.upsert(input);
       searchIndexedIds.add(entry.id);
-      searchMetadata.set(entry.id, metadataKey(entry, input.path));
+      searchIndexedVersions.set(entry.id, input.localVersion);
+      searchMetadata.set(entry.id, inputMetadataKey(input));
     }
     await refreshFacets();
   }
@@ -577,6 +585,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!entry) {
       await searchIndex.remove([entryId]);
       searchIndexedIds.delete(entryId);
+      searchIndexedVersions.delete(entryId);
       searchMetadata.delete(entryId);
       return;
     }
@@ -586,7 +595,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const input = searchInput(file.entry, file.content.text, tree);
     await searchIndex.upsert(input);
     searchIndexedIds.add(entryId);
-    searchMetadata.set(entryId, metadataKey(file.entry, input.path));
+    searchIndexedVersions.set(entryId, input.localVersion);
+    searchMetadata.set(entryId, inputMetadataKey(input));
     await refreshFacets();
   }
 
@@ -723,6 +733,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchVaultId = undefined;
       searchBuildTarget = undefined;
       searchIndexedIds.clear();
+      searchIndexedVersions.clear();
       searchMetadata.clear();
       searchResults = [];
       searchFacets = { tags: [], properties: [] };
