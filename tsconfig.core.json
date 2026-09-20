@@ -28,6 +28,7 @@
     "src/adapters/supabase-auth.ts",
     "src/knowledge/**/*.ts",
     "src/search/**/*.ts",
+    "src/metadata/**/*.ts",
     "src/app/workspace.ts",
     "src/editor/**/*.ts"
   ]

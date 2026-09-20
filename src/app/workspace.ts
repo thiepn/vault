@@ -17,11 +17,12 @@ import { canonicalWikiNote } from '../knowledge/resolver.js';
 import type { WikiResolution } from '../knowledge/types.js';
 import { SearchIndexClient } from '../search/client.js';
 import type { QuickSwitchResult, SearchFacets, SearchInput, SearchResult, SearchStats } from '../search/types.js';
+import { deleteFrontmatterProperty, inspectFrontmatter, rawValueForProperty, renameFrontmatterProperty, setFrontmatterProperty, valueForKind, type PropertyKind } from '../metadata/frontmatter.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 4 browser workspace: worker-backed search/indexing on the accepted Phase 1-3 foundation. */
+/** Phase 5 browser workspace: visual Markdown properties on the accepted Phase 1-4 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -76,6 +77,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let lineNumbers = false;
   let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0 };
   let renderGeneration = 0;
+  let propertyRenderTimer: number | undefined;
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
   let searchBuildChain: Promise<void> = Promise.resolve();
@@ -89,7 +91,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 4 \u00b7 Search & index</span>
+        <span class="stage">Phase 5 \u00b7 Properties</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -128,12 +130,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Knowledge</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 4</p><h1>Find anything in your vault.</h1>
-          <p>Search note text, titles, paths, aliases, tags, properties and tasks through a background index while Markdown stays canonical.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 5</p><h1>Structured metadata, still ordinary Markdown.</h1>
+          <p>Edit YAML properties visually without giving up source control. Tags, aliases, dates, booleans, numbers and lists remain frontmatter in the Markdown file.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -143,6 +145,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       </main>
       <aside class="inspector" aria-label="Knowledge and storage information"><button type="button" class="inspector-close" data-action="knowledge-panel" aria-label="Close knowledge panel">\u00d7</button>
         <p class="label">FILE INFORMATION</p><dl class="file-info"></dl>
+        <div class="rule"></div><section class="properties-panel"><div class="panel-heading"><p class="label">PROPERTIES</p><button type="button" class="property-add" data-property-action="add">+ Add</button></div><p class="properties-status panel-empty"></p><div class="properties-list"></div><button type="button" class="property-source" data-property-action="source">Edit frontmatter in Source</button></section>
         <div class="rule"></div><section class="outline-panel"><div class="panel-heading"><p class="label">OUTLINE</p><span class="outline-count"></span></div><div class="outline-list"></div></section>
         <div class="rule"></div><section class="backlinks-panel"><div class="panel-heading"><p class="label">BACKLINKS</p><span class="backlink-count"></span></div><div class="backlink-list"></div><div class="unlinked-heading">UNLINKED MENTIONS</div><div class="unlinked-list"></div></section>
         <label class="knowledge-setting"><input class="auto-update-links" type="checkbox" checked /> Update links on rename/move</label>
@@ -222,7 +225,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (selected?.kind === 'markdown') perform(() => activateWikiTarget(target, selected!.id));
       },
     },
-    onChange(text) { saver?.update(text); updateCounts(); },
+    onChange(text) { saver?.update(text); updateCounts(); schedulePropertiesRender(text); },
     onStats(stats) { editorStats = stats; updateCounts(); highlightCurrentOutline(); },
   });
 
@@ -901,6 +904,147 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('.recovery-meta').textContent = draft ? `Base version ${draft.baseVersion} \u00b7 ${draft.reason} \u00b7 ${draft.text.length.toLocaleString()} characters` : 'There are no preserved drafts in this vault.';
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-recovery-action]')) button.disabled = !draft;
   }
+  function propertySourceText(): string | null {
+    return selected?.kind === 'markdown' ? (saver?.draft ?? editor.getText()) : null;
+  }
+
+  function schedulePropertiesRender(text: string): void {
+    if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
+    propertyRenderTimer = window.setTimeout(() => {
+      propertyRenderTimer = undefined;
+      if (selected?.kind === 'markdown' && editor.getText() === text) renderPropertiesPanel(text);
+    }, 180);
+  }
+
+  function renderPropertiesPanel(source: string | null = propertySourceText()): void {
+    const list = element<HTMLElement>('.properties-list');
+    const status = element<HTMLElement>('.properties-status');
+    const add = element<HTMLButtonElement>('[data-property-action="add"]');
+    const sourceButton = element<HTMLButtonElement>('[data-property-action="source"]');
+    list.replaceChildren();
+
+    if (!selected || selected.kind !== 'markdown' || source === null) {
+      status.textContent = 'Open a Markdown note to edit properties.';
+      status.classList.remove('properties-warning');
+      add.disabled = true;
+      sourceButton.disabled = true;
+      return;
+    }
+
+    sourceButton.disabled = false;
+    add.disabled = selected.deletedAt !== null;
+
+    const view = inspectFrontmatter(source);
+    if (view.status === 'invalid' || view.status === 'unsupported-root') {
+      status.textContent = view.message ?? 'This frontmatter cannot be edited visually.';
+      status.classList.add('properties-warning');
+      add.disabled = true;
+      return;
+    }
+
+    status.classList.remove('properties-warning');
+    if (selected.deletedAt !== null) {
+      status.textContent = 'This note is in Trash. Properties are read only.';
+    } else {
+      status.textContent = view.properties.length
+        ? `${view.properties.length} ${view.properties.length === 1 ? 'property' : 'properties'} · stored in YAML frontmatter`
+        : 'No properties yet. Add one without leaving Markdown.';
+    }
+
+    for (const property of view.properties) {
+      const row = document.createElement('div');
+      row.className = 'property-row';
+      row.dataset.propertyName = property.name;
+
+      const name = document.createElement('input');
+      name.className = 'property-name';
+      name.value = property.name;
+      name.setAttribute('aria-label', `Property name: ${property.name}`);
+      name.dataset.propertyRole = 'name';
+      name.disabled = selected.deletedAt !== null;
+
+      const type = document.createElement('select');
+      type.className = 'property-type';
+      type.dataset.propertyRole = 'type';
+      type.setAttribute('aria-label', `Property type: ${property.name}`);
+      for (const [value, label] of [
+        ['text', 'Text'], ['number', 'Number'], ['checkbox', 'Checkbox'], ['date', 'Date'],
+        ['list', 'List'], ['tags', 'Tags'], ['null', 'Null'], ['unsupported', 'Complex YAML'],
+      ] as const) {
+        const option = new Option(label, value);
+        if (value === property.kind) option.selected = true;
+        type.add(option);
+      }
+      type.disabled = selected.deletedAt !== null || !property.editable;
+
+      const valueWrap = document.createElement('div');
+      valueWrap.className = 'property-value-wrap';
+      if (property.kind === 'checkbox') {
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'property-value property-checkbox';
+        input.dataset.propertyRole = 'value';
+        input.checked = property.value === true;
+        input.disabled = selected.deletedAt !== null;
+        input.setAttribute('aria-label', `Property value: ${property.name}`);
+        valueWrap.append(input);
+      } else if (property.kind === 'unsupported') {
+        const summary = document.createElement('code');
+        summary.className = 'property-complex';
+        summary.textContent = property.summary || '[complex YAML]';
+        valueWrap.append(summary);
+      } else if (property.kind === 'null') {
+        const nullValue = document.createElement('span');
+        nullValue.className = 'property-null';
+        nullValue.textContent = 'null';
+        valueWrap.append(nullValue);
+      } else {
+        const input = document.createElement('input');
+        input.className = 'property-value';
+        input.dataset.propertyRole = 'value';
+        input.type = property.kind === 'number' ? 'number' : property.kind === 'date' ? 'date' : 'text';
+        input.value = rawValueForProperty(property);
+        input.disabled = selected.deletedAt !== null;
+        input.setAttribute('aria-label', `Property value: ${property.name}`);
+        if (property.kind === 'list') input.placeholder = 'value 1, value 2';
+        if (property.kind === 'tags') input.placeholder = 'tag, nested/tag';
+        valueWrap.append(input);
+      }
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'property-delete';
+      remove.dataset.propertyAction = 'delete';
+      remove.textContent = '×';
+      remove.title = `Delete ${property.name}`;
+      remove.setAttribute('aria-label', `Delete property ${property.name}`);
+      remove.disabled = selected.deletedAt !== null;
+
+      row.append(name, type, valueWrap, remove);
+      list.append(row);
+    }
+  }
+
+  async function commitPropertySource(nextText: string): Promise<void> {
+    if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null || !saver) {
+      throw new VaultError('UNSUPPORTED', 'Properties can only be changed on an active Markdown note.');
+    }
+    if (nextText === editor.getText()) return;
+    editor.setText(nextText);
+    saver.update(nextText);
+    await saver.flush();
+    await refreshKnowledgeEntry(selected.id);
+    renderPropertiesPanel(nextText);
+    if (editorMode === 'reading') await renderReadingCurrent();
+  }
+
+  async function openFrontmatterSource(): Promise<void> {
+    if (!selected || selected.kind !== 'markdown') return;
+    if (editorMode !== 'source') await setEditorMode('source');
+    editor.revealOffset(0);
+    workspace.dataset.knowledgeOpen = 'false';
+  }
+
   function renderInfo(): void {
     const info = element<HTMLElement>('.file-info'); info.replaceChildren();
     const data = selected ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]] : [['Files', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
@@ -1216,6 +1360,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null;
     if (selected.kind === 'markdown' && item.content) {
       editor.setText(item.content.text);
+      renderPropertiesPanel(item.content.text);
       if (selected.deletedAt === null) {
         const opened = selected; const draftId = `editor:${crypto.randomUUID()}`;
         saver = new SaveCoordinator(repository, selected.id, { version: selected.localVersion, text: item.content.text }, (state, updated) => {
@@ -1250,7 +1395,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (saver) await saver.close();
     saver = undefined;
     if (previousEntryId && entries.some(entry => entry.id === previousEntryId && entry.deletedAt === null)) await refreshKnowledgeEntry(previousEntryId);
-    selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); editor.setReadOnly(true); editor.setText('');
+    selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); editor.setReadOnly(true); editor.setText(''); renderPropertiesPanel(null);
     element<HTMLElement>('.empty-state').hidden = false;
     element<HTMLElement>('.folder-message').hidden = true;
     element<HTMLElement>('.breadcrumb').textContent = 'No file selected';
@@ -1288,6 +1433,37 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   } });
 
   root.addEventListener('click', event => {
+    const propertyAction = (event.target as Element).closest<HTMLButtonElement>('[data-property-action]');
+    if (propertyAction?.dataset.propertyAction) {
+      const action = propertyAction.dataset.propertyAction;
+      if (action === 'source') { perform(openFrontmatterSource); return; }
+      if (action === 'add') {
+        perform(async () => {
+          const source = propertySourceText();
+          if (source === null) return;
+          const name = await ask('Add property', 'Property name');
+          if (name === null) return;
+          const normalizedName = name.trim();
+          const next = setFrontmatterProperty(source, normalizedName, '');
+          await commitPropertySource(next);
+          const row = [...root.querySelectorAll<HTMLElement>('.property-row')].find(item => item.dataset.propertyName === normalizedName);
+          row?.querySelector<HTMLInputElement>('.property-value')?.focus();
+        });
+        return;
+      }
+      if (action === 'delete') {
+        const row = propertyAction.closest<HTMLElement>('.property-row');
+        const name = row?.dataset.propertyName;
+        if (!name) return;
+        perform(async () => {
+          const source = propertySourceText();
+          if (source === null) return;
+          await commitPropertySource(deleteFrontmatterProperty(source, name));
+        });
+        return;
+      }
+    }
+
     const panelButton = (event.target as Element).closest<HTMLButtonElement>('[data-sidebar-panel]');
     if (panelButton?.dataset.sidebarPanel) {
       const panel = panelButton.dataset.sidebarPanel;
@@ -1457,6 +1633,42 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       perform(() => openEntry(result.entryId));
     }
   }, { signal: abort.signal });
+  root.addEventListener('change', event => {
+    const control = (event.target as Element).closest<HTMLInputElement | HTMLSelectElement>('[data-property-role]');
+    if (!control) return;
+    const row = control.closest<HTMLElement>('.property-row');
+    const oldName = row?.dataset.propertyName;
+    const role = control.dataset.propertyRole;
+    if (!row || !oldName || !role) return;
+
+    perform(async () => {
+      const source = propertySourceText();
+      if (source === null) return;
+      if (role === 'name') {
+        const nextName = (control as HTMLInputElement).value;
+        await commitPropertySource(renameFrontmatterProperty(source, oldName, nextName));
+        return;
+      }
+
+      const view = inspectFrontmatter(source);
+      const property = view.properties.find(item => item.name === oldName);
+      if (!property || !property.editable) return;
+      const typeControl = row.querySelector<HTMLSelectElement>('.property-type');
+      const valueControl = row.querySelector<HTMLInputElement>('.property-value');
+      const kind = (role === 'type' ? (control as HTMLSelectElement).value : typeControl?.value) as PropertyKind | undefined;
+      if (!kind || kind === 'unsupported') return;
+
+      const raw = role === 'type'
+        ? rawValueForProperty(property)
+        : valueControl?.type === 'checkbox' ? '' : valueControl?.value ?? rawValueForProperty(property);
+      const checked = role === 'type'
+        ? property.value === true
+        : valueControl?.type === 'checkbox' ? valueControl.checked : false;
+      const value = valueForKind(kind, raw, checked);
+      await commitPropertySource(setFrontmatterProperty(source, oldName, value));
+    });
+  }, { signal: abort.signal });
+
   recoverySelect.addEventListener('change', showRecoverySelection, { signal: abort.signal });
   fileFilter.addEventListener('input', () => {
     filterText = fileFilter.value;
@@ -1541,6 +1753,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (recoveryDialog.open) recoveryDialog.close();
     if (quickDialog.open) quickDialog.close();
     searchIndex.close();
+    if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
   };
