@@ -2,9 +2,8 @@ import type { EntryId } from '../domain/model.js';
 import type { QuickSwitchResult, SearchFacets, SearchInput, SearchMetadataUpdate, SearchResult, SearchStats } from './types.js';
 import type { SearchWorkerRequest, SearchWorkerResponse, SearchWorkerValue } from './worker-protocol.js';
 
-type SearchWorkerCommand = SearchWorkerRequest extends infer Request
-  ? Request extends { id: number } ? Omit<Request, 'id'> : never
-  : never;
+type WithoutId<Request> = Request extends { id: number } ? Omit<Request, 'id'> : never;
+type SearchWorkerCommand = WithoutId<SearchWorkerRequest>;
 
 export interface SearchIndexClientOptions {
   onWorkerRestart?(): void;
