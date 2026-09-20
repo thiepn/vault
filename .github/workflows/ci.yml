@@ -19,7 +19,12 @@ jobs:
           node-version: 22
           cache: npm
       - name: Install locked dependencies
-        run: npm install --ignore-scripts --no-audit --no-fund
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          echo "VAULT_LOCK_BEGIN"
+          base64 -w0 package-lock.json
+          echo
+          echo "VAULT_LOCK_END"
       - name: Core contract tests
         run: npm test
       - name: Production build
