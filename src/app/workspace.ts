@@ -394,7 +394,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       renderSearchResults();
       return;
     }
-    searchStatus.textContent = searchReady ? 'Searching…' : 'Indexing in the background. Results may be incomplete…';
+    if (!searchReady) {
+      searchResults = [];
+      searchStatus.textContent = 'Search index is preparing…';
+      renderSearchResults();
+      return;
+    }
+    searchStatus.textContent = 'Searching…';
     try {
       const results = await searchIndex.search(query, 120);
       if (generation !== searchRequestGeneration) return;
@@ -648,8 +654,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         knowledgeVaultId = vault.id;
       }
       await knowledge.ensureVault(entries, repository);
-      if (searchVaultId === vault.id && searchReady) await reconcileSearchIndex();
-      else queueSearchRebuild();
+      if (searchVaultId === vault.id && searchReady) {
+        await reconcileSearchIndex();
+      } else {
+        if (searchVaultId !== vault.id) {
+          searchResults = [];
+          searchFacets = { tags: [], properties: [] };
+          searchStats = { documents: 0, tokens: 0, tags: 0, properties: 0 };
+          renderSearchResults();
+          renderFacets();
+        }
+        queueSearchRebuild();
+      }
     } else {
       entries = [];
       dirtyIds.clear();
