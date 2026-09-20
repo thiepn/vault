@@ -103,6 +103,8 @@ test('Phase 3 linked knowledge works end to end on desktop', async ({ page }, te
   await expect(page.locator('.breadcrumb')).toContainText('Newton.md');
 
   await createNote(page, 'Link Test');
+  await page.locator('[data-editor-mode="live"]').click();
+  await expect(page.locator('#vault-editor')).toHaveAttribute('data-mode', 'live');
   const content = page.locator('#vault-editor .cm-content');
   await content.click();
   await page.keyboard.type('[[Isa');
