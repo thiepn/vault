@@ -1,33 +1,78 @@
 # Phase 1 results — Vault + file system
 
+## Status
+
+**Phase 1 is implemented and browser-certified in Chromium.**
+
+The committed production build passed its repository contract tests, TypeScript/Vite build, and real Chromium acceptance workflows on desktop and mobile-sized viewports.
+
 ## Implemented
 
 Phase 1 establishes the local vault abstraction and browser file system required by later editor, indexing and synchronization work.
 
-The implementation supports multiple vaults, nested folders, Markdown files, create/rename/move/delete/restore, recursive duplication, explorer filtering/sorting/collapse, drag/drop movement, local autosave, checkpoints, recovery drafts, ZIP export, recovery export and responsive desktop/mobile navigation.
+The implementation supports:
+
+- multiple local vaults
+- vault rename/switch
+- nested folders
+- Markdown files with stable IDs
+- create/edit/rename/move/delete/restore
+- recursive folder duplication
+- collision-safe duplicate naming
+- collapse/filter/sort/folders-first explorer controls
+- drag/drop movement
+- per-vault explorer preferences
+- local IndexedDB persistence
+- autosave coordination
+- local checkpoints
+- recovery drafts
+- local dirty/change markers
+- Markdown ZIP export
+- recovery JSON export
+- responsive desktop/mobile shell
+- Unicode-safe filenames
 
 ## Data integrity
 
 Stable UUIDs identify files and folders. Paths are derived. Markdown is stored as exact text. Version checks prevent stale writes from silently winning. Trash and restore operate on deletion batches. Recursive moves validate ancestry before commit. File-system mutations use repository transactions rather than React component state as their authority.
 
-## Verification performed during implementation
+## Verification
 
-The Phase 1 development workspace completed:
+GitHub Actions run `35519501165` passed on the Phase 1 certification commit.
 
-- strict core TypeScript compilation
-- 122 unit/regression checks
-- 45 repository contract checks
-- 167 automated checks total, with no failures
-- static compiled-workbench integrity verification
+Results:
 
-The environment blocked native Chromium navigation with `ERR_BLOCKED_BY_ADMINISTRATOR`, and npm dependencies could not be installed there. Therefore those development-workspace results do **not** establish native browser/IndexedDB durability or a full React/Vite production build.
+- core TypeScript compilation: passed
+- committed repository/contract suite: 9 passed, 0 failed
+- production React/Vite build: passed
+- Chromium desktop acceptance: passed
+- Chromium mobile acceptance: passed
+- native IndexedDB persistence through reload: passed
+- nested create/edit/duplicate/rename/Trash/restore flow: passed
+- vault rename: passed
+- drag/drop move: passed
+- explorer filtering: passed
+- UI mojibake regression checks: passed
 
-The repository CI is intended to re-run build and committed contract tests in GitHub's environment.
+During implementation, the larger development suite also completed 167 local automated checks (122 unit/regression + 45 repository-contract checks) with no failures. Those local checks complement, but do not replace, the committed CI suite.
 
-## Acceptance status
+## Explicitly deferred
 
-**Implementation status:** Phase 1 source complete.
+Phase 1 does not claim:
 
-**Certification status:** not browser-certified until a real browser pass validates IndexedDB persistence, refresh, keyboard/touch interactions, drag/drop, Trash/restore and recovery behavior against the committed build.
+- CodeMirror 6 / professional Markdown editor
+- Live Preview / Reading mode
+- Wiki links/backlinks
+- search/index engine
+- properties/frontmatter UI
+- templates/daily notes/tasks/calendar
+- accounts or cross-device cloud synchronization
+- conflict merge UI
+- attachments
+- graph/local graph
+- Kanban
+- Canvas
+- PWA cold-start/offline shell
+- external Markdown/Obsidian import
 
-No cloud-sync claim is made.
+Those belong to subsequent phases.

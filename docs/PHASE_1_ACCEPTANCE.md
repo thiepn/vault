@@ -1,9 +1,42 @@
 # Phase 1 acceptance
 
-Phase 1 is accepted as a **source implementation** when create/switch vault, nested folder/file lifecycle, local Markdown persistence, move/rename/duplicate, Trash/restore and recovery behavior are implemented behind repository contracts and automated tests pass.
+## Result
 
-It is **browser certified** only after Chromium verifies the committed production build against native IndexedDB. The acceptance suite covers desktop persistence through reload, nested create/edit/duplicate/rename/Trash/restore, vault rename, drag/drop movement, filtering, and a mobile create/edit/reload workflow.
+**ACCEPTED — browser-certified in Chromium.**
 
-CI intentionally installs a real Chromium runtime rather than replacing IndexedDB with a test double for this gate.
+The committed production build satisfies the Phase 1 gate for the local vault and file-system foundation.
 
-No cloud synchronization, account, CodeMirror, search/index, backlink, task, graph or Canvas functionality belongs to Phase 1.
+## Accepted behavior
+
+- create, switch and rename vaults
+- create nested folders and Markdown notes
+- persist Markdown locally through refresh/reopen
+- rename and move files/folders while preserving immutable IDs
+- recursively duplicate folders
+- collision-safe duplicate naming
+- Trash and restore
+- stale/deleted-write recovery preservation
+- explorer collapse/filter/sort controls
+- drag/drop movement
+- responsive mobile shell
+- local export/recovery foundations
+
+## Browser gate
+
+Chromium acceptance executes against the production Vite build with native IndexedDB, not an in-memory database replacement.
+
+The certified CI flow validates:
+
+1. production dependencies install
+2. core TypeScript compiles
+3. repository/contract tests pass
+4. Vite production build succeeds
+5. Chromium is installed
+6. desktop lifecycle survives reload
+7. mobile create/edit/reload survives reload
+
+## Phase boundary
+
+No cloud synchronization, account, CodeMirror, search/index, backlink, task, graph, Kanban or Canvas functionality belongs to Phase 1.
+
+Phase 2 can now build the professional Markdown editor/rendering layer on top of the accepted repository contracts.
