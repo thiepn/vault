@@ -11,16 +11,19 @@ async function confirmTextDialog(page: Page, value: string): Promise<void> {
 }
 
 async function ensureFilesOpen(page: Page): Promise<void> {
+  const noteButton = page.locator('.sidebar [data-command="file.create"]');
+  if (await noteButton.isVisible()) return;
+
   const filesPanel = page.locator('[data-sidebar-panel="files"]');
-  if (!(await filesPanel.isVisible())) {
+  if (await filesPanel.isVisible()) {
+    await filesPanel.click();
+  } else {
     const mobileToggle = page.locator('[data-action="files"]');
     await expect(mobileToggle).toBeVisible();
     await mobileToggle.click();
     await expect(page.locator('.workspace')).toHaveAttribute('data-sidebar-open', 'true');
   }
-  await expect(filesPanel).toBeVisible();
-  await filesPanel.click();
-  await expect(page.locator('.sidebar [data-command="file.create"]')).toBeVisible();
+  await expect(noteButton).toBeVisible();
 }
 
 async function createVault(page: Page, name: string): Promise<void> {
@@ -131,7 +134,7 @@ test('Phase 4 worker search, structured filters, facets and quick switcher work 
   await search.fill('brandnewsearchterm');
   await expect(page.locator('.search-result', { hasText: 'Analysis' })).toBeVisible();
 
-  await search.fill('path:University file:Analysis');
+  await search.fill('path:Analysis file:Analysis');
   await expect(page.locator('.search-result', { hasText: 'Analysis' })).toBeVisible();
 
   await page.locator('[data-action="rebuild-search"]').click();

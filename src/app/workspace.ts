@@ -1380,7 +1380,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     const action = button.dataset.action;
     if (!action) return;
-    if (action === 'files') { const open = workspace.dataset.sidebarOpen !== 'true'; workspace.dataset.sidebarOpen = String(open); button.setAttribute('aria-expanded', String(open)); return; }
+    if (action === 'files') {
+      const open = workspace.dataset.sidebarOpen !== 'true';
+      workspace.dataset.sidebarOpen = String(open);
+      button.setAttribute('aria-expanded', String(open));
+      if (open) switchSidebarPanel('files');
+      return;
+    }
     if (action === 'quick-switcher') { void openQuickSwitcher().catch(showError); return; }
     if (action === 'knowledge-panel') { workspace.dataset.knowledgeOpen = String(workspace.dataset.knowledgeOpen !== 'true'); return; }
     if (action === 'export-draft') { downloadDraft(); return; }
