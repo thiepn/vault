@@ -85,6 +85,7 @@ test('search engine indexes full text, aliases, tags, properties, tasks, paths a
   assert.deepEqual(engine.search('uniform continuity').map(result => result.entryId), ['analysis']);
   assert.deepEqual(engine.search('"uniform continuity"').map(result => result.entryId), ['analysis']);
   assert.deepEqual(engine.search('tag:#math -tag:#archive').map(result => result.entryId), ['analysis']);
+  assert.deepEqual(engine.search('tag:#university').map(result => result.entryId), ['analysis']);
   assert.deepEqual(engine.search('property:status=active').map(result => result.entryId), ['analysis']);
   assert.deepEqual(engine.search('property:rating>=4').map(result => result.entryId), ['analysis']);
   assert.deepEqual(engine.search('task:open').map(result => result.entryId), ['analysis']);
@@ -99,6 +100,7 @@ test('search engine indexes full text, aliases, tags, properties, tasks, paths a
 
   const facets = engine.facets();
   assert.deepEqual(facets.tags.find(tag => tag.tag === 'math'), { tag: 'math', count: 2 });
+  assert.deepEqual(facets.tags.find(tag => tag.tag === 'university'), { tag: 'university', count: 1 });
   assert.deepEqual(facets.properties.find(property => property.name === 'status'), { name: 'status', count: 2 });
 });
 
