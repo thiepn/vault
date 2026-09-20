@@ -222,6 +222,12 @@ export class MarkdownEditor {
     this.view.dispatch({ selection: { anchor: position }, scrollIntoView: true });
     this.view.focus();
   }
+  revealRange(from: number, to: number): void {
+    const start = Math.max(0, Math.min(from, this.view.state.doc.length));
+    const end = Math.max(start, Math.min(to, this.view.state.doc.length));
+    this.view.dispatch({ selection: { anchor: start, head: end }, scrollIntoView: true });
+    this.view.focus();
+  }
 
   destroy(): void {
     this.view.destroy();

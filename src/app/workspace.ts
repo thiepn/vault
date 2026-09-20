@@ -323,7 +323,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       button.className = 'search-result';
       button.dataset.searchEntry = result.entryId;
       const location = result.matches.find(match => (match.field === 'body' || match.field === 'heading' || match.field === 'task') && match.from !== null);
-      if (location?.from !== null && location?.from !== undefined) button.dataset.searchOffset = String(location.from);
+      if (location?.from !== null && location?.from !== undefined) {
+        button.dataset.searchFrom = String(location.from);
+        if (location.to !== null) button.dataset.searchTo = String(location.to);
+      }
       const title = document.createElement('span');
       title.className = 'search-result-title';
       title.textContent = result.title;
@@ -611,11 +614,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     await setting('recentEntries:' + vault.id, recentEntries);
   }
 
-  async function openSearchResult(entryId: EntryId, offset: number | null): Promise<void> {
+  async function openSearchResult(entryId: EntryId, from: number | null, to: number | null): Promise<void> {
     await openEntry(entryId);
-    if (offset !== null) {
+    if (from !== null) {
       if (editorMode === 'reading') await setEditorMode('live');
-      editor.revealOffset(offset);
+      if (to !== null && to > from) editor.revealRange(from, to);
+      else editor.revealOffset(from);
     }
   }
 
@@ -1237,8 +1241,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     const searchResult = (event.target as Element).closest<HTMLButtonElement>('[data-search-entry]');
     if (searchResult?.dataset.searchEntry) {
-      const offset = searchResult.dataset.searchOffset === undefined ? null : Number(searchResult.dataset.searchOffset);
-      perform(() => openSearchResult(searchResult.dataset.searchEntry as EntryId, Number.isFinite(offset) ? offset : null));
+      const fromValue = searchResult.dataset.searchFrom === undefined ? null : Number(searchResult.dataset.searchFrom);
+      const toValue = searchResult.dataset.searchTo === undefined ? null : Number(searchResult.dataset.searchTo);
+      const from = fromValue !== null && Number.isFinite(fromValue) ? fromValue : null;
+      const to = toValue !== null && Number.isFinite(toValue) ? toValue : null;
+      perform(() => openSearchResult(searchResult.dataset.searchEntry as EntryId, from, to));
       return;
     }
 
