@@ -11,12 +11,16 @@ async function confirmTextDialog(page: Page, value: string): Promise<void> {
 }
 
 async function ensureFilesOpen(page: Page): Promise<void> {
-  const noteButton = page.locator('.sidebar [data-command="file.create"]');
-  if (!(await noteButton.isVisible())) {
-    await page.locator('[data-action="files"]').click();
+  const filesPanel = page.locator('[data-sidebar-panel="files"]');
+  if (!(await filesPanel.isVisible())) {
+    const mobileToggle = page.locator('[data-action="files"]');
+    await expect(mobileToggle).toBeVisible();
+    await mobileToggle.click();
     await expect(page.locator('.workspace')).toHaveAttribute('data-sidebar-open', 'true');
   }
-  await page.locator('[data-sidebar-panel="files"]').click();
+  await expect(filesPanel).toBeVisible();
+  await filesPanel.click();
+  await expect(page.locator('.sidebar [data-command="file.create"]')).toBeVisible();
 }
 
 async function createVault(page: Page, name: string): Promise<void> {
