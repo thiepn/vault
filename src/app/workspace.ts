@@ -8,10 +8,13 @@ import { SaveCoordinator } from '../services/save-coordinator.js';
 import { markdownFiles, zipStore } from '../services/export.js';
 import { CommandRegistry } from '../commands/registry.js';
 import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file-tree.js';
+import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
+import { renderMarkdown } from '../editor/renderer.js';
 
 export interface WorkspaceOptions { databaseName?: string }
+type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 1 browser workspace: local vaults, nested folders, Markdown files, Trash and recovery. */
+/** Phase 2 browser workspace: Phase 1 storage plus the professional Markdown editor/rendering surface. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -31,6 +34,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let dirtyIds = new Set<EntryId>();
   let preferencesVaultId: VaultId | undefined;
   let draggedEntryId: EntryId | undefined;
+  let editorMode: EditorMode = 'live';
+  let lineNumbers = false;
+  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0 };
+  let renderGeneration = 0;
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
 
@@ -41,7 +48,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button class="mobile-toggle" data-action="files" aria-label="Toggle files" aria-expanded="false">\u2630</button>
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
-        <span class="stage">Phase 1 \u00b7 local vault</span>
+        <span class="stage">Phase 2 \u00b7 Markdown editor</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -58,22 +65,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="sidebar-bottom"><span class="local-dot"></span><span>Stored in this browser</span></div>
       </aside>
       <main class="main" aria-label="Markdown workspace">
-        <div class="document-bar"><div class="breadcrumb">No file selected</div><span class="source-label">SOURCE</span></div>
+        <div class="document-bar"><div class="breadcrumb">No file selected</div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-editor-mode="source" aria-pressed="false">Source</button><button type="button" data-editor-mode="live" aria-pressed="true">Live Preview</button><button type="button" data-editor-mode="reading" aria-pressed="false">Reading</button></div></div>
         <div class="actions" aria-label="File actions">
           <button data-action="rename" disabled>Rename</button><button data-action="move" disabled>Move</button><button data-action="duplicate" disabled>Duplicate</button>
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 1</p><h1>Your notes. Ordinary Markdown.</h1>
-          <p>Create vaults, organize nested folders, write Markdown, move or duplicate files, and recover deleted notes. Everything in this phase is stored locally in your browser.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 2</p><h1>Markdown, without leaving the browser.</h1>
+          <p>Create a vault and write in Source, Live Preview, or Reading mode. CodeMirror handles editing while ordinary Markdown remains the canonical note format.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
-          <p class="fineprint">Cloud sync and the professional CodeMirror editor begin in later phases. This phase deliberately concentrates on a reliable local file system.</p>
+          <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
-        <label class="sr-only" for="vault-editor">Markdown source</label>
-        <textarea id="vault-editor" class="editor" spellcheck="false" autocapitalize="off" autocomplete="off" hidden></textarea>
+        <div id="vault-editor" class="editor-host" hidden aria-label="Markdown source editor"></div>
+        <article class="reading-view" hidden aria-label="Rendered Markdown"></article>
         <div class="folder-message" hidden></div>
       </main>
       <aside class="inspector" aria-label="Storage information">
@@ -108,7 +116,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     return value;
   }
   const workspace = element<HTMLElement>('.workspace');
-  const editor = element<HTMLTextAreaElement>('#vault-editor');
+  const editorHost = element<HTMLElement>('#vault-editor');
+  const readingView = element<HTMLElement>('.reading-view');
   const vaultSelect = element<HTMLSelectElement>('#vault-vault');
   const errorBox = element<HTMLElement>('.error');
   const dialog = element<HTMLDialogElement>('.form-dialog');
@@ -122,6 +131,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const foldersFirstToggle = element<HTMLInputElement>('.folders-first');
   const fileTree = element<HTMLElement>('.file-tree');
   const pathOf = (id: EntryId): string => new VaultTree(entries).path(id);
+  const editor = new MarkdownEditor(editorHost, {
+    text: '', mode: 'live', readOnly: true, lineNumbers: false,
+    onChange(text) { saver?.update(text); updateCounts(); },
+    onStats(stats) { editorStats = stats; updateCounts(); },
+  });
 
   function showError(error: unknown): void {
     if (disposed) return;
@@ -132,8 +146,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     chain = chain.then(async () => {
       if (disposed) return;
       // Stop accepting keystrokes while replacing the editor's owning document.
-      editor.readOnly = true;
-      try { await action(); } finally { editor.readOnly = !selected || selected.deletedAt !== null || !saver; }
+      editor.setReadOnly(true);
+      try { await action(); } finally { editor.setReadOnly(!selected || selected.deletedAt !== null || !saver || editorMode === 'reading'); }
     }).catch(showError);
   }
   function download(filename: string, content: BlobPart, type: string): void {
@@ -145,7 +159,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   function downloadDraft(): void {
     if (!selected || selected.kind !== 'markdown') return;
-    download(selected.name, saver?.draft ?? editor.value, 'text/markdown;charset=utf-8');
+    download(selected.name, saver?.draft ?? editor.getText(), 'text/markdown;charset=utf-8');
   }
   async function setting(key: string, value?: unknown): Promise<unknown> {
     return transact(db, ['settings'], value === undefined ? 'readonly' : 'readwrite', async tx => {
@@ -337,6 +351,43 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const data = selected ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]] : [['Files', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
     for (const [key, value] of data) { const dt = document.createElement('dt'); dt.textContent = key!; const dd = document.createElement('dd'); dd.textContent = value!; info.append(dt, dd); }
   }
+  async function renderReadingCurrent(): Promise<void> {
+    if (!selected || selected.kind !== 'markdown' || editorMode !== 'reading') return;
+    const generation = ++renderGeneration;
+    readingView.dataset.loading = 'true';
+    const rendered = await renderMarkdown(saver?.draft ?? editor.getText());
+    if (generation !== renderGeneration || editorMode !== 'reading' || selected?.kind !== 'markdown') return;
+    readingView.replaceChildren(rendered);
+    delete readingView.dataset.loading;
+  }
+  async function syncEditorSurface(): Promise<void> {
+    const noteOpen = selected?.kind === 'markdown';
+    editorHost.hidden = !noteOpen || editorMode === 'reading';
+    readingView.hidden = !noteOpen || editorMode !== 'reading';
+    element<HTMLElement>('.editor-toolbar').hidden = !noteOpen || editorMode === 'reading' || selected?.deletedAt !== null;
+    editor.setMode(editorMode === 'source' ? 'source' : 'live');
+    editor.setLineNumbers(lineNumbers);
+    editor.setReadOnly(!noteOpen || selected?.deletedAt !== null || !saver || editorMode === 'reading');
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-editor-mode]')) {
+      const active = button.dataset.editorMode === editorMode;
+      button.setAttribute('aria-pressed', String(active));
+      button.classList.toggle('active', active);
+      button.disabled = !noteOpen;
+    }
+    const lines = element<HTMLButtonElement>('[data-editor-action="line-numbers"]');
+    lines.setAttribute('aria-pressed', String(lineNumbers));
+    lines.classList.toggle('active', lineNumbers);
+    if (noteOpen && editorMode === 'reading') await renderReadingCurrent();
+    else { renderGeneration++; readingView.replaceChildren(); delete readingView.dataset.loading; }
+  }
+  async function setEditorMode(mode: EditorMode): Promise<void> {
+    if (!selected || selected.kind !== 'markdown') return;
+    if (mode === 'reading' && saver) await saver.flush();
+    editorMode = mode;
+    await setting('editorMode', mode);
+    await syncEditorSurface();
+    if (mode !== 'reading') editor.focus();
+  }
   async function openEntry(id: EntryId, preserveCurrent = false): Promise<void> {
     // Validate the destination before closing a functioning editor. Failed navigation
     // must not leave the previous editor attached to a closed save coordinator.
@@ -350,8 +401,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('[data-action="reopen"]').hidden = true;
     element<HTMLElement>('[data-action="retry-save"]').hidden = true;
     element<HTMLElement>('.empty-state').hidden = true;
-    editor.hidden = selected.kind !== 'markdown';
-    editor.readOnly = selected.deletedAt !== null;
+    editor.setReadOnly(selected.deletedAt !== null);
     element<HTMLElement>('.folder-message').hidden = selected.kind !== 'directory';
     element<HTMLElement>('.folder-message').textContent = selected.deletedAt ? 'This folder is in Trash. Restore its parent first, then restore the folder.' : 'Folder selected. New files will be created inside this folder.';
     element<HTMLElement>('.breadcrumb').textContent = targetPath;
@@ -361,7 +411,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLButtonElement>('[data-action="export-draft"]').disabled = selected.kind !== 'markdown';
     element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null;
     if (selected.kind === 'markdown' && item.content) {
-      editor.value = item.content.text;
+      editor.setText(item.content.text);
       if (selected.deletedAt === null) {
         const opened = selected; const draftId = `editor:${crypto.randomUUID()}`;
         saver = new SaveCoordinator(repository, selected.id, { version: selected.localVersion, text: item.content.text }, (state, updated) => {
@@ -379,6 +429,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         }, { persistRecovery: (text, baseVersion) => repository.preserveDraft({ id: draftId, entryId: opened.id, vaultId: opened.vaultId, baseVersion, text }) });
       }
     }
+    await syncEditorSurface();
     renderTree(); renderInfo(); updateCounts();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
@@ -386,11 +437,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('[data-action="files"]').setAttribute('aria-expanded', 'false');
   }
   function updateCounts(): void {
-    element<HTMLElement>('.counts').textContent = !editor.hidden ? `${editor.value.length.toLocaleString()} characters` : '';
+    element<HTMLElement>('.counts').textContent = selected?.kind === 'markdown' ? `${editorStats.words.toLocaleString()} words \u00b7 ${editorStats.characters.toLocaleString()} characters \u00b7 Ln ${editorStats.line}, Col ${editorStats.column}${editorStats.selectedWords ? ` \u00b7 ${editorStats.selectedWords} selected` : ''}` : '';
   }
   async function clearSelection(): Promise<void> {
     if (saver) await saver.close();
-    saver = undefined; selected = undefined; editor.hidden = true;
+    saver = undefined; selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); editor.setReadOnly(true); editor.setText('');
     element<HTMLElement>('.empty-state').hidden = false;
     element<HTMLElement>('.folder-message').hidden = true;
     element<HTMLElement>('.breadcrumb').textContent = 'No file selected';
@@ -399,6 +450,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     errorBox.hidden = true;
     for (const action of ['rename', 'move', 'duplicate', 'delete', 'export-draft', 'checkpoint']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = true;
     element<HTMLElement>('[data-action="restore"]').hidden = true;
+    await syncEditorSurface();
     updateCounts();
   }
 
@@ -441,6 +493,21 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }); return;
     }
     if (button.dataset.command) { perform(async () => { await registry.execute(button.dataset.command!); }); return; }
+    if (button.dataset.editorMode) {
+      const mode = button.dataset.editorMode;
+      if (mode === 'source' || mode === 'live' || mode === 'reading') perform(() => setEditorMode(mode));
+      return;
+    }
+    if (button.dataset.editorCommand) {
+      if (editorMode !== 'reading') editor.run(button.dataset.editorCommand as MarkdownCommand);
+      return;
+    }
+    if (button.dataset.editorAction === 'search') { editor.openSearch(); return; }
+    if (button.dataset.editorAction === 'line-numbers') {
+      lineNumbers = !lineNumbers; editor.setLineNumbers(lineNumbers);
+      button.setAttribute('aria-pressed', String(lineNumbers)); button.classList.toggle('active', lineNumbers);
+      void setting('lineNumbers', lineNumbers).catch(showError); return;
+    }
     const action = button.dataset.action;
     if (!action) return;
     if (action === 'files') { const open = workspace.dataset.sidebarOpen !== 'true'; workspace.dataset.sidebarOpen = String(open); button.setAttribute('aria-expanded', String(open)); return; }
@@ -480,7 +547,6 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (action === 'restore') { await repository.restore(selected.id); const id = selected.id; showingTrash = false; await refresh(); await openEntry(id); }
     });
   }, { signal: abort.signal });
-  editor.addEventListener('input', () => { saver?.update(editor.value); updateCounts(); }, { signal: abort.signal });
   recoverySelect.addEventListener('change', showRecoverySelection, { signal: abort.signal });
   fileFilter.addEventListener('input', () => {
     filterText = fileFilter.value;
@@ -524,11 +590,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (dialog.open || recoveryDialog.open) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); perform(async () => registry.execute('file.create')); return; }
     if (event.key === 'F2' && selected && selected.deletedAt === null) { event.preventDefault(); element<HTMLButtonElement>('[data-action="rename"]').click(); return; }
-    if ((event.key === 'Delete' || event.key === 'Backspace') && selected && selected.deletedAt === null && document.activeElement !== editor && document.activeElement !== fileFilter) {
+    if ((event.key === 'Delete' || event.key === 'Backspace') && selected && selected.deletedAt === null && !editor.hasFocus() && document.activeElement !== fileFilter) {
       event.preventDefault(); element<HTMLButtonElement>('[data-action="delete"]').click();
     }
   }, { signal: abort.signal });
 
+  const storedMode = await setting('editorMode');
+  if (storedMode === 'source' || storedMode === 'live' || storedMode === 'reading') editorMode = storedMode;
+  lineNumbers = (await setting('lineNumbers')) === true;
+  editor.setLineNumbers(lineNumbers);
   const lastVault = await setting('lastVault');
   vaults = await repository.listVaults();
   vault = vaults.find(item => item.id === lastVault);
@@ -542,6 +612,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     abort.abort();
     if (dialog.open) dialog.close('cancel');
     if (recoveryDialog.open) recoveryDialog.close();
+    editor.destroy();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
   };
 }

@@ -1,0 +1,240 @@
+import { Compartment, EditorState } from '@codemirror/state';
+import { EditorView, keymap } from '@codemirror/view';
+import { indentWithTab } from '@codemirror/commands';
+import { markdown } from '@codemirror/lang-markdown';
+import { openSearchPanel } from '@codemirror/search';
+import { basicSetup } from 'codemirror';
+import { livePreviewExtension } from './live-preview.js';
+
+export type EditMode = 'source' | 'live';
+export type MarkdownCommand =
+  | 'bold' | 'italic' | 'inline-code' | 'link'
+  | 'heading' | 'task' | 'bullet' | 'quote'
+  | 'code-block' | 'math-block' | 'callout' | 'table';
+
+export interface EditorStats {
+  characters: number;
+  words: number;
+  line: number;
+  column: number;
+  selectedWords: number;
+}
+
+export interface MarkdownEditorOptions {
+  text: string;
+  mode?: EditMode;
+  readOnly?: boolean;
+  lineNumbers?: boolean;
+  onChange(text: string): void;
+  onStats?(stats: EditorStats): void;
+}
+
+const readOnlyCompartment = new Compartment();
+const editableCompartment = new Compartment();
+const previewCompartment = new Compartment();
+
+function countWords(text: string): number {
+  const matches = text.trim().match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu);
+  return matches?.length ?? 0;
+}
+
+function replaceSelection(view: EditorView, insert: string, anchorOffset = insert.length): boolean {
+  const selection = view.state.selection.main;
+  view.dispatch({
+    changes: { from: selection.from, to: selection.to, insert },
+    selection: { anchor: selection.from + anchorOffset },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
+function wrapSelection(view: EditorView, before: string, after = before, placeholder = ''): boolean {
+  const selection = view.state.selection.main;
+  const selected = view.state.sliceDoc(selection.from, selection.to);
+  const inner = selected || placeholder;
+  const insert = `${before}${inner}${after}`;
+  view.dispatch({
+    changes: { from: selection.from, to: selection.to, insert },
+    selection: selected
+      ? { anchor: selection.from + insert.length }
+      : { anchor: selection.from + before.length, head: selection.from + before.length + inner.length },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
+function prefixLine(view: EditorView, prefix: string): boolean {
+  const head = view.state.selection.main.head;
+  const line = view.state.doc.lineAt(head);
+  view.dispatch({ changes: { from: line.from, insert: prefix }, selection: { anchor: head + prefix.length } });
+  view.focus();
+  return true;
+}
+
+export class MarkdownEditor {
+  readonly view: EditorView;
+  private readonly onChange: (text: string) => void;
+  private readonly onStats?: (stats: EditorStats) => void;
+  private suppressChange = false;
+  private mode: EditMode;
+  private cachedCharacters = 0;
+  private cachedWords = 0;
+
+  constructor(readonly host: HTMLElement, options: MarkdownEditorOptions) {
+    this.onChange = options.onChange;
+    this.onStats = options.onStats;
+    this.mode = options.mode ?? 'live';
+    host.dataset.lineNumbers = String(options.lineNumbers ?? false);
+    host.dataset.mode = this.mode;
+
+    const markdownKeys = keymap.of([
+      { key: 'Mod-b', run: view => wrapSelection(view, '**', '**', 'bold text') },
+      { key: 'Mod-i', run: view => wrapSelection(view, '*', '*', 'italic text') },
+      { key: 'Mod-`', run: view => wrapSelection(view, '`', '`', 'code') },
+      { key: 'Mod-k', run: view => wrapSelection(view, '[', '](https://)', 'link text') },
+      indentWithTab,
+    ]);
+
+    const state = EditorState.create({
+      doc: options.text,
+      extensions: [
+        basicSetup,
+        markdown(),
+        EditorView.lineWrapping,
+        markdownKeys,
+        readOnlyCompartment.of(EditorState.readOnly.of(options.readOnly ?? false)),
+        editableCompartment.of(EditorView.editable.of(!(options.readOnly ?? false))),
+        previewCompartment.of(this.mode === 'live' ? livePreviewExtension : []),
+        EditorView.updateListener.of(update => {
+          if (update.docChanged) {
+            this.recount(update.state);
+            if (!this.suppressChange) this.onChange(update.state.doc.toString());
+          }
+          if (update.docChanged || update.selectionSet) this.emitStats(update.state);
+        }),
+        EditorView.theme({
+          '&': { height: '100%' },
+          '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--editor)' },
+          '.cm-content': { minHeight: '100%', caretColor: 'var(--accent)' },
+          '&.cm-focused': { outline: 'none' },
+        }),
+      ],
+    });
+
+    this.view = new EditorView({ state, parent: host });
+    this.recount(state);
+    this.emitStats(state);
+  }
+
+  getText(): string {
+    return this.view.state.doc.toString();
+  }
+
+  setText(text: string): void {
+    if (text === this.getText()) return;
+    this.suppressChange = true;
+    try {
+      this.view.dispatch({
+        changes: { from: 0, to: this.view.state.doc.length, insert: text },
+        selection: { anchor: 0 },
+        scrollIntoView: true,
+      });
+    } finally {
+      this.suppressChange = false;
+    }
+    this.recount(this.view.state);
+    this.emitStats(this.view.state);
+  }
+
+  setReadOnly(value: boolean): void {
+    this.view.dispatch({
+      effects: [
+        readOnlyCompartment.reconfigure(EditorState.readOnly.of(value)),
+        editableCompartment.reconfigure(EditorView.editable.of(!value)),
+      ],
+    });
+    this.host.dataset.readonly = String(value);
+  }
+
+  setMode(mode: EditMode): void {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    this.view.dispatch({
+      effects: previewCompartment.reconfigure(mode === 'live' ? livePreviewExtension : []),
+    });
+    this.host.dataset.mode = mode;
+  }
+
+  setLineNumbers(show: boolean): void {
+    this.host.dataset.lineNumbers = String(show);
+  }
+
+  getLineNumbers(): boolean {
+    return this.host.dataset.lineNumbers === 'true';
+  }
+
+  focus(): void {
+    this.view.focus();
+  }
+
+  hasFocus(): boolean {
+    return this.view.hasFocus;
+  }
+
+  openSearch(): void {
+    openSearchPanel(this.view);
+    this.view.focus();
+  }
+
+  stats(): EditorStats {
+    return this.computeStats(this.view.state);
+  }
+
+  run(command: MarkdownCommand): boolean {
+    const view = this.view;
+    switch (command) {
+      case 'bold': return wrapSelection(view, '**', '**', 'bold text');
+      case 'italic': return wrapSelection(view, '*', '*', 'italic text');
+      case 'inline-code': return wrapSelection(view, '`', '`', 'code');
+      case 'link': return wrapSelection(view, '[', '](https://)', 'link text');
+      case 'heading': return prefixLine(view, '## ');
+      case 'task': return prefixLine(view, '- [ ] ');
+      case 'bullet': return prefixLine(view, '- ');
+      case 'quote': return prefixLine(view, '> ');
+      case 'code-block': return replaceSelection(view, '```\n\n```', 4);
+      case 'math-block': return replaceSelection(view, '$$\n\n$$', 3);
+      case 'callout': return replaceSelection(view, '> [!NOTE]\n> ', 12);
+      case 'table': return replaceSelection(view, '| Column 1 | Column 2 |\n| --- | --- |\n| Value | Value |\n');
+    }
+  }
+
+  destroy(): void {
+    this.view.destroy();
+    this.host.replaceChildren();
+  }
+
+  private recount(state: EditorState): void {
+    const text = state.doc.toString();
+    this.cachedCharacters = text.length;
+    this.cachedWords = countWords(text);
+  }
+
+  private computeStats(state: EditorState): EditorStats {
+    const head = state.selection.main.head;
+    const line = state.doc.lineAt(head);
+    const selectedText = state.sliceDoc(state.selection.main.from, state.selection.main.to);
+    return {
+      characters: this.cachedCharacters,
+      words: this.cachedWords,
+      line: line.number,
+      column: head - line.from + 1,
+      selectedWords: countWords(selectedText),
+    };
+  }
+
+  private emitStats(state: EditorState): void {
+    this.onStats?.(this.computeStats(state));
+  }
+}
