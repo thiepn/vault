@@ -36,13 +36,16 @@ Raw note HTML is not allowed to execute application-origin JavaScript.
 
 ## Phase 3 linked-knowledge path
 
-Phase 3 introduces a versioned **derived** `knowledge` store in IndexedDB. Each record is keyed by immutable note ID and contains only data reconstructable from Markdown:
+Phase 3 introduced a versioned **derived** `knowledge` store in IndexedDB. Each record is keyed by immutable note ID and contains only data reconstructable from Markdown:
 
 - aliases
 - headings
 - block IDs
 - Wiki-link references and exact source ranges
-- search-safe plain text
+- tags
+- structured properties
+- tasks
+- search-safe body/source text
 
 ```text
 canonical Markdown
@@ -52,11 +55,88 @@ canonical Markdown
 → autocomplete / resolution / backlinks / outline / unlinked mentions
 ```
 
-If the derived store is stale or absent, it is rebuilt from the current Markdown files. Deleting it must never lose user-authored information.
+If the derived store is stale or absent, it is rebuilt from current Markdown files. Deleting it must never lose user-authored information.
+
+## Phase 4 search/index path
+
+Search runs outside the main UI thread:
+
+```text
+canonical Markdown + stable file metadata
+→ SearchInput
+→ SearchIndexClient
+→ dedicated module Web Worker
+→ SearchEngine
+   ├─ token inverted index
+   ├─ nested tag index
+   ├─ property-name index
+   ├─ parsed query evaluator
+   ├─ result scorer/snippet builder
+   ├─ facet builder
+   └─ Quick Switcher ranker
+→ typed worker response
+→ UI
+```
+
+The worker receives batches of rebuild/upsert/remove/metadata-update commands. Normal edits are incrementally reindexed instead of forcing a full vault rebuild.
+
+A full rebuild is still available and is used when:
+
+- entering a new vault
+- the index is missing
+- derived state may have drifted
+- the worker crashes and is restarted
+- the user explicitly requests a rebuild
+
+The client rejects pending requests when a worker dies, restarts it up to a bounded number of attempts, and requests a deterministic rebuild from canonical local data.
+
+## Search query model
+
+The query parser produces an explicit AST rather than using ad-hoc string matching.
+
+Supported query concepts include:
+
+- ordinary full-text terms
+- exact quoted phrases
+- implicit and explicit `AND`
+- `OR`
+- `NOT`
+- `-term` negation
+- `tag:#math`
+- `path:University`
+- `file:Analysis`
+- `task:open|done|any`
+- `property:name`
+- `property:name=value`
+- `property:rating>=4`
+
+Structured filters narrow candidate sets through dedicated indexes/metadata before ranking.
+
+## Search source offsets
+
+Body, heading and task matches keep UTF-16 source offsets aligned with canonical Markdown. Search results can therefore reveal the exact location in CodeMirror without converting Markdown into another storage format.
+
+## Quick Switcher
+
+Quick Switcher ranks immutable note IDs using:
+
+1. exact title match
+2. title prefix/substring/fuzzy match
+3. alias match
+4. path match
+5. recent-note boost
+
+Opening a result still resolves through the normal repository/file identity path.
+
+## Performance boundary
+
+The committed Phase 4 benchmark constructs and indexes **10,000 synthetic notes** and exercises text, phrase, tag, property, task/path and Quick Switcher queries.
+
+The benchmark is a CI regression gate, not a claim that all 10k-note vault workloads have identical performance. Browser/device/storage differences still matter.
 
 ## Wiki-link resolution
 
-Resolution is deterministic:
+Resolution remains deterministic:
 
 1. explicit vault path
 2. relative explicit path
@@ -67,29 +147,11 @@ Resolution is deterministic:
 
 Duplicate titles are disambiguated with paths.
 
-Heading and block fragments resolve only after the target note identity is resolved.
-
-## Live Preview links
-
-CodeMirror parses ordinary Markdown while a separate Wiki-link plugin tracks `[[...]]` source ranges.
-
-When the cursor is outside a Wiki link, delimiters/target syntax may be concealed and the visible label is decorated according to resolution state. When the cursor enters the link, source syntax is revealed so editing remains predictable.
-
-Ctrl/Cmd-click follows the parsed reference. Autocomplete uses CodeMirror's completion system rather than a custom floating DOM implementation.
-
-## Transclusion
-
-Reading mode resolves `![[Note]]`, `![[Note#Heading]]`, and `![[Note#^block]]` from canonical Markdown.
-
-Nested embeds carry their own source-note context. A stack of immutable entry IDs prevents recursive cycles, and a depth cap protects rendering from pathological chains.
-
 ## Rename/move link maintenance
 
 Automatic link maintenance is enabled per vault by default and can be disabled.
 
 Before a note/folder path changes, Vault snapshots the old entry graph and derived records. After the stable IDs are moved, it rewrites only parsed Wiki references that previously resolved to affected entry IDs. It does not perform global string replacement.
-
-Explicit aliases are preserved. Implicit alias-based links gain a display alias if necessary so visible prose does not unexpectedly change.
 
 ## File identity
 

@@ -2,9 +2,9 @@
 
 **Vault** is a browser-first, local-first Markdown knowledge system.
 
-The goal is an original web application with Obsidian-style linked knowledge, cross-device synchronization, tasks, queries, calendar, graph, Canvas, mobile/PWA support, and ordinary Markdown portability.
+The goal is an original web application with linked Markdown notes, cross-device synchronization, tasks, queries, calendar, graph, Canvas, mobile/PWA support, and ordinary Markdown portability.
 
-The repository currently includes the browser-certified **Phase 1 file system**, **Phase 2 professional Markdown editor**, and **Phase 3 linked knowledge system**.
+The repository currently includes the browser-certified **Phase 1 file system**, **Phase 2 professional Markdown editor**, **Phase 3 linked knowledge system**, and **Phase 4 index + search engine**.
 
 ## Current capabilities
 
@@ -59,6 +59,31 @@ The repository currently includes the browser-certified **Phase 1 file system**,
 - per-vault toggle for automatic link updates
 - mobile Knowledge drawer
 
+### Index + search
+
+- dedicated Web Worker search/index engine
+- vault-wide full-text search
+- phrase search
+- Boolean `AND` / `OR` / `NOT`
+- negative terms with `-`
+- filename filters: `file:`
+- path filters: `path:`
+- tag filters: `tag:`
+- nested tag-prefix matching
+- property existence/comparison filters: `property:`
+- numeric/string/boolean property comparisons
+- task filters: `task:open`, `task:done`, `task:any`
+- indexed titles, paths, aliases, headings, body text, tags, properties and tasks
+- highlighted search snippets
+- exact source offsets for opening matches
+- tag/property facets
+- Quick Switcher with title/alias/path fuzzy ranking and recency
+- incremental index updates after edits, rename, move and deletion
+- rebuild/reconciliation after concurrent changes
+- worker crash restart/rebuild handling
+- mobile Search/Tags navigation
+- 10,000-note performance certification
+
 ## Data model
 
 Markdown remains canonical.
@@ -70,11 +95,13 @@ CodeMirror
 → IndexedDB canonical Markdown
 
 Markdown
-→ Knowledge parser/index
-→ derived aliases/headings/blocks/links/backlinks
+→ Knowledge parser
+→ derived knowledge records
+→ Search Worker
+→ disposable full-text/facet indexes
 ```
 
-The Phase 3 knowledge index is disposable and rebuildable. It never becomes the only copy of a link, alias, heading, block, or note.
+The knowledge and search indexes are acceleration layers. They can be discarded and rebuilt from canonical Markdown and stable file metadata.
 
 ## Rendering security
 
@@ -82,11 +109,9 @@ Reading mode does not trust raw note HTML. Markdown is compiled, sanitized with 
 
 ## Deliberately not implemented yet
 
-- Phase 4 worker-backed global full-text search/index UI
-- tag browser and property indexing UI
-- quick switcher
-- visual YAML properties
-- templates/daily notes/calendar/tasks
+- visual YAML properties editor
+- templates/daily notes/calendar
+- advanced task management
 - cloud accounts and cross-device synchronization
 - attachment management
 - graph/local graph visualization
@@ -102,11 +127,12 @@ Requires Node 22.12+.
 ```bash
 npm ci
 npm test
+npm run benchmark:search
 npm run build
 npm run test:e2e
 ```
 
-GitHub CI uses the committed lockfile, strict TypeScript, the production Vite build, and real Chromium desktop/mobile acceptance against native IndexedDB.
+GitHub CI uses the committed lockfile, strict TypeScript, the 10k search benchmark, the production Vite build, and real Chromium desktop/mobile acceptance against native IndexedDB.
 
 See:
 
@@ -114,7 +140,8 @@ See:
 - `docs/PHASE_1_RESULTS.md`
 - `docs/PHASE_2_RESULTS.md`
 - `docs/PHASE_3_RESULTS.md`
-- `docs/PHASE_3_ACCEPTANCE.md`
+- `docs/PHASE_4_RESULTS.md`
+- `docs/PHASE_4_ACCEPTANCE.md`
 
 ## Product identity
 
