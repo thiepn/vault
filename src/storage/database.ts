@@ -1,8 +1,8 @@
 import { VaultError } from '../domain/errors.js';
 import type { Principal } from '../domain/model.js';
 
-export const SCHEMA_VERSION = 1;
-export const STORES = ['vaults', 'entries', 'contents', 'dirty', 'outbox', 'revisions', 'drafts', 'settings', 'remoteShadows', 'syncCursors'] as const;
+export const SCHEMA_VERSION = 2;
+export const STORES = ['vaults', 'entries', 'contents', 'dirty', 'outbox', 'revisions', 'drafts', 'settings', 'remoteShadows', 'syncCursors', 'knowledge'] as const;
 export type StoreName = typeof STORES[number];
 
 export function databaseName(principal: Principal): string {
@@ -42,6 +42,10 @@ export async function openDatabase(name = databaseName({ kind: 'local' })): Prom
         db.createObjectStore('settings', { keyPath: 'key' });
         db.createObjectStore('remoteShadows', { keyPath: 'entryId' });
         db.createObjectStore('syncCursors', { keyPath: 'vaultId' });
+      }
+      if (event.oldVersion < 2) {
+        const knowledge = db.createObjectStore('knowledge', { keyPath: 'entryId' });
+        knowledge.createIndex('vaultId', 'vaultId');
       }
     };
     req.onsuccess = () => {
