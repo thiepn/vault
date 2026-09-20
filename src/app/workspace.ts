@@ -425,8 +425,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function buildSearchInputs(): Promise<SearchInput[]> {
     if (!vault) return [];
-    const snapshot = await repository.snapshot(vault.id);
-    const contentById = new Map(snapshot.contents.map(content => [content.entryId, content]));
+    const contents = await repository.listActiveMarkdownContents(vault.id);
+    const contentById = new Map(contents.map(content => [content.entryId, content]));
     const tree = new VaultTree(entries);
     const inputs: SearchInput[] = [];
     for (const entry of activeMarkdownEntries()) {

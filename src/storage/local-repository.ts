@@ -65,6 +65,21 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       return includeTrash ? entries : entries.filter(entry => entry.deletedAt === null);
     });
   }
+  async listActiveMarkdownContents(vaultId: VaultId): Promise<MarkdownContent[]> {
+    return this.driver.transaction(['entries', 'contents'], 'readonly', async tx => {
+      const entries = await tx.store('entries').allFromIndex<Entry>('vaultId', vaultId);
+      const contents: MarkdownContent[] = [];
+      for (const entry of entries) {
+        if (entry.kind !== 'markdown' || entry.deletedAt !== null) continue;
+        const content = await tx.store('contents').get<MarkdownContent>(entry.id);
+        if (content) {
+          assertMarkdownContent(entry, content);
+          contents.push(content);
+        }
+      }
+      return contents;
+    });
+  }
   private async create(tx: StorageTransaction, vaultId: VaultId, parentId: EntryId | null, raw: string, kind: Entry['kind'], text: string): Promise<Entry> {
     if (kind !== 'markdown' && kind !== 'directory') throw new VaultError('UNSUPPORTED', 'Unsupported file type.');
     if (typeof text !== 'string') throw new VaultError('CORRUPT', 'Markdown content must be text.');
