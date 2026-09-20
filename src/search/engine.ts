@@ -303,16 +303,20 @@ export class SearchEngine {
     if (clause.kind === 'property') {
       const key = fold(clause.name);
       const ids = this.propertyNames.get(key) ?? new Set<EntryId>();
-      if (clause.operator === 'exists') return new Set(ids);
+      const operator = clause.operator;
+      if (operator === 'exists') return new Set(ids);
       const queryValue = scalarQueryValue(clause.value ?? '');
       return new Set([...ids].filter(entryId => {
         const document = this.documents.get(entryId);
         if (!document) return false;
         const actualName = Object.keys(document.knowledge.properties).find(name => fold(name) === key);
         const values = propertyValues(actualName ? document.knowledge.properties[actualName] : undefined);
-        if (clause.operator === '=') return values.some(value => scalarEqual(value, queryValue));
-        if (clause.operator === '!=') return values.length > 0 && values.every(value => !scalarEqual(value, queryValue));
-        return values.some(value => compareScalar(value, clause.operator, queryValue));
+        if (operator === '=') return values.some(value => scalarEqual(value, queryValue));
+        if (operator === '!=') return values.length > 0 && values.every(value => !scalarEqual(value, queryValue));
+        if (operator === '>' || operator === '>=' || operator === '<' || operator === '<=') {
+          return values.some(value => compareScalar(value, operator, queryValue));
+        }
+        return false;
       }));
     }
     const tokens = wordTokens(clause.value);
