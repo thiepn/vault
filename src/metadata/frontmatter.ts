@@ -214,9 +214,9 @@ export function renameFrontmatterProperty(source: string, rawOldName: string, ra
   const previousKey = pair.key;
   const nextKey = doc.createNode(newName);
   if (isScalar(previousKey) && isScalar(nextKey)) {
-    nextKey.commentBefore = previousKey.commentBefore;
-    nextKey.comment = previousKey.comment;
-    nextKey.spaceBefore = previousKey.spaceBefore;
+    if (previousKey.commentBefore !== undefined) nextKey.commentBefore = previousKey.commentBefore;
+    if (previousKey.comment !== undefined) nextKey.comment = previousKey.comment;
+    if (previousKey.spaceBefore !== undefined) nextKey.spaceBefore = previousKey.spaceBefore;
   }
   pair.key = nextKey;
   return serialize(doc, env);
