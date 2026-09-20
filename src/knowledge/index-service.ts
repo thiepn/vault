@@ -6,10 +6,14 @@ import { resolveWikiTarget, wikiSuggestions } from './resolver.js';
 import type { BacklinkMention, KnowledgeRecord, UnlinkedMention, WikiReference, WikiResolution, WikiSuggestion } from './types.js';
 
 const stem = (name: string): string => name.replace(/\.md$/iu, '');
-const fold = (value: string): string => value.normalize('NFC').toLocaleLowerCase();
-
 function wordish(character: string | undefined): boolean {
   return !!character && /[\p{L}\p{N}_]/u.test(character);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^\x24{}()|[\]\\]/g, '\\function wordish(character: string | undefined): boolean {
+  return !!character && /[\p{L}\p{N}_]/u.test(character);
+}');
 }
 
 export class KnowledgeIndexService {
@@ -97,23 +101,26 @@ export class KnowledgeIndexService {
 
     for (const record of this.cache.values()) {
       if (record.entryId === targetEntryId) continue;
-      const lower = fold(record.searchText);
-      let best: UnlinkedMention | undefined;
+      const candidates: UnlinkedMention[] = [];
       for (const term of terms) {
-        const needle = fold(term);
-        let from = lower.indexOf(needle);
-        while (from >= 0) {
-          const to = from + needle.length;
+        const regex = new RegExp(escapeRegExp(term), 'giu');
+        for (const match of record.searchText.matchAll(regex)) {
+          const from = match.index ?? -1;
+          if (from < 0) continue;
+          const to = from + match[0].length;
           if (!wordish(record.searchText[from - 1]) && !wordish(record.searchText[to])) {
-            const mention = { sourceEntryId: record.entryId, from, to, term };
-            if (!best || mention.from < best.from) best = mention;
-            break;
+            candidates.push({ sourceEntryId: record.entryId, from, to, term: record.searchText.slice(from, to) });
           }
-          from = lower.indexOf(needle, from + 1);
         }
       }
-      if (best) results.push(best);
+      candidates.sort((a, b) => a.from - b.from || (b.to - b.from) - (a.to - a.from));
+      let coveredUntil = -1;
+      for (const mention of candidates) {
+        if (mention.from < coveredUntil) continue;
+        results.push(mention);
+        coveredUntil = mention.to;
+      }
     }
-    return results.sort((a, b) => a.sourceEntryId.localeCompare(b.sourceEntryId) || a.from - b.from);
+    return results.sort((a, b) => a.sourceEntryId.localeCompare(b.sourceEntryId) || a.from - b.from || b.to - a.to);
   }
 }
