@@ -37,7 +37,7 @@ test('desktop Phase 1 vault lifecycle persists through reload', async ({ page },
 
   await page.goto('/');
   await expect(page).toHaveTitle('Vault');
-  await expect(page.locator('.stage')).toHaveText('Phase 2 · Markdown editor');
+  await expect(page.locator('.stage')).toContainText('Linked knowledge');
   await createVault(page, 'Knowledge');
 
   await page.locator('[data-command="folder.create"]').click();
