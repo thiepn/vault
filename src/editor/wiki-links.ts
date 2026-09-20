@@ -41,13 +41,11 @@ class EmbedBadge extends WidgetType {
   eq(): boolean { return true; }
 }
 
-function decorations(view: EditorView, bridge: WikiEditorBridge): DecorationSet {
-  const doc = view.state.doc.toString();
-  const head = view.state.selection.main.head;
+function decorations(view: EditorView, bridge: WikiEditorBridge, references: ReturnType<typeof parseWikiReferences>): DecorationSet {
   const ranges: ReturnType<Decoration['range']>[] = [];
-  for (const reference of parseWikiReferences(doc)) {
+  for (const reference of references) {
     const status = bridge.resolve(reference.targetText);
-    const active = head >= reference.from && head <= reference.to;
+    const active = view.state.selection.ranges.some(range => range.from <= reference.to && range.to >= reference.from);
     const className = `cm-wiki-link-source cm-wiki-${status}${reference.embed ? ' cm-wiki-embed-source' : ''}`;
 
     if (active) {
@@ -78,9 +76,16 @@ function decorations(view: EditorView, bridge: WikiEditorBridge): DecorationSet 
 export function wikiPreviewExtension(bridge: WikiEditorBridge) {
   return ViewPlugin.fromClass(class {
     decorations: DecorationSet;
-    constructor(view: EditorView) { this.decorations = decorations(view, bridge); }
+    private references: ReturnType<typeof parseWikiReferences>;
+    constructor(view: EditorView) {
+      this.references = parseWikiReferences(view.state.doc.toString());
+      this.decorations = decorations(view, bridge, this.references);
+    }
     update(update: ViewUpdate): void {
-      if (update.docChanged || update.selectionSet || update.viewportChanged) this.decorations = decorations(update.view, bridge);
+      if (update.docChanged) this.references = parseWikiReferences(update.state.doc.toString());
+      if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        this.decorations = decorations(update.view, bridge, this.references);
+      }
     }
   }, {
     decorations: value => value.decorations,
