@@ -477,8 +477,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     const backlinks = knowledge.backlinks(selected.id, entries);
     backlinkCount.textContent = String(backlinks.length);
-    for (const mention of backlinks.slice(0, 40)) {
-      const source = entries.find(entry => entry.id === mention.sourceEntryId);
+    const backlinkGroups = new Map<EntryId, typeof backlinks>();
+    for (const mention of backlinks) {
+      const group = backlinkGroups.get(mention.sourceEntryId) ?? [];
+      group.push(mention);
+      backlinkGroups.set(mention.sourceEntryId, group);
+    }
+    for (const [sourceEntryId, mentions] of [...backlinkGroups.entries()].slice(0, 40)) {
+      const source = entries.find(entry => entry.id === sourceEntryId);
       if (!source) continue;
       const button = document.createElement('button');
       button.type = 'button';
@@ -489,7 +495,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       title.textContent = source.name.replace(/\.md$/i, '');
       const detail = document.createElement('span');
       detail.className = 'backlink-detail';
-      detail.textContent = mention.reference.raw;
+      const examples = mentions.slice(0, 2).map(mention => mention.reference.raw).join(' · ');
+      detail.textContent = mentions.length > 1 ? `${mentions.length} mentions · ${examples}` : examples;
       button.append(title, detail);
       backlinkList.append(button);
     }

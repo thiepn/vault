@@ -151,7 +151,7 @@ test('Phase 3 knowledge drawer and Wiki links remain usable on mobile', async ({
   await createNote(page, 'Mobile');
   await setEditorText(page, '# Mobile\n\n[[Target]]');
 
-  await page.locator('[data-action="knowledge-panel"]').click();
+  await page.locator('.knowledge-toggle').click();
   await expect(page.locator('.workspace')).toHaveAttribute('data-knowledge-open', 'true');
   await expect(page.locator('.inspector')).toBeVisible();
   await expect(page.locator('.outline-item', { hasText: 'Mobile' })).toBeVisible();
