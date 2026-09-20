@@ -68,3 +68,51 @@
   .workspace[data-knowledge-open="true"] .inspector{top:60px;bottom:31px;width:min(330px,92vw);padding:15px 14px}
   .knowledge-setting{min-height:36px;font-size:11px}
 }
+
+
+/* Phase 4 — search, facets and quick switcher */
+.sidebar-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px;border:1px solid var(--line);border-radius:6px;background:#e8eee9}
+.sidebar-tabs button{border:0;background:transparent;padding:6px 4px;font-size:10px;color:var(--muted);border-radius:4px}
+.sidebar-tabs button.active,.sidebar-tabs button[aria-selected="true"]{background:#fff;color:var(--accent);font-weight:650;box-shadow:0 1px 2px #17332912}
+.sidebar-panel{display:flex;flex-direction:column;gap:8px;min-height:0;flex:1}
+.sidebar-panel[hidden]{display:none!important}
+.files-panel .file-tree{flex:1}
+.global-search,.tag-filter{width:100%;min-height:36px;border:1px solid var(--line);border-radius:5px;background:#fff;color:inherit;padding:8px 9px}
+.search-help{font-size:9px;line-height:1.5;color:var(--muted);margin:0 2px}
+.search-status{font-size:10px;line-height:1.4;color:var(--muted);margin:1px 2px}
+.search-results{display:grid;gap:3px;overflow:auto;min-height:0;padding-bottom:10px}
+.search-result{position:relative;display:grid!important;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;width:100%;padding:8px!important;text-align:left!important;border:1px solid transparent!important;background:transparent!important}
+.search-result:hover,.search-result:focus-visible{background:#eaf1ec!important;border-color:#d8e3dc!important}
+.search-result-title{min-width:0;font-size:11px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-result-count{font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}
+.search-result-path{grid-column:1/-1;font-size:9px;color:#7b8983;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-result-snippet{grid-column:1/-1;font:10px/1.45 var(--editor);color:#596962;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.search-empty{font-size:10px;line-height:1.5;color:var(--muted);margin:8px 4px}
+.facet-heading{font-size:9px;font-weight:700;letter-spacing:1.1px;color:var(--muted);margin-top:7px}
+.tag-list,.property-list{display:grid;gap:2px;overflow:auto;max-height:42%}
+.facet-item{display:flex!important;align-items:center;justify-content:space-between;gap:8px;width:100%;border:0!important;background:transparent!important;padding:6px!important;font-size:10px!important}
+.facet-item:hover,.facet-item:focus-visible{background:#e9f1ec!important}
+.facet-item span:last-child{color:var(--muted);font-variant-numeric:tabular-nums}
+.quick-switcher-dialog{width:min(650px,calc(100vw - 28px));padding:0;border:1px solid var(--line);border-radius:8px;background:#fff;color:inherit;box-shadow:0 20px 80px #10251c2b}
+.quick-switcher-dialog::backdrop{background:#14251f52}
+.quick-switcher-shell{display:grid;gap:10px;padding:18px}
+.quick-switcher-shell h2{font-size:14px;margin:0}
+.quick-switcher-input{width:100%;min-height:42px;border:1px solid #aebdb4;border-radius:6px;padding:9px 11px;font-size:14px}
+.quick-switcher-results{display:grid;gap:2px;max-height:min(55vh,480px);overflow:auto}
+.quick-result{display:grid!important;gap:2px;width:100%;padding:8px 10px!important;text-align:left!important;border:1px solid transparent!important;background:transparent!important}
+.quick-result:hover,.quick-result.selected{background:#e8f1eb!important;border-color:#d1e0d7!important}
+.quick-result-title{font-size:12px;font-weight:620}
+.quick-result-path{font-size:9px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.quick-switcher-help{font-size:9px;color:var(--muted);margin:0}
+.search-index-status{white-space:nowrap}
+
+@media(max-width:640px){
+  .sidebar-tabs button{min-height:40px;font-size:11px}
+  .global-search,.tag-filter{font-size:16px;min-height:44px}
+  .search-result{min-height:54px}
+  .quick-switcher-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 24px)}
+  .quick-switcher-shell{padding:12px}
+  .quick-switcher-input{font-size:16px}
+  .quick-result{min-height:48px}
+  .search-index-status{display:none}
+}

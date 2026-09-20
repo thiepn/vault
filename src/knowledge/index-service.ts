@@ -1,7 +1,7 @@
 import type { Entry, EntryId, VaultId } from '../domain/model.js';
 import type { FileRepository } from '../services/ports.js';
 import { storageDriver, type LocalStorageDriver } from '../storage/driver.js';
-import { parseKnowledge } from './parser.js';
+import { KNOWLEDGE_INDEX_VERSION, parseKnowledge } from './parser.js';
 import { resolveWikiTarget, wikiSuggestions } from './resolver.js';
 import type { BacklinkMention, KnowledgeRecord, UnlinkedMention, WikiReference, WikiResolution, WikiSuggestion } from './types.js';
 
@@ -35,7 +35,7 @@ export class KnowledgeIndexService {
   async loadVault(vaultId: VaultId, activeEntries: readonly Entry[]): Promise<void> {
     const activeIds = new Set(activeEntries.filter(entry => entry.kind === 'markdown' && entry.deletedAt === null).map(entry => entry.id));
     const stored = await this.driver.transaction(['knowledge'], 'readonly', tx => tx.store('knowledge').allFromIndex<KnowledgeRecord>('vaultId', vaultId));
-    this.cache = new Map(stored.filter(record => activeIds.has(record.entryId)).map(record => [record.entryId, record]));
+    this.cache = new Map(stored.filter(record => activeIds.has(record.entryId) && record.indexVersion === KNOWLEDGE_INDEX_VERSION).map(record => [record.entryId, record]));
   }
 
   async ensureVault(entries: readonly Entry[], repository: Pick<FileRepository, 'read'>): Promise<void> {
@@ -45,7 +45,7 @@ export class KnowledgeIndexService {
     for (let index = 0; index < markdown.length; index++) {
       const entry = markdown[index]!;
       const current = this.cache.get(entry.id);
-      if (!current || current.localVersion !== entry.localVersion) {
+      if (!current || current.localVersion !== entry.localVersion || current.indexVersion !== KNOWLEDGE_INDEX_VERSION) {
         const file = await repository.read(entry.id);
         if (file.content) await this.upsert(entry, file.content.text);
       }

@@ -1,5 +1,7 @@
 import type { EntryId, VaultId } from '../domain/model.js';
-import type { KnowledgeBlock, KnowledgeHeading, KnowledgeRecord, WikiReference } from './types.js';
+import type { KnowledgeBlock, KnowledgeHeading, KnowledgePropertyValue, KnowledgeRecord, KnowledgeScalar, KnowledgeTask, WikiReference } from './types.js';
+
+export const KNOWLEDGE_INDEX_VERSION = 4;
 
 interface Range { from: number; to: number }
 
@@ -18,42 +20,107 @@ function unquote(value: string): string {
   return trimmed;
 }
 
-function aliasesFromFrontmatter(text: string, range: Range | null): string[] {
-  if (!range) return [];
+function splitInlineList(source: string): string[] {
+  const items: string[] = [];
+  let quote: '"' | "'" | null = null;
+  let current = '';
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index]!;
+    if (quote) {
+      current += character;
+      if (character === quote && source[index - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+      continue;
+    }
+    if (character === ',') {
+      items.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim() || source.endsWith(',')) items.push(current.trim());
+  return items;
+}
+
+function scalarValue(raw: string): KnowledgeScalar {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  const value = unquote(trimmed);
+  if (/^(?:null|~)$/iu.test(value)) return null;
+  if (/^true$/iu.test(value)) return true;
+  if (/^false$/iu.test(value)) return false;
+  if (/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/iu.test(value)) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return value;
+}
+
+function frontmatterProperties(text: string, range: Range | null): Record<string, KnowledgePropertyValue> {
+  if (!range) return {};
   const source = text.slice(range.from, range.to)
     .replace(/^---\r?\n/, '')
     .replace(/\r?\n---(?:\r?\n)?$/, '');
   const lines = source.split(/\r?\n/);
-  const aliases: string[] = [];
-  let collecting = false;
+  const properties: Record<string, KnowledgePropertyValue> = {};
+  let listKey: string | null = null;
+
   for (const line of lines) {
-    const key = /^\s*(aliases?|alias)\s*:\s*(.*)$/i.exec(line);
+    const key = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(line);
     if (key) {
-      collecting = true;
-      const value = key[2]!.trim();
-      if (!value) continue;
-      if (value.startsWith('[') && value.endsWith(']')) {
-        for (const item of value.slice(1, -1).split(',')) {
-          const alias = unquote(item);
-          if (alias) aliases.push(alias);
-        }
+      const name = key[1]!;
+      const raw = key[2]!.trim();
+      listKey = raw ? null : name;
+      if (!raw) {
+        properties[name] = [];
+      } else if (raw.startsWith('[') && raw.endsWith(']')) {
+        properties[name] = splitInlineList(raw.slice(1, -1))
+          .filter(Boolean)
+          .map(item => scalarValue(item));
       } else {
-        const alias = unquote(value);
-        if (alias) aliases.push(alias);
+        properties[name] = scalarValue(raw);
       }
       continue;
     }
-    if (collecting) {
-      const item = /^\s*-\s+(.+?)\s*$/.exec(line);
+
+    if (listKey) {
+      const item = /^\s+-\s+(.+?)\s*$/.exec(line);
       if (item) {
-        const alias = unquote(item[1]!);
-        if (alias) aliases.push(alias);
+        const existing = properties[listKey];
+        const list = Array.isArray(existing) ? existing : existing === undefined ? [] : [existing];
+        list.push(scalarValue(item[1]!));
+        properties[listKey] = list;
         continue;
       }
-      if (/^\S/.test(line)) collecting = false;
+      if (/^\S/u.test(line)) listKey = null;
     }
   }
-  return [...new Set(aliases.map(alias => alias.trim()).filter(Boolean))];
+  return properties;
+}
+
+function stringValues(value: KnowledgePropertyValue | undefined): string[] {
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return values.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean);
+}
+
+function aliasesFromProperties(properties: Record<string, KnowledgePropertyValue>): string[] {
+  const aliases = [
+    ...stringValues(properties.aliases),
+    ...stringValues(properties.alias),
+  ];
+  return [...new Set(aliases)];
+}
+
+function frontmatterTags(properties: Record<string, KnowledgePropertyValue>): string[] {
+  return [...new Set([
+    ...stringValues(properties.tags),
+    ...stringValues(properties.tag),
+  ].map(tag => tag.replace(/^#/u, '').trim()).filter(Boolean))];
 }
 
 function ignoredRanges(text: string, frontmatter: Range | null): Range[] {
@@ -192,8 +259,46 @@ function parseHeadingsAndBlocks(text: string, ignored: readonly Range[]): { head
   return { headings, blocks };
 }
 
+function inlineTags(text: string, ignored: readonly Range[]): string[] {
+  const tags = new Set<string>();
+  const pattern = /#([\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*)/gu;
+  for (const match of text.matchAll(pattern)) {
+    const from = match.index ?? -1;
+    if (from < 0 || inside(ignored, from)) continue;
+    const previous = text[from - 1];
+    if (previous && /[\p{L}\p{N}_#]/u.test(previous)) continue;
+    tags.add(match[1]!);
+  }
+  return [...tags];
+}
+
+function parseTasks(text: string, ignored: readonly Range[]): KnowledgeTask[] {
+  const tasks: KnowledgeTask[] = [];
+  for (const line of lineRanges(text)) {
+    if (inside(ignored, line.from)) continue;
+    const task = /^\s*[-*+]\s+\[([ xX])\]\s+(.+?)\s*$/u.exec(line.text);
+    if (!task) continue;
+    tasks.push({
+      text: task[2]!,
+      completed: task[1]!.toLocaleLowerCase() === 'x',
+      from: line.from,
+      to: line.to,
+    });
+  }
+  return tasks;
+}
+
+function makeBodyText(text: string, frontmatter: Range | null): string {
+  if (!frontmatter) return text;
+  const chars = text.split('');
+  for (let index = frontmatter.from; index < frontmatter.to; index++) {
+    if (chars[index] !== '\n' && chars[index] !== '\r') chars[index] = ' ';
+  }
+  return chars.join('');
+}
+
 function makeSearchText(text: string, ignored: readonly Range[], links: readonly WikiReference[]): string {
-  const chars = [...text];
+  const chars = text.split('');
   for (const range of [...ignored, ...links.map(link => ({ from: link.from, to: link.to }))]) {
     for (let index = range.from; index < range.to; index++) {
       if (chars[index] !== '\n' && chars[index] !== '\r') chars[index] = ' ';
@@ -209,17 +314,24 @@ export function parseKnowledge(input: {
   text: string;
 }): KnowledgeRecord {
   const frontmatter = frontmatterRange(input.text);
+  const properties = frontmatterProperties(input.text, frontmatter);
   const ignored = ignoredRanges(input.text, frontmatter);
   const links = parseWikiReferences(input.text, ignored);
   const structure = parseHeadingsAndBlocks(input.text, ignored);
+  const tags = [...new Set([...frontmatterTags(properties), ...inlineTags(input.text, ignored)])];
   return {
     entryId: input.entryId,
     vaultId: input.vaultId,
     localVersion: input.localVersion,
-    aliases: aliasesFromFrontmatter(input.text, frontmatter),
+    indexVersion: KNOWLEDGE_INDEX_VERSION,
+    aliases: aliasesFromProperties(properties),
+    tags,
+    properties,
+    tasks: parseTasks(input.text, ignored),
     headings: structure.headings,
     blocks: structure.blocks,
     links,
     searchText: makeSearchText(input.text, ignored, links),
+    bodyText: makeBodyText(input.text, frontmatter),
   };
 }

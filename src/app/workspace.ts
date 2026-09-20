@@ -15,15 +15,18 @@ import { extractFragment } from '../knowledge/fragments.js';
 import { updateInboundLinksAfterMove } from '../knowledge/link-updater.js';
 import { canonicalWikiNote } from '../knowledge/resolver.js';
 import type { WikiResolution } from '../knowledge/types.js';
+import { SearchIndexClient } from '../search/client.js';
+import type { QuickSwitchResult, SearchFacets, SearchInput, SearchResult, SearchStats } from '../search/types.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 3 browser workspace: linked Markdown knowledge on the accepted Phase 1/2 foundation. */
+/** Phase 4 browser workspace: worker-backed search/indexing on the accepted Phase 1-3 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
   const knowledge = new KnowledgeIndexService(db);
+  const searchIndex = new SearchIndexClient();
   const abort = new AbortController();
   const registry = new CommandRegistry();
   let vaults: Vault[] = [];
@@ -41,6 +44,19 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let dirtyIds = new Set<EntryId>();
   let preferencesVaultId: VaultId | undefined;
   let knowledgeVaultId: VaultId | undefined;
+  let searchVaultId: VaultId | undefined;
+  let searchReady = false;
+  let searchBuildGeneration = 0;
+  let searchRequestGeneration = 0;
+  let searchIndexedIds = new Set<EntryId>();
+  let searchMetadata = new Map<EntryId, string>();
+  let recentEntries: EntryId[] = [];
+  let sidebarPanel: 'files' | 'search' | 'tags' = 'files';
+  let searchResults: SearchResult[] = [];
+  let searchFacets: SearchFacets = { tags: [], properties: [] };
+  let searchStats: SearchStats = { documents: 0, tokens: 0, tags: 0, properties: 0 };
+  let quickResults: QuickSwitchResult[] = [];
+  let quickSelection = 0;
   let draggedEntryId: EntryId | undefined;
   let editorMode: EditorMode = 'live';
   let lineNumbers = false;
@@ -48,6 +64,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let renderGeneration = 0;
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
+  let searchBuildChain: Promise<void> = Promise.resolve();
+  let searchBuildTarget: VaultId | undefined;
 
   // Static application markup only. All note titles and content use textContent/value below.
   root.innerHTML = `
@@ -56,20 +74,36 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button class="mobile-toggle" data-action="files" aria-label="Toggle files" aria-expanded="false">\u2630</button>
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
-        <span class="stage">Phase 3 \u00b7 Linked knowledge</span>
+        <span class="stage">Phase 4 \u00b7 Search & index</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
         <div class="vault-picker"><select id="vault-vault" aria-label="Active vault"></select><button data-action="vault-rename" aria-label="Rename active vault" title="Rename vault">\u270e</button></div>
         <button data-command="vault.create" class="quiet">+ New vault</button>
-        <div class="section-heading"><span>EXPLORER</span><button data-action="reload" aria-label="Reload file list">\u21bb</button></div>
-        <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button></div>
-        <input class="file-filter" type="search" placeholder="Filter files\u2026" aria-label="Filter files" />
-        <div class="explorer-options"><select class="file-sort" aria-label="Sort files"><option value="name-asc">Name A\u2013Z</option><option value="name-desc">Name Z\u2013A</option><option value="modified-desc">Modified newest</option><option value="modified-asc">Modified oldest</option><option value="created-desc">Created newest</option><option value="created-asc">Created oldest</option></select><label><input class="folders-first" type="checkbox" checked /> Folders first</label></div>
-        <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
-        <button data-action="trash-view" class="quiet trash-button">Open Trash</button>
-        <button data-action="recovery" class="quiet" disabled>Recovery drafts</button>
-        <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
+        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button></div>
+        <section class="sidebar-panel files-panel" data-panel="files">
+          <div class="section-heading"><span>EXPLORER</span><button data-action="reload" aria-label="Reload file list">\u21bb</button></div>
+          <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button></div>
+          <input class="file-filter" type="search" placeholder="Filter files\u2026" aria-label="Filter files" />
+          <div class="explorer-options"><select class="file-sort" aria-label="Sort files"><option value="name-asc">Name A\u2013Z</option><option value="name-desc">Name Z\u2013A</option><option value="modified-desc">Modified newest</option><option value="modified-asc">Modified oldest</option><option value="created-desc">Created newest</option><option value="created-asc">Created oldest</option></select><label><input class="folders-first" type="checkbox" checked /> Folders first</label></div>
+          <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
+          <button data-action="trash-view" class="quiet trash-button">Open Trash</button>
+          <button data-action="recovery" class="quiet" disabled>Recovery drafts</button>
+          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
+        </section>
+        <section class="sidebar-panel search-panel" data-panel="search" hidden>
+          <div class="section-heading"><span>VAULT SEARCH</span><button data-action="rebuild-search" aria-label="Rebuild search index">\u21bb</button></div>
+          <input class="global-search" type="search" placeholder="Search notes\u2026" aria-label="Search vault" autocomplete="off" />
+          <p class="search-help">Try words, "exact phrase", tag:#math, path:University, file:Analysis, property:status=active, task:open, AND/OR/NOT.</p>
+          <p class="search-status" role="status">Search index is preparing\u2026</p>
+          <div class="search-results" role="list" aria-label="Search results"></div>
+        </section>
+        <section class="sidebar-panel tags-panel" data-panel="tags" hidden>
+          <div class="section-heading"><span>TAGS & PROPERTIES</span></div>
+          <input class="tag-filter" type="search" placeholder="Filter tags/properties\u2026" aria-label="Filter tags and properties" />
+          <div class="facet-heading">TAGS</div><div class="tag-list"></div>
+          <div class="facet-heading">PROPERTIES</div><div class="property-list"></div>
+        </section>
         <div class="sidebar-bottom"><span class="local-dot"></span><span>Stored in this browser</span></div>
       </aside>
       <main class="main" aria-label="Markdown workspace">
@@ -83,8 +117,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 3</p><h1>Notes that know how they connect.</h1>
-          <p>Create Wiki links with [[, follow them, inspect backlinks and outline structure, and embed notes while ordinary Markdown remains canonical.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 4</p><h1>Find anything in your vault.</h1>
+          <p>Search note text, titles, paths, aliases, tags, properties and tasks through a background index while Markdown stays canonical.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -104,12 +138,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 2</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 2</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
       <input id="vault-dialog-input" required autocomplete="off" /><select class="dialog-select" hidden aria-label="Destination folder"></select>
       <p class="dialog-help fineprint"></p><div class="dialog-buttons"><button value="cancel" formnovalidate>Cancel</button><button value="confirm" class="primary">Confirm</button></div></form>
+    </dialog>
+    <dialog class="quick-switcher-dialog" aria-labelledby="quick-switcher-title">
+      <div class="quick-switcher-shell"><h2 id="quick-switcher-title">Quick Switcher</h2><input class="quick-switcher-input" type="search" placeholder="Open a note\u2026" aria-label="Quick switcher" autocomplete="off" /><div class="quick-switcher-results" role="listbox" aria-label="Matching notes"></div><p class="quick-switcher-help">\u2191\u2193 navigate \u00b7 Enter open \u00b7 Esc close</p></div>
     </dialog>
     <dialog class="recovery-dialog" aria-labelledby="recovery-title">
       <form method="dialog"><h2 id="recovery-title">Recovery drafts</h2>
@@ -142,6 +179,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const foldersFirstToggle = element<HTMLInputElement>('.folders-first');
   const autoUpdateLinksToggle = element<HTMLInputElement>('.auto-update-links');
   const fileTree = element<HTMLElement>('.file-tree');
+  const globalSearch = element<HTMLInputElement>('.global-search');
+  const searchStatus = element<HTMLElement>('.search-status');
+  const searchResultsElement = element<HTMLElement>('.search-results');
+  const tagFilter = element<HTMLInputElement>('.tag-filter');
+  const tagList = element<HTMLElement>('.tag-list');
+  const propertyList = element<HTMLElement>('.property-list');
+  const searchIndexStatus = element<HTMLElement>('.search-index-status');
+  const quickDialog = element<HTMLDialogElement>('.quick-switcher-dialog');
+  const quickInput = element<HTMLInputElement>('.quick-switcher-input');
+  const quickResultsElement = element<HTMLElement>('.quick-switcher-results');
   const pathOf = (id: EntryId): string => new VaultTree(entries).path(id);
   const editor = new MarkdownEditor(editorHost, {
     text: '', mode: 'live', readOnly: true, lineNumbers: false,
@@ -219,6 +266,352 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!selected || selected.deletedAt !== null) return null;
     return selected.kind === 'directory' ? selected.id : selected.parentId;
   }
+  function activeMarkdownEntries(): Entry[] {
+    return entries.filter(entry => entry.kind === 'markdown' && entry.deletedAt === null);
+  }
+
+  function metadataKey(entry: Entry, path: string): string {
+    return [entry.name, path, entry.createdAt, entry.updatedAt].join('\u0000');
+  }
+
+  function searchInput(entry: Entry, text: string, tree = new VaultTree(entries)): SearchInput {
+    return {
+      entryId: entry.id,
+      vaultId: entry.vaultId,
+      localVersion: entry.localVersion,
+      title: entry.name,
+      path: tree.path(entry.id),
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      text,
+    };
+  }
+
+  function switchSidebarPanel(panel: 'files' | 'search' | 'tags'): void {
+    sidebarPanel = panel;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-sidebar-panel]')) {
+      const active = button.dataset.sidebarPanel === panel;
+      button.setAttribute('aria-selected', String(active));
+      button.classList.toggle('active', active);
+    }
+    for (const section of root.querySelectorAll<HTMLElement>('.sidebar-panel')) {
+      section.hidden = section.dataset.panel !== panel;
+    }
+    if (panel === 'search') globalSearch.focus();
+    if (panel === 'tags') tagFilter.focus();
+  }
+
+  function renderSearchResults(): void {
+    searchResultsElement.replaceChildren();
+    if (!globalSearch.value.trim()) {
+      const empty = document.createElement('p');
+      empty.className = 'search-empty';
+      empty.textContent = searchReady ? 'Type a query to search this vault.' : 'The background index is still preparing.';
+      searchResultsElement.append(empty);
+      return;
+    }
+    if (!searchResults.length) {
+      const empty = document.createElement('p');
+      empty.className = 'search-empty';
+      empty.textContent = 'No matching notes.';
+      searchResultsElement.append(empty);
+      return;
+    }
+    for (const result of searchResults) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'search-result';
+      button.dataset.searchEntry = result.entryId;
+      const location = result.matches.find(match => (match.field === 'body' || match.field === 'heading' || match.field === 'task') && match.from !== null);
+      if (location?.from !== null && location?.from !== undefined) button.dataset.searchOffset = String(location.from);
+      const title = document.createElement('span');
+      title.className = 'search-result-title';
+      title.textContent = result.title;
+      const path = document.createElement('span');
+      path.className = 'search-result-path';
+      path.textContent = result.path;
+      const snippet = document.createElement('span');
+      snippet.className = 'search-result-snippet';
+      snippet.textContent = result.snippet || result.matches.slice(0, 3).map(match => match.text).join(' · ');
+      const count = document.createElement('span');
+      count.className = 'search-result-count';
+      count.textContent = result.matchCount > 1 ? String(result.matchCount) : '';
+      button.append(title, count, path, snippet);
+      searchResultsElement.append(button);
+    }
+  }
+
+  function renderFacets(): void {
+    const filter = tagFilter.value.trim().normalize('NFC').toLocaleLowerCase();
+    tagList.replaceChildren();
+    propertyList.replaceChildren();
+
+    for (const facet of searchFacets.tags.filter(item => !filter || item.tag.toLocaleLowerCase().includes(filter)).slice(0, 300)) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'facet-item';
+      button.dataset.searchQuery = 'tag:#' + facet.tag;
+      const label = document.createElement('span');
+      label.textContent = '#' + facet.tag;
+      const count = document.createElement('span');
+      count.textContent = facet.count.toLocaleString();
+      button.append(label, count);
+      tagList.append(button);
+    }
+    if (!tagList.childElementCount) {
+      const empty = document.createElement('p');
+      empty.className = 'search-empty';
+      empty.textContent = searchReady ? 'No tags.' : 'Indexing tags…';
+      tagList.append(empty);
+    }
+
+    for (const facet of searchFacets.properties.filter(item => !filter || item.name.toLocaleLowerCase().includes(filter)).slice(0, 300)) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'facet-item';
+      button.dataset.searchQuery = 'property:' + facet.name;
+      const label = document.createElement('span');
+      label.textContent = facet.name;
+      const count = document.createElement('span');
+      count.textContent = facet.count.toLocaleString();
+      button.append(label, count);
+      propertyList.append(button);
+    }
+    if (!propertyList.childElementCount) {
+      const empty = document.createElement('p');
+      empty.className = 'search-empty';
+      empty.textContent = searchReady ? 'No indexed properties.' : 'Indexing properties…';
+      propertyList.append(empty);
+    }
+  }
+
+  async function runGlobalSearch(): Promise<void> {
+    const generation = ++searchRequestGeneration;
+    const query = globalSearch.value.trim();
+    if (!query) {
+      searchResults = [];
+      searchStatus.textContent = searchReady ? searchStats.documents.toLocaleString() + ' notes indexed.' : 'Search index is preparing…';
+      renderSearchResults();
+      return;
+    }
+    searchStatus.textContent = searchReady ? 'Searching…' : 'Indexing in the background. Results may be incomplete…';
+    try {
+      const results = await searchIndex.search(query, 120);
+      if (generation !== searchRequestGeneration) return;
+      searchResults = results;
+      searchStatus.textContent = results.length.toLocaleString() + ' result' + (results.length === 1 ? '' : 's') + '.';
+      renderSearchResults();
+    } catch (error) {
+      if (generation !== searchRequestGeneration) return;
+      searchResults = [];
+      searchStatus.textContent = error instanceof Error ? error.message : 'Search failed.';
+      renderSearchResults();
+    }
+  }
+
+  async function refreshFacets(): Promise<void> {
+    if (!searchReady) return;
+    [searchFacets, searchStats] = await Promise.all([searchIndex.facets(), searchIndex.stats()]);
+    searchIndexStatus.textContent = searchStats.documents.toLocaleString() + ' indexed';
+    renderFacets();
+  }
+
+  async function buildSearchInputs(): Promise<SearchInput[]> {
+    if (!vault) return [];
+    const snapshot = await repository.snapshot(vault.id);
+    const contentById = new Map(snapshot.contents.map(content => [content.entryId, content]));
+    const tree = new VaultTree(entries);
+    const inputs: SearchInput[] = [];
+    for (const entry of activeMarkdownEntries()) {
+      const content = contentById.get(entry.id);
+      if (!content) continue;
+      inputs.push(searchInput(entry, content.text, tree));
+    }
+    return inputs;
+  }
+
+  function queueSearchRebuild(force = false): void {
+    if (!vault) return;
+    if (!force && (searchVaultId === vault.id || searchBuildTarget === vault.id)) return;
+    const targetVault = vault.id;
+    const generation = ++searchBuildGeneration;
+    searchBuildTarget = targetVault;
+    searchReady = false;
+    searchIndexStatus.textContent = 'Indexing…';
+    searchStatus.textContent = 'Search index is preparing…';
+    renderFacets();
+
+    searchBuildChain = searchBuildChain.then(async () => {
+      if (generation !== searchBuildGeneration || vault?.id !== targetVault) return;
+      const inputs = await buildSearchInputs();
+      if (generation !== searchBuildGeneration || vault?.id !== targetVault) return;
+      const stats = await searchIndex.rebuild(inputs, (indexed, total) => {
+        if (generation !== searchBuildGeneration || vault?.id !== targetVault) return;
+        searchIndexStatus.textContent = indexed.toLocaleString() + ' / ' + total.toLocaleString() + ' indexed';
+        searchStatus.textContent = 'Indexing ' + indexed.toLocaleString() + ' of ' + total.toLocaleString() + ' notes…';
+      });
+      if (generation !== searchBuildGeneration || vault?.id !== targetVault) return;
+      searchVaultId = targetVault;
+      searchBuildTarget = undefined;
+      searchReady = true;
+      searchStats = stats;
+      searchIndexedIds = new Set(inputs.map(input => input.entryId));
+      searchMetadata = new Map(inputs.map(input => {
+        const entry = entries.find(item => item.id === input.entryId)!;
+        return [input.entryId, metadataKey(entry, input.path)];
+      }));
+      await refreshFacets();
+      searchStatus.textContent = stats.documents.toLocaleString() + ' notes indexed.';
+      if (globalSearch.value.trim()) await runGlobalSearch();
+      else renderSearchResults();
+    }).catch(error => {
+      if (generation === searchBuildGeneration) {
+        searchReady = false;
+        searchBuildTarget = undefined;
+        searchIndexStatus.textContent = 'Index error';
+        searchStatus.textContent = error instanceof Error ? error.message : 'Search index failed.';
+      }
+    });
+  }
+
+  async function reconcileSearchIndex(): Promise<void> {
+    if (!vault || !searchReady || searchVaultId !== vault.id) return;
+    const active = activeMarkdownEntries();
+    const activeIds = new Set(active.map(entry => entry.id));
+    const removed = [...searchIndexedIds].filter(entryId => !activeIds.has(entryId));
+    if (removed.length) {
+      await searchIndex.remove(removed);
+      for (const entryId of removed) {
+        searchIndexedIds.delete(entryId);
+        searchMetadata.delete(entryId);
+      }
+    }
+
+    const tree = new VaultTree(entries);
+    const updates = [];
+    const newEntries: Entry[] = [];
+    for (const entry of active) {
+      const path = tree.path(entry.id);
+      const key = metadataKey(entry, path);
+      if (!searchIndexedIds.has(entry.id)) newEntries.push(entry);
+      else if (searchMetadata.get(entry.id) !== key) {
+        updates.push({
+          entryId: entry.id,
+          title: entry.name,
+          path,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+          localVersion: entry.localVersion,
+        });
+        searchMetadata.set(entry.id, key);
+      }
+    }
+    if (updates.length) await searchIndex.updateMetadata(updates);
+    for (const entry of newEntries) {
+      const file = await repository.read(entry.id);
+      if (!file.content) continue;
+      const input = searchInput(entry, file.content.text, tree);
+      await searchIndex.upsert(input);
+      searchIndexedIds.add(entry.id);
+      searchMetadata.set(entry.id, metadataKey(entry, input.path));
+    }
+    await refreshFacets();
+  }
+
+  async function refreshSearchEntry(entryId: EntryId): Promise<void> {
+    if (!vault || !searchReady || searchVaultId !== vault.id) return;
+    const entry = entries.find(item => item.id === entryId && item.kind === 'markdown' && item.deletedAt === null);
+    if (!entry) {
+      await searchIndex.remove([entryId]);
+      searchIndexedIds.delete(entryId);
+      searchMetadata.delete(entryId);
+      return;
+    }
+    const file = await repository.read(entryId);
+    if (!file.content) return;
+    const tree = new VaultTree(entries);
+    const input = searchInput(file.entry, file.content.text, tree);
+    await searchIndex.upsert(input);
+    searchIndexedIds.add(entryId);
+    searchMetadata.set(entryId, metadataKey(file.entry, input.path));
+    await refreshFacets();
+  }
+
+  function localQuickResults(query: string): QuickSwitchResult[] {
+    const q = query.normalize('NFC').toLocaleLowerCase();
+    const recentRank = new Map(recentEntries.map((entryId, index) => [entryId, 30 - index]));
+    return activeMarkdownEntries()
+      .map(entry => {
+        const title = entry.name.replace(/\.md$/iu, '');
+        const path = pathOf(entry.id);
+        const titleLower = title.toLocaleLowerCase();
+        const pathLower = path.toLocaleLowerCase();
+        let score = !q ? 1 : titleLower === q ? 100 : titleLower.startsWith(q) ? 80 : titleLower.includes(q) ? 60 : pathLower.includes(q) ? 40 : -1;
+        score += recentRank.get(entry.id) ?? 0;
+        return { entryId: entry.id, title, path, alias: null, score };
+      })
+      .filter(result => result.score >= 0)
+      .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+      .slice(0, 50);
+  }
+
+  function renderQuickResults(): void {
+    quickResultsElement.replaceChildren();
+    quickSelection = Math.max(0, Math.min(quickSelection, Math.max(0, quickResults.length - 1)));
+    for (let index = 0; index < quickResults.length; index++) {
+      const result = quickResults[index]!;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'quick-result' + (index === quickSelection ? ' selected' : '');
+      button.dataset.quickEntry = result.entryId;
+      button.setAttribute('role', 'option');
+      button.setAttribute('aria-selected', String(index === quickSelection));
+      const title = document.createElement('span');
+      title.className = 'quick-result-title';
+      title.textContent = result.alias ? result.alias + ' → ' + result.title : result.title;
+      const path = document.createElement('span');
+      path.className = 'quick-result-path';
+      path.textContent = result.path;
+      button.append(title, path);
+      quickResultsElement.append(button);
+    }
+    if (!quickResults.length) {
+      const empty = document.createElement('p');
+      empty.className = 'search-empty';
+      empty.textContent = 'No matching notes.';
+      quickResultsElement.append(empty);
+    }
+  }
+
+  async function runQuickSwitcher(): Promise<void> {
+    const query = quickInput.value;
+    quickResults = searchReady ? await searchIndex.quickSwitch(query, recentEntries, 50) : localQuickResults(query);
+    quickSelection = 0;
+    renderQuickResults();
+  }
+
+  async function openQuickSwitcher(): Promise<void> {
+    if (!vault) return;
+    quickInput.value = '';
+    quickDialog.showModal();
+    await runQuickSwitcher();
+    quickInput.focus();
+  }
+
+  async function rememberRecent(entryId: EntryId): Promise<void> {
+    if (!vault) return;
+    recentEntries = [entryId, ...recentEntries.filter(id => id !== entryId)].slice(0, 40);
+    await setting('recentEntries:' + vault.id, recentEntries);
+  }
+
+  async function openSearchResult(entryId: EntryId, offset: number | null): Promise<void> {
+    await openEntry(entryId);
+    if (offset !== null) {
+      if (editorMode === 'reading') await setEditorMode('live');
+      editor.revealOffset(offset);
+    }
+  }
+
   async function loadTreePreferences(): Promise<void> {
     if (!vault || preferencesVaultId === vault.id) return;
     const rawSort = await setting(`treeSort:${vault.id}`);
@@ -226,11 +619,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const rawCollapsed = await setting(`collapsedFolders:${vault.id}`);
     const rawAutoUpdateLinks = await setting(`autoUpdateLinks:${vault.id}`);
     const rawFilter = await setting(`treeFilter:${vault.id}`);
+    const rawRecent = await setting(`recentEntries:${vault.id}`);
     sortMode = isFileSort(rawSort) ? rawSort : 'name-asc';
     foldersFirst = typeof rawFoldersFirst === 'boolean' ? rawFoldersFirst : true;
     autoUpdateLinks = typeof rawAutoUpdateLinks === 'boolean' ? rawAutoUpdateLinks : true;
     collapsed = new Set(Array.isArray(rawCollapsed) ? rawCollapsed.filter((id): id is EntryId => typeof id === 'string') : []);
     filterText = typeof rawFilter === 'string' ? rawFilter : '';
+    recentEntries = Array.isArray(rawRecent) ? rawRecent.filter((id): id is EntryId => typeof id === 'string').slice(0, 40) : [];
     preferencesVaultId = vault.id;
     fileSort.value = sortMode;
     foldersFirstToggle.checked = foldersFirst;
@@ -253,16 +648,29 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         knowledgeVaultId = vault.id;
       }
       await knowledge.ensureVault(entries, repository);
+      if (searchVaultId === vault.id && searchReady) await reconcileSearchIndex();
+      else queueSearchRebuild();
     } else {
       entries = [];
       dirtyIds.clear();
       preferencesVaultId = undefined;
       knowledgeVaultId = undefined;
+      searchReady = false;
+      searchVaultId = undefined;
+      searchBuildTarget = undefined;
+      searchIndexedIds.clear();
+      searchMetadata.clear();
+      searchResults = [];
+      searchFacets = { tags: [], properties: [] };
+      searchStats = { documents: 0, tokens: 0, tags: 0, properties: 0 };
+      recentEntries = [];
+      searchIndexStatus.textContent = 'Index idle';
+      searchStatus.textContent = 'No vault open.';
       fileFilter.value = '';
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); updateVaultCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); updateVaultCounts();
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
@@ -542,6 +950,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const file = await repository.read(entryId);
     if (file.entry.kind === 'markdown' && file.content && file.entry.deletedAt === null) {
       await knowledge.upsert(file.entry, file.content.text);
+      await refreshSearchEntry(entryId);
+    } else if (searchReady) {
+      await refreshSearchEntry(entryId);
     }
     renderKnowledgePanels();
   }
@@ -749,6 +1160,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     renderTree(); renderInfo(); renderKnowledgePanels(); updateCounts();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
+    if (selected.kind === 'markdown' && selected.deletedAt === null) await rememberRecent(selected.id);
     workspace.dataset.sidebarOpen = 'false';
     workspace.dataset.knowledgeOpen = 'false';
     element<HTMLElement>('[data-action="files"]').setAttribute('aria-expanded', 'false');
@@ -799,6 +1211,36 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   } });
 
   root.addEventListener('click', event => {
+    const panelButton = (event.target as Element).closest<HTMLButtonElement>('[data-sidebar-panel]');
+    if (panelButton?.dataset.sidebarPanel) {
+      const panel = panelButton.dataset.sidebarPanel;
+      if (panel === 'files' || panel === 'search' || panel === 'tags') switchSidebarPanel(panel);
+      return;
+    }
+
+    const searchResult = (event.target as Element).closest<HTMLButtonElement>('[data-search-entry]');
+    if (searchResult?.dataset.searchEntry) {
+      const offset = searchResult.dataset.searchOffset === undefined ? null : Number(searchResult.dataset.searchOffset);
+      perform(() => openSearchResult(searchResult.dataset.searchEntry as EntryId, Number.isFinite(offset) ? offset : null));
+      return;
+    }
+
+    const facetButton = (event.target as Element).closest<HTMLButtonElement>('[data-search-query]');
+    if (facetButton?.dataset.searchQuery) {
+      globalSearch.value = facetButton.dataset.searchQuery;
+      switchSidebarPanel('search');
+      void runGlobalSearch();
+      return;
+    }
+
+    const quickButton = (event.target as Element).closest<HTMLButtonElement>('[data-quick-entry]');
+    if (quickButton?.dataset.quickEntry) {
+      const entryId = quickButton.dataset.quickEntry as EntryId;
+      quickDialog.close();
+      perform(() => openEntry(entryId));
+      return;
+    }
+
     const targetElement = (event.target as Element).closest<HTMLElement>('[data-vault-target]');
     if (targetElement && readingView.contains(targetElement)) {
       event.preventDefault();
@@ -870,6 +1312,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
       if (action === 'retry-save') { await saver?.retry(); return; }
       if (action === 'reload') { await refresh(); return; }
+      if (action === 'rebuild-search') { queueSearchRebuild(true); return; }
       if (action === 'trash-view') { await clearSelection(); showingTrash = !showingTrash; await refresh(); return; }
       if (action === 'persist') {
         const persistent = navigator.storage?.persist ? await navigator.storage.persist() : false;
@@ -906,6 +1349,26 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (action === 'delete') { await repository.trash(selected.id, selected.localVersion); if (saver) await saver.close(); saver = undefined; await clearSelection(); await refresh(); }
       if (action === 'restore') { await repository.restore(selected.id); const id = selected.id; showingTrash = false; await refresh(); await openEntry(id); }
     });
+  }, { signal: abort.signal });
+  globalSearch.addEventListener('input', () => { void runGlobalSearch(); }, { signal: abort.signal });
+  tagFilter.addEventListener('input', renderFacets, { signal: abort.signal });
+  quickInput.addEventListener('input', () => { void runQuickSwitcher().catch(showError); }, { signal: abort.signal });
+  quickInput.addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      quickSelection = Math.min(quickResults.length - 1, quickSelection + 1);
+      renderQuickResults();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      quickSelection = Math.max(0, quickSelection - 1);
+      renderQuickResults();
+    } else if (event.key === 'Enter') {
+      const result = quickResults[quickSelection];
+      if (!result) return;
+      event.preventDefault();
+      quickDialog.close();
+      perform(() => openEntry(result.entryId));
+    }
   }, { signal: abort.signal });
   recoverySelect.addEventListener('change', showRecoverySelection, { signal: abort.signal });
   fileFilter.addEventListener('input', () => {
@@ -951,7 +1414,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   window.addEventListener('beforeunload', event => { if (saver?.hasUnsavedChanges) { event.preventDefault(); event.returnValue = ''; } }, { signal: abort.signal });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void saver?.flush().catch(showError); }, { signal: abort.signal });
   window.addEventListener('keydown', event => {
+    if (quickDialog.open) return;
     if (dialog.open || recoveryDialog.open) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o' && !event.shiftKey) {
+      event.preventDefault();
+      void openQuickSwitcher().catch(showError);
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      workspace.dataset.sidebarOpen = 'true';
+      element<HTMLElement>('[data-action="files"]').setAttribute('aria-expanded', 'true');
+      switchSidebarPanel('search');
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); perform(async () => registry.execute('file.create')); return; }
     if (event.key === 'F2' && selected && selected.deletedAt === null) { event.preventDefault(); element<HTMLButtonElement>('[data-action="rename"]').click(); return; }
     if ((event.key === 'Delete' || event.key === 'Backspace') && selected && selected.deletedAt === null && !editor.hasFocus() && document.activeElement !== fileFilter) {
@@ -976,6 +1452,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     abort.abort();
     if (dialog.open) dialog.close('cancel');
     if (recoveryDialog.open) recoveryDialog.close();
+    if (quickDialog.open) quickDialog.close();
+    searchIndex.close();
     editor.destroy();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
   };

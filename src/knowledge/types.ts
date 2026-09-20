@@ -31,16 +31,32 @@ export interface KnowledgeBlock {
   to: number;
 }
 
+export type KnowledgeScalar = string | number | boolean | null;
+export type KnowledgePropertyValue = KnowledgeScalar | KnowledgeScalar[];
+
+export interface KnowledgeTask {
+  text: string;
+  completed: boolean;
+  from: number;
+  to: number;
+}
+
 export interface KnowledgeRecord {
   entryId: EntryId;
   vaultId: VaultId;
   localVersion: number;
+  indexVersion: number;
   aliases: string[];
+  tags: string[];
+  properties: Record<string, KnowledgePropertyValue>;
+  tasks: KnowledgeTask[];
   headings: KnowledgeHeading[];
   blocks: KnowledgeBlock[];
   links: WikiReference[];
   /** Same length as source; ignored/link ranges are spaces so offsets stay source-stable. */
   searchText: string;
+  /** Same length as source; frontmatter is blanked but body/code/link text remains searchable. */
+  bodyText: string;
 }
 
 export interface WikiSuggestion {
