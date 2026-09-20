@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  test-build:
+  test-build-browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,3 +23,7 @@ jobs:
         run: npm test
       - name: Production build
         run: npm run build
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Chromium desktop/mobile acceptance
+        run: npm run test:e2e

@@ -38,19 +38,19 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   root.innerHTML = `
     <div class="workspace" data-sidebar-open="false">
       <header class="topbar">
-        <button class="mobile-toggle" data-action="files" aria-label="Toggle files" aria-expanded="false">â˜°</button>
+        <button class="mobile-toggle" data-action="files" aria-label="Toggle files" aria-expanded="false">\u2630</button>
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
-        <span class="stage">Phase 1 Â· local vault</span>
+        <span class="stage">Phase 1 \u00b7 local vault</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
-        <div class="vault-picker"><select id="vault-vault" aria-label="Active vault"></select><button data-action="vault-rename" aria-label="Rename active vault" title="Rename vault">âœŽ</button></div>
+        <div class="vault-picker"><select id="vault-vault" aria-label="Active vault"></select><button data-action="vault-rename" aria-label="Rename active vault" title="Rename vault">\u270e</button></div>
         <button data-command="vault.create" class="quiet">+ New vault</button>
-        <div class="section-heading"><span>EXPLORER</span><button data-action="reload" aria-label="Reload file list">â†»</button></div>
+        <div class="section-heading"><span>EXPLORER</span><button data-action="reload" aria-label="Reload file list">\u21bb</button></div>
         <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button></div>
-        <input class="file-filter" type="search" placeholder="Filter filesâ€¦" aria-label="Filter files" />
-        <div class="explorer-options"><select class="file-sort" aria-label="Sort files"><option value="name-asc">Name Aâ€“Z</option><option value="name-desc">Name Zâ€“A</option><option value="modified-desc">Modified newest</option><option value="modified-asc">Modified oldest</option><option value="created-desc">Created newest</option><option value="created-asc">Created oldest</option></select><label><input class="folders-first" type="checkbox" checked /> Folders first</label></div>
+        <input class="file-filter" type="search" placeholder="Filter files\u2026" aria-label="Filter files" />
+        <div class="explorer-options"><select class="file-sort" aria-label="Sort files"><option value="name-asc">Name A\u2013Z</option><option value="name-desc">Name Z\u2013A</option><option value="modified-desc">Modified newest</option><option value="modified-asc">Modified oldest</option><option value="created-desc">Created newest</option><option value="created-asc">Created oldest</option></select><label><input class="folders-first" type="checkbox" checked /> Folders first</label></div>
         <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
         <button data-action="trash-view" class="quiet trash-button">Open Trash</button>
         <button data-action="recovery" class="quiet" disabled>Recovery drafts</button>
@@ -67,7 +67,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT Â· PHASE 1</p><h1>Your notes. Ordinary Markdown.</h1>
+          <p class="eyebrow">VAULT \u00b7 PHASE 1</p><h1>Your notes. Ordinary Markdown.</h1>
           <p>Create vaults, organize nested folders, write Markdown, move or duplicate files, and recover deleted notes. Everything in this phase is stored locally in your browser.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud sync and the professional CodeMirror editor begin in later phases. This phase deliberately concentrates on a reliable local file system.</p>
@@ -85,7 +85,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="vault-counts"></span><span>IndexedDB Â· schema 1</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 1</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
@@ -216,7 +216,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
-    element<HTMLElement>('.vault-counts').textContent = vault ? `${active.filter(entry => entry.kind === 'markdown').length} notes Â· ${active.filter(entry => entry.kind === 'directory').length} folders` : '';
+    element<HTMLElement>('.vault-counts').textContent = vault ? `${active.filter(entry => entry.kind === 'markdown').length} notes \u00b7 ${active.filter(entry => entry.kind === 'directory').length} folders` : '';
   }
   function persistCollapsed(): void {
     if (!vault) return;
@@ -247,7 +247,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         toggle.type = 'button';
         toggle.tabIndex = -1;
         if (entry.kind === 'directory' && !showingTrash) {
-          toggle.textContent = item.hasChildren ? (item.collapsed ? 'â–¸' : 'â€¹') : 'Â´';
+          toggle.textContent = item.hasChildren ? (item.collapsed ? '\u25b8' : '\u25be') : '\u00b7';
           toggle.disabled = !item.hasChildren;
           toggle.setAttribute('aria-label', `${item.collapsed ? 'Expand' : 'Collapse'} ${entry.name}`);
           toggle.onclick = event => {
@@ -268,11 +268,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         row.draggable = !showingTrash;
         row.title = item.path;
         row.setAttribute('aria-label', `${entry.kind === 'directory' ? 'Folder' : 'Note'} ${entry.name}`);
-        const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = entry.kind === 'directory' ? 'â€±' : 'Â·';
+        const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = entry.kind === 'directory' ? '\u25b1' : '\u00b7';
         const label = document.createElement('span'); label.className = 'file-name'; label.textContent = showingTrash ? item.path : entry.name;
         row.append(icon, label);
         if (dirtyIds.has(entry.id) && !showingTrash) {
-          const dirty = document.createElement('span'); dirty.className = 'dirty-indicator'; dirty.title = 'Local change pending future cloud sync'; dirty.setAttribute('aria-label', 'Locally modified'); dirty.textContent = 'â€¢'; row.append(dirty);
+          const dirty = document.createElement('span'); dirty.className = 'dirty-indicator'; dirty.title = 'Local change pending future cloud sync'; dirty.setAttribute('aria-label', 'Locally modified'); dirty.textContent = '\u2022'; row.append(dirty);
         }
         row.onclick = () => perform(() => openEntry(entry.id));
         row.addEventListener('dragstart', event => {
@@ -322,14 +322,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     recoverySelect.replaceChildren();
     for (const draft of recoveryDrafts) {
       const source = entries.find(entry => entry.id === draft.entryId);
-      recoverySelect.add(new Option(`${source?.name ?? 'Unavailable source'} Ò- ä{new Date(draft.createdAt).localeString()}`, draft.id));
+      recoverySelect.add(new Option(`${source?.name ?? 'Unavailable source'} \u00b7 ${new Date(draft.createdAt).toLocaleString()}`, draft.id));
     }
     showRecoverySelection(); recoveryDialog.showModal(); recoverySelect.focus();
   }
   function showRecoverySelection(): void {
     const draft = recoveryDrafts.find(item => item.id === recoverySelect.value);
     recoveryText.value = draft?.text ?? '';
-    element<HTMLElement>('.recovery-meta').textContent = draft ? `Base version ${draft.baseVersion} Â· ; ${draft.reason} Â· ; ${draft.text.length.toLocaleString()} characters` : 'There are no preserved drafts in this vault.';
+    element<HTMLElement>('.recovery-meta').textContent = draft ? `Base version ${draft.baseVersion} \u00b7 ${draft.reason} \u00b7 ${draft.text.length.toLocaleString()} characters` : 'There are no preserved drafts in this vault.';
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-recovery-action]')) button.disabled = !draft;
   }
   function renderInfo(): void {
@@ -355,7 +355,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('.folder-message').hidden = selected.kind !== 'directory';
     element<HTMLElement>('.folder-message').textContent = selected.deletedAt ? 'This folder is in Trash. Restore its parent first, then restore the folder.' : 'Folder selected. New files will be created inside this folder.';
     element<HTMLElement>('.breadcrumb').textContent = targetPath;
-    element<HTMLElement>('.save-status').textContent = selected.deletedAt ? 'In Trash Â· read only' : 'Saved locally Â· ; not synced';
+    element<HTMLElement>('.save-status').textContent = selected.deletedAt ? 'In Trash \u00b7 read only' : 'Saved locally \u00b7 not synced';
     for (const action of ['rename', 'move', 'duplicate', 'delete']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = selected.deletedAt !== null;
     element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null;
     element<HTMLButtonElement>('[data-action="export-draft"]').disabled = selected.kind !== 'markdown';
@@ -366,9 +366,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         const opened = selected; const draftId = `editor:${crypto.randomUUID()}`;
         saver = new SaveCoordinator(repository, selected.id, { version: selected.localVersion, text: item.content.text }, (state, updated) => {
           if (disposed || selected?.id !== opened.id) return;
-          element<HTMLElement>('.save-status').textContent = state.kind === 'saving' ? 'Saving locallyâ€¦' : state.kind === 'error'
-            ? state.recovery === 'stored' ? 'Draft preserved Â· canonical save blocked' : state.recovery === 'pending' ? 'Preserving recovery draftâ€¦' : 'Not saved Â· export your draft'
-            : 'Saved locally Â· not synced';
+          element<HTMLElement>('.save-status').textContent = state.kind === 'saving' ? 'Saving locally\u2026' : state.kind === 'error'
+            ? state.recovery === 'stored' ? 'Draft preserved \u00b7 canonical save blocked' : state.recovery === 'pending' ? 'Preserving recovery draft\u2026' : 'Not saved \u00b7 export your draft'
+            : 'Saved locally \u00b7 not synced';
           if (updated) { selected = updated; const at = entries.findIndex(entry => entry.id === updated.id); if (at >= 0) entries[at] = updated; renderInfo(); }
           element<HTMLElement>('[data-action="retry-save"]').hidden = state.kind !== 'error' || !saver?.canRetry;
           if (state.kind === 'error') {
