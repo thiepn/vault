@@ -11,11 +11,9 @@ function wordish(character: string | undefined): boolean {
 }
 
 function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^\x24{}()|[\]\\]/g, '\\function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^\x24{}()|[\]\\]/g, '\\function wordish(character: string | undefined): boolean {
-  return !!character && /[\p{L}\p{N}_]/u.test(character);
-}');
-}');
+  const slash = String.fromCharCode(92);
+  const specials = new Set(['.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', slash]);
+  return [...value].map(character => specials.has(character) ? slash + character : character).join('');
 }
 
 export class KnowledgeIndexService {
