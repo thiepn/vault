@@ -1,0 +1,16 @@
+node_modules/
+dist/
+workbench/
+.env
+.env.*
+!.env.example
+.DS_Store
+__pycache__/
+supabase/.temp/
+supabase/.branches/
+
+# Generated verification/build artifacts
+build/
+workbench/
+evidence/
+fixtures/

@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "noFallthroughCasesInSwitch": true,
+    "declaration": true,
+    "sourceMap": true,
+    "outDir": "build/core",
+    "rootDir": "src"
+  },
+  "include": [
+    "src/domain/**/*.ts",
+    "src/storage/**/*.ts",
+    "src/services/**/*.ts",
+    "src/sync/**/*.ts",
+    "src/commands/**/*.ts",
+    "src/markdown/**/*.ts",
+    "src/adapters/supabase-auth.ts",
+    "src/app/workspace.ts"
+  ]
+}
