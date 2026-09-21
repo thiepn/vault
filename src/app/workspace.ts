@@ -2809,6 +2809,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (quickButton?.dataset.quickEntry) {
       const entryId = quickButton.dataset.quickEntry as EntryId;
       quickDialog.close();
+      if (graphOpen) closeGraph();
       perform(() => openEntry(entryId));
       return;
     }
@@ -3050,6 +3051,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (!result) return;
       event.preventDefault();
       quickDialog.close();
+      if (graphOpen) closeGraph();
       perform(() => openEntry(result.entryId));
     }
   }, { signal: abort.signal });
@@ -3277,6 +3279,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   window.addEventListener('keydown', event => {
     if (quickDialog.open) return;
     if (dialog.open || recoveryDialog.open) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') {
+      event.preventDefault();
+      if (graphOpen) closeGraph();
+      else perform(() => openGraph(event.shiftKey ? 'local' : 'full'));
+      return;
+    }
+    if (graphOpen && event.key === 'Escape') {
+      event.preventDefault();
+      closeGraph();
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o' && !event.shiftKey) {
       event.preventDefault();
       void openQuickSwitcher().catch(showError);
@@ -3295,6 +3308,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); perform(async () => registry.execute('file.create')); return; }
+    if (graphOpen) return;
     if (event.key === 'F2' && selected && selected.deletedAt === null) { event.preventDefault(); element<HTMLButtonElement>('[data-action="rename"]').click(); return; }
     if ((event.key === 'Delete' || event.key === 'Backspace') && selected && selected.deletedAt === null && !editor.hasFocus() && document.activeElement !== fileFilter) {
       event.preventDefault(); element<HTMLButtonElement>('[data-action="delete"]').click();
