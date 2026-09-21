@@ -67,7 +67,7 @@ export function dailyDateForEntry(entry: Entry, dailyFolderId: EntryId | null, d
 
 export function buildCalendarMonth(
   year: number,
-  month: number;
+  month: number,
   entries: readonly Entry[],
   records: readonly KnowledgeRecord[],
   options: CalendarOptions,

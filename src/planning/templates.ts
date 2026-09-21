@@ -91,7 +91,7 @@ export function renderTemplate(source: string, context: TemplateContext): Render
 
 export function safeDailyFilename(date: Date, format = 'YYYY-MM-DD'): string {
   const filename = formatDatePattern(date, format).trim();
-  if (!filename || /[<>:"/\\|?*\u0000-\u001F]/u.test(filename) || filename === '.' || filename === '..') {
+  if (!filename || /[<>:"\/\\|?*\u0000-\u001F]/u.test(filename) || filename === '.' || filename === '..') {
     throw new Error('Daily note format creates an invalid portable filename.');
   }
   return filename;
