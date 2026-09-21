@@ -24,7 +24,7 @@ export interface Entry {
   vaultId: VaultId;
   parentId: EntryId | null;
   name: string;
-  kind: 'directory' | 'markdown';
+  kind: 'directory' | 'markdown' | 'attachment';
   createdAt: string;
   updatedAt: string;
   localVersion: Revision;
@@ -38,6 +38,21 @@ export interface MarkdownContent {
   entryId: EntryId;
   text: string;
   localVersion: Revision;
+}
+
+export interface AttachmentContent {
+  entryId: EntryId;
+  vaultId: VaultId;
+  mimeType: string;
+  size: number;
+  bytes: Uint8Array;
+}
+
+export interface AttachmentSnapshot {
+  entryId: EntryId;
+  mimeType: string;
+  size: number;
+  dataBase64: string;
 }
 
 export interface DirtyEntry {
@@ -70,15 +85,19 @@ export interface RecoveryDraft {
 }
 
 export interface Setting { key: string; value: unknown }
-export interface EntryWithContent { entry: Entry; content: MarkdownContent | null }
+export interface EntryWithContent {
+  entry: Entry;
+  content: MarkdownContent | null;
+  attachment: AttachmentContent | null;
+}
 export interface VaultSnapshot {
   format: 'vault-local-backup';
-  version: 1;
+  version: 2;
   exportedAt: string;
   vault: Vault;
   entries: Entry[];
   contents: MarkdownContent[];
+  attachments: AttachmentSnapshot[];
   recoveryDrafts: RecoveryDraft[];
-  /** Additive recovery format field; older format-1 exports may omit it. */
   revisions?: LocalRevision[];
 }
