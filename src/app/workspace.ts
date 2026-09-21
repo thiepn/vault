@@ -24,11 +24,13 @@ import { buildCalendarMonth, dailyDateForEntry, dailyEntryForDate } from '../pla
 import { dynamicFieldLabel, parseDynamicQuery, runDynamicQuery } from '../queries/dynamic.js';
 import { attachmentMediaKind, attachmentReferenceCounts, attachmentSuggestions, canonicalAttachmentTarget, formatAttachmentSize, resolveAttachmentTarget, type AttachmentMediaKind } from '../media/attachments.js';
 import { updateAttachmentLinksAfterMove } from '../media/link-updater.js';
+import { buildKnowledgeGraph, filterKnowledgeGraph, graphStats, localKnowledgeGraph, type GraphGroupMode, type GraphNode, type KnowledgeGraph } from '../graph/model.js';
+import { GraphCanvasView } from '../graph/canvas-view.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 9 browser workspace: local attachments and media on the accepted Phase 1-8 foundation. */
+/** Phase 10 browser workspace: knowledge graph visualization on the accepted Phase 1-9 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -101,6 +103,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let attachmentPolicy: 'folder' | 'note-folder' = 'folder';
   let attachmentFolderId: EntryId | null = null;
   const attachmentObjectUrls = new Map<EntryId, string>();
+  let graphOpen = false;
+  let graphMode: 'full' | 'local' = 'full';
+  let graphDepth = 2;
+  let graphGroupMode: GraphGroupMode = 'none';
+  let graphGroupProperty = '';
+  let graphSearchText = '';
+  let graphTagText = '';
+  let graphPropertyText = '';
+  let graphOrphanOnly = false;
+  let graphIncludeAttachments = true;
+  let graphModel: KnowledgeGraph = { nodes: [], edges: [], unresolvedReferences: 0, ambiguousReferences: 0 };
+  let graphBaseModel: KnowledgeGraph | null = null;
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
   let searchBuildChain: Promise<void> = Promise.resolve();
@@ -113,8 +127,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button class="mobile-toggle" data-action="files" aria-label="Toggle files" aria-expanded="false">\u2630</button>
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
+        <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 9 \u00b7 Media</span>
+        <span class="stage">Phase 10 \u00b7 Graph</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -195,9 +210,31 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
+        <section class="graph-surface" hidden aria-label="Knowledge graph">
+          <header class="graph-header">
+            <div class="graph-heading"><p class="eyebrow">KNOWLEDGE GRAPH</p><h1>See how the vault connects.</h1><p class="graph-summary" role="status"></p></div>
+            <button type="button" class="graph-close" data-action="graph-close">Back to note</button>
+          </header>
+          <div class="graph-controls">
+            <label>View<select class="graph-mode"><option value="full">Full vault</option><option value="local">Local graph</option></select></label>
+            <label class="graph-depth-setting">Depth<select class="graph-depth"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option><option value="4">4 hops</option></select></label>
+            <label>Group<select class="graph-group"><option value="none">No grouping</option><option value="folder">Folder</option><option value="tag">Primary tag</option><option value="kind">Note / attachment</option><option value="property">Property</option></select></label>
+            <label class="graph-group-property-setting" hidden>Group property<input class="graph-group-property" type="text" placeholder="status" /></label>
+            <label>Find<input class="graph-search" type="search" placeholder="Title, path, tag…" /></label>
+            <label>Tag<input class="graph-tag" type="search" placeholder="#project" /></label>
+            <label>Property<input class="graph-property" type="search" placeholder="status=active" /></label>
+            <label class="graph-check"><input class="graph-attachments" type="checkbox" checked /> Attachments</label>
+            <label class="graph-check"><input class="graph-orphans" type="checkbox" /> Orphans only</label>
+          </div>
+          <div class="graph-toolbar" role="group" aria-label="Graph navigation"><button type="button" data-graph-action="zoom-out" aria-label="Zoom out">−</button><button type="button" data-graph-action="fit">Fit</button><button type="button" data-graph-action="zoom-in" aria-label="Zoom in">+</button><span class="graph-hover">Drag to pan · wheel or buttons to zoom · tap a node to open</span></div>
+          <div class="graph-body">
+            <div class="graph-canvas-wrap"><canvas class="graph-canvas"></canvas></div>
+            <aside class="graph-browser" aria-label="Visible graph nodes"><div class="graph-browser-heading"><strong>Visible nodes</strong><span class="graph-browser-count"></span></div><div class="graph-node-list"></div></aside>
+          </div>
+        </section>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 9</p><h1>Notes and media in one local vault.</h1>
-          <p>Paste, drop and organize images, audio, video and files while keeping readable Markdown references and local binary ownership.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 10</p><h1>Build a connected knowledge vault.</h1>
+          <p>Write in Markdown, attach local media, and use the Graph to explore relationships, clusters and isolated notes.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -212,6 +249,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><section class="properties-panel"><div class="panel-heading"><p class="label">PROPERTIES</p><button type="button" class="property-add" data-property-action="add">+ Add</button></div><p class="properties-status panel-empty"></p><div class="properties-list"></div><button type="button" class="property-source" data-property-action="source">Edit frontmatter in Source</button></section>
         <div class="rule"></div><section class="outline-panel"><div class="panel-heading"><p class="label">OUTLINE</p><span class="outline-count"></span></div><div class="outline-list"></div></section>
         <div class="rule"></div><section class="backlinks-panel"><div class="panel-heading"><p class="label">BACKLINKS</p><span class="backlink-count"></span></div><div class="backlink-list"></div><div class="unlinked-heading">UNLINKED MENTIONS</div><div class="unlinked-list"></div></section>
+        <button type="button" class="local-graph-button" data-action="graph-local">Open local graph</button>
         <label class="knowledge-setting"><input class="auto-update-links" type="checkbox" checked /> Update links on rename/move</label>
         <div class="rule"></div><p class="label">DATA OWNERSHIP</p>
         <button data-command="vault.export" disabled>Markdown ZIP</button>
@@ -279,6 +317,21 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const attachmentTitle = element<HTMLElement>('.attachment-title');
   const attachmentDetail = element<HTMLElement>('.attachment-detail');
   const attachmentFileInput = element<HTMLInputElement>('.attachment-file-input');
+  const graphSurface = element<HTMLElement>('.graph-surface');
+  const graphCanvas = element<HTMLCanvasElement>('.graph-canvas');
+  const graphModeSelect = element<HTMLSelectElement>('.graph-mode');
+  const graphDepthSelect = element<HTMLSelectElement>('.graph-depth');
+  const graphGroupSelect = element<HTMLSelectElement>('.graph-group');
+  const graphGroupPropertyInput = element<HTMLInputElement>('.graph-group-property');
+  const graphSearchInput = element<HTMLInputElement>('.graph-search');
+  const graphTagInput = element<HTMLInputElement>('.graph-tag');
+  const graphPropertyInput = element<HTMLInputElement>('.graph-property');
+  const graphAttachmentsToggle = element<HTMLInputElement>('.graph-attachments');
+  const graphOrphansToggle = element<HTMLInputElement>('.graph-orphans');
+  const graphSummary = element<HTMLElement>('.graph-summary');
+  const graphHover = element<HTMLElement>('.graph-hover');
+  const graphNodeList = element<HTMLElement>('.graph-node-list');
+  const graphBrowserCount = element<HTMLElement>('.graph-browser-count');
   const taskList = element<HTMLElement>('.task-list');
   const taskFilter = element<HTMLInputElement>('.task-filter');
   const taskStatusSelect = element<HTMLSelectElement>('.task-status-filter');
@@ -301,6 +354,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const folderTemplateFolder = element<HTMLSelectElement>('.folder-template-folder');
   const folderTemplateTemplate = element<HTMLSelectElement>('.folder-template-template');
   const pathOf = (id: EntryId): string => new VaultTree(entries).path(id);
+  const graphCanvasView = new GraphCanvasView(graphCanvas, {
+    onOpen(entryId) {
+      perform(async () => {
+        closeGraph();
+        await openEntry(entryId);
+      });
+    },
+    onHover(node) {
+      graphHover.textContent = node
+        ? `${node.label} · ${node.kind} · ${node.degree} connection${node.degree === 1 ? '' : 's'}`
+        : 'Drag to pan · wheel or buttons to zoom · tap a node to open';
+    },
+  });
+
   const editor = new MarkdownEditor(editorHost, {
     text: '', mode: 'live', readOnly: true, lineNumbers: false,
     wiki: {
@@ -392,6 +459,131 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return item?.value;
     });
   }
+  function invalidateGraphModel(): void {
+    graphBaseModel = null;
+  }
+
+  function graphCenterId(): EntryId | null {
+    return selected && selected.deletedAt === null && (selected.kind === 'markdown' || selected.kind === 'attachment')
+      ? selected.id
+      : null;
+  }
+
+  function renderGraph(preserveViewport = false): void {
+    if (!graphOpen) return;
+    const base = graphBaseModel ??= buildKnowledgeGraph(entries, knowledge.records());
+    const centerId = graphCenterId();
+    let scoped = graphMode === 'local'
+      ? centerId ? localKnowledgeGraph(base, centerId, graphDepth) : { ...base, nodes: [], edges: [] }
+      : base;
+
+    scoped = filterKnowledgeGraph(scoped, {
+      kinds: graphIncludeAttachments ? ['note', 'attachment'] : ['note'],
+      tag: graphTagText,
+      property: graphPropertyText,
+      orphanOnly: graphOrphanOnly,
+    });
+    graphModel = scoped;
+
+    const searchMatches = graphSearchText.trim()
+      ? filterKnowledgeGraph(scoped, { search: graphSearchText }).nodes
+      : [];
+    const highlightedIds = new Set(searchMatches.map(node => node.id));
+    const stats = graphStats(scoped);
+    const modeLabel = graphMode === 'local'
+      ? centerId ? `Local · ${graphDepth} hop${graphDepth === 1 ? '' : 's'}` : 'Local · open a note or attachment first'
+      : 'Full vault';
+    const warningParts: string[] = [];
+    if (base.unresolvedReferences) warningParts.push(`${base.unresolvedReferences} unresolved`);
+    if (base.ambiguousReferences) warningParts.push(`${base.ambiguousReferences} ambiguous`);
+    graphSummary.textContent = [
+      modeLabel,
+      `${stats.nodes} node${stats.nodes === 1 ? '' : 's'}`,
+      `${stats.edges} edge${stats.edges === 1 ? '' : 's'}`,
+      `${stats.orphans} orphan${stats.orphans === 1 ? '' : 's'}`,
+      ...warningParts,
+    ].join(' · ');
+
+    graphModeSelect.value = graphMode;
+    graphDepthSelect.value = String(graphDepth);
+    graphGroupSelect.value = graphGroupMode;
+    graphGroupPropertyInput.value = graphGroupProperty;
+    graphSearchInput.value = graphSearchText;
+    graphTagInput.value = graphTagText;
+    graphPropertyInput.value = graphPropertyText;
+    graphAttachmentsToggle.checked = graphIncludeAttachments;
+    graphOrphansToggle.checked = graphOrphanOnly;
+    element<HTMLElement>('.graph-depth-setting').hidden = graphMode !== 'local';
+    element<HTMLElement>('.graph-group-property-setting').hidden = graphGroupMode !== 'property';
+
+    graphCanvasView.setGraph(scoped, {
+      groupMode: graphGroupMode,
+      groupProperty: graphGroupProperty,
+      highlightedIds,
+      centerId,
+      preserveViewport,
+    });
+
+    graphNodeList.replaceChildren();
+    const sorted = (graphSearchText.trim() ? searchMatches : scoped.nodes)
+      .slice()
+      .sort((a, b) => {
+        const aHighlight = highlightedIds.has(a.id) ? 1 : 0;
+        const bHighlight = highlightedIds.has(b.id) ? 1 : 0;
+        return bHighlight - aHighlight || b.degree - a.degree || a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' });
+      });
+    const visible = sorted.slice(0, 200);
+    graphBrowserCount.textContent = graphSearchText.trim()
+      ? `${sorted.length} match${sorted.length === 1 ? '' : 'es'} · ${stats.nodes} visible`
+      : stats.nodes > 200 ? `200 of ${stats.nodes}` : String(stats.nodes);
+
+    for (const node of visible) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'graph-node-button';
+      button.dataset.graphEntry = node.id;
+      if (highlightedIds.has(node.id)) button.classList.add('match');
+      if (node.orphan) button.classList.add('orphan');
+      const title = document.createElement('span');
+      title.className = 'graph-node-title';
+      title.textContent = node.label;
+      const meta = document.createElement('span');
+      meta.className = 'graph-node-meta';
+      meta.textContent = `${node.kind} · ${node.degree} connection${node.degree === 1 ? '' : 's'} · ${node.path}`;
+      button.append(title, meta);
+      graphNodeList.append(button);
+    }
+
+    if (!visible.length) {
+      const empty = document.createElement('p');
+      empty.className = 'graph-node-empty';
+      empty.textContent = graphSearchText.trim() ? 'No visible nodes match this search.' : 'No graph nodes match these filters.';
+      graphNodeList.append(empty);
+    }
+  }
+
+  async function openGraph(mode: 'full' | 'local' = graphMode): Promise<void> {
+    if (saver) {
+      await saver.flush();
+      if (selected?.kind === 'markdown' && selected.deletedAt === null) await refreshKnowledgeEntry(selected.id);
+    }
+    graphMode = mode;
+    graphOpen = true;
+    graphSurface.hidden = false;
+    workspace.dataset.graphOpen = 'true';
+    workspace.dataset.sidebarOpen = 'false';
+    element<HTMLElement>('[data-action="files"]').setAttribute('aria-expanded', 'false');
+    renderGraph();
+    graphCanvas.focus();
+  }
+
+  function closeGraph(): void {
+    graphOpen = false;
+    graphSurface.hidden = true;
+    workspace.dataset.graphOpen = 'false';
+    graphHover.textContent = 'Drag to pan · wheel or buttons to zoom · tap a node to open';
+  }
+
   async function ask(title: string, label: string, value = '', folders = false): Promise<string | null> {
     element<HTMLElement>('#vault-dialog-title').textContent = title;
     element<HTMLElement>('.dialog-label').textContent = label;
@@ -1539,6 +1731,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         knowledgeVaultId = vault.id;
       }
       await knowledge.ensureVault(entries, repository);
+      invalidateGraphModel();
       if (searchVaultId === vault.id && searchReady) {
         await reconcileSearchIndex();
       } else {
@@ -1570,9 +1763,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchStatus.textContent = 'No vault open.';
       fileFilter.value = '';
     }
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"]')) button.disabled = !vault;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
     renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts();
+    if (graphOpen) renderGraph();
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
@@ -1897,6 +2091,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const data = selected
       ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : selected.kind === 'attachment' ? 'Attachment' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]]
       : [['Notes', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Attachments', String(entries.filter(entry => entry.kind === 'attachment' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
+    element<HTMLButtonElement>('[data-action="graph-local"]').disabled = !selected || selected.deletedAt !== null || selected.kind === 'directory';
     for (const [key, value] of data) { const dt = document.createElement('dt'); dt.textContent = key!; const dd = document.createElement('dd'); dd.textContent = value!; info.append(dt, dd); }
   }
   function highlightCurrentOutline(): void {
@@ -2024,10 +2219,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     } else if (searchReady) {
       await refreshSearchEntry(entryId);
     }
+    invalidateGraphModel();
     renderKnowledgePanels();
     renderTasks();
     renderMedia();
     renderCalendar();
+    if (graphOpen) renderGraph();
     editor.refreshPreview();
   }
 
@@ -2425,6 +2622,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const pendingCursor = pendingCursorOffsets.get(selected.id);
     if (pendingCursor !== undefined && selected.kind === 'markdown' && selected.deletedAt === null) { pendingCursorOffsets.delete(selected.id); editor.revealOffset(pendingCursor); }
     renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
+    if (graphOpen) renderGraph();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
     if (selected.kind === 'markdown' && selected.deletedAt === null) await rememberRecent(selected.id);
@@ -2451,6 +2649,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('[data-action="restore"]').hidden = true;
     await syncEditorSurface();
     updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
+    if (graphOpen) renderGraph();
   }
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
@@ -2539,6 +2738,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
 
+    const graphEntryButton = (event.target as Element).closest<HTMLButtonElement>('[data-graph-entry]');
+    if (graphEntryButton?.dataset.graphEntry) {
+      perform(async () => {
+        closeGraph();
+        await openEntry(graphEntryButton.dataset.graphEntry as EntryId);
+      });
+      return;
+    }
+
+    const graphActionButton = (event.target as Element).closest<HTMLButtonElement>('[data-graph-action]');
+    if (graphActionButton?.dataset.graphAction) {
+      if (graphActionButton.dataset.graphAction === 'zoom-in') graphCanvasView.zoomBy(1.18);
+      else if (graphActionButton.dataset.graphAction === 'zoom-out') graphCanvasView.zoomBy(0.84);
+      else if (graphActionButton.dataset.graphAction === 'fit') graphCanvasView.fit();
+      return;
+    }
+
     const calendarDateButton = (event.target as Element).closest<HTMLButtonElement>('[data-calendar-date]');
     if (calendarDateButton?.dataset.calendarDate) {
       const parts = calendarDateButton.dataset.calendarDate.split('-').map(Number);
@@ -2597,6 +2813,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (quickButton?.dataset.quickEntry) {
       const entryId = quickButton.dataset.quickEntry as EntryId;
       quickDialog.close();
+      if (graphOpen) closeGraph();
       perform(() => openEntry(entryId));
       return;
     }
@@ -2668,6 +2885,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if (action === 'quick-switcher') { void openQuickSwitcher().catch(showError); return; }
+    if (action === 'graph-open') { perform(() => openGraph('full')); return; }
+    if (action === 'graph-local') { perform(() => openGraph('local')); return; }
+    if (action === 'graph-close') { closeGraph(); return; }
     if (action === 'attachment-upload') { attachmentFileInput.click(); return; }
     if (action === 'attachment-download') {
       if (selected?.kind !== 'attachment') return;
@@ -2779,6 +2999,45 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (action === 'restore') { await repository.restore(selected.id); const id = selected.id; showingTrash = false; await refresh(); await openEntry(id); }
     });
   }, { signal: abort.signal });
+  graphModeSelect.addEventListener('change', () => {
+    graphMode = graphModeSelect.value === 'local' ? 'local' : 'full';
+    renderGraph();
+  }, { signal: abort.signal });
+  graphDepthSelect.addEventListener('change', () => {
+    const value = Number(graphDepthSelect.value);
+    graphDepth = Number.isInteger(value) ? Math.max(1, Math.min(4, value)) : 2;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphGroupSelect.addEventListener('change', () => {
+    const value = graphGroupSelect.value;
+    graphGroupMode = value === 'folder' || value === 'tag' || value === 'kind' || value === 'property' ? value : 'none';
+    renderGraph();
+  }, { signal: abort.signal });
+  graphGroupPropertyInput.addEventListener('input', () => {
+    graphGroupProperty = graphGroupPropertyInput.value;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphSearchInput.addEventListener('input', () => {
+    graphSearchText = graphSearchInput.value;
+    renderGraph(true);
+  }, { signal: abort.signal });
+  graphTagInput.addEventListener('input', () => {
+    graphTagText = graphTagInput.value;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphPropertyInput.addEventListener('input', () => {
+    graphPropertyText = graphPropertyInput.value;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphAttachmentsToggle.addEventListener('change', () => {
+    graphIncludeAttachments = graphAttachmentsToggle.checked;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphOrphansToggle.addEventListener('change', () => {
+    graphOrphanOnly = graphOrphansToggle.checked;
+    renderGraph();
+  }, { signal: abort.signal });
+
   globalSearch.addEventListener('input', () => { void runGlobalSearch(); }, { signal: abort.signal });
   tagFilter.addEventListener('input', renderFacets, { signal: abort.signal });
   quickInput.addEventListener('input', () => { void runQuickSwitcher().catch(showError); }, { signal: abort.signal });
@@ -2796,6 +3055,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (!result) return;
       event.preventDefault();
       quickDialog.close();
+      if (graphOpen) closeGraph();
       perform(() => openEntry(result.entryId));
     }
   }, { signal: abort.signal });
@@ -3023,6 +3283,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   window.addEventListener('keydown', event => {
     if (quickDialog.open) return;
     if (dialog.open || recoveryDialog.open) return;
+    if (graphOpen && event.key === 'Escape') {
+      event.preventDefault();
+      closeGraph();
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o' && !event.shiftKey) {
       event.preventDefault();
       void openQuickSwitcher().catch(showError);
@@ -3041,6 +3306,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); perform(async () => registry.execute('file.create')); return; }
+    if (graphOpen) return;
     if (event.key === 'F2' && selected && selected.deletedAt === null) { event.preventDefault(); element<HTMLButtonElement>('[data-action="rename"]').click(); return; }
     if ((event.key === 'Delete' || event.key === 'Backspace') && selected && selected.deletedAt === null && !editor.hasFocus() && document.activeElement !== fileFilter) {
       event.preventDefault(); element<HTMLButtonElement>('[data-action="delete"]').click();
@@ -3069,6 +3335,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     searchIndex.close();
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
+    graphCanvasView.destroy();
     for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
     attachmentObjectUrls.clear();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
