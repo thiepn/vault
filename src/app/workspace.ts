@@ -1122,6 +1122,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
             event.preventDefault(); shell.classList.remove('drop-target');
             const sourceId = (draggedEntryId ?? event.dataTransfer?.getData('text/plain')) as EntryId | undefined;
             if (!sourceId || sourceId === entry.id) return;
+            draggedEntryId = undefined;
             perform(() => moveByDrop(sourceId, entry.id));
           });
         }
@@ -2118,7 +2119,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if ((event.target as Element).closest('.file-row-shell')) return;
     event.preventDefault(); fileTree.classList.remove('drop-root');
     const sourceId = (draggedEntryId ?? event.dataTransfer?.getData('text/plain')) as EntryId | undefined;
-    if (sourceId) perform(() => moveByDrop(sourceId, null));
+    if (sourceId) {
+      draggedEntryId = undefined;
+      perform(() => moveByDrop(sourceId, null));
+    }
   }, { signal: abort.signal });
   vaultSelect.addEventListener('change', () => {
     const id = vaultSelect.value;
