@@ -1110,7 +1110,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         });
         row.addEventListener('dragend', () => { draggedEntryId = undefined; shell.classList.remove('dragging'); root.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target')); });
         if (entry.kind === 'directory' && !showingTrash) {
-          shell.addEventListener('dragover', event => { if (!draggedEntryId || draggedEntryId === entry.id) return; event.preventDefault(); shell.classList.add('drop-target'); });
+          shell.addEventListener('dragover', event => {
+            const carriesEntry = !!draggedEntryId || event.dataTransfer?.types.includes('text/plain') === true;
+            if (!carriesEntry || draggedEntryId === entry.id) return;
+            event.preventDefault();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+            shell.classList.add('drop-target');
+          });
           shell.addEventListener('dragleave', () => shell.classList.remove('drop-target'));
           shell.addEventListener('drop', event => {
             event.preventDefault(); shell.classList.remove('drop-target');
@@ -1314,16 +1320,19 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
   }
 
-  async function commitPropertySource(nextText: string): Promise<void> {
+  async function commitPropertySource(nextText: string, rerenderProperties = true): Promise<void> {
     if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null || !saver) {
       throw new VaultError('UNSUPPORTED', 'Properties can only be changed on an active Markdown note.');
     }
-    if (nextText === editor.getText()) return;
+    if (nextText === editor.getText()) {
+      if (rerenderProperties) renderPropertiesPanel(nextText);
+      return;
+    }
     editor.setText(nextText);
     saver.update(nextText);
     await saver.flush();
     await refreshKnowledgeEntry(selected.id);
-    renderPropertiesPanel(nextText);
+    if (rerenderProperties) renderPropertiesPanel(nextText);
     if (editorMode === 'reading') await renderReadingCurrent();
   }
 
@@ -2043,34 +2052,33 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const role = control.dataset.propertyRole;
     if (!row || !oldName || !role) return;
 
+    const capturedValue = control instanceof HTMLInputElement && control.type === 'checkbox' ? '' : control.value;
+    const capturedChecked = control instanceof HTMLInputElement && control.type === 'checkbox' ? control.checked : false;
+    const capturedType = row.querySelector<HTMLSelectElement>('.property-type')?.value;
     perform(async () => {
+      let success = false;
       try {
         const source = propertySourceText();
         if (source === null) return;
         if (role === 'name') {
-          const nextName = (control as HTMLInputElement).value;
-          await commitPropertySource(renameFrontmatterProperty(source, oldName, nextName));
+          await commitPropertySource(renameFrontmatterProperty(source, oldName, capturedValue));
+          success = true;
           return;
         }
 
         const view = inspectFrontmatter(source);
         const property = view.properties.find(item => item.name === oldName);
         if (!property || !property.editable) return;
-        const typeControl = row.querySelector<HTMLSelectElement>('.property-type');
-        const valueControl = row.querySelector<HTMLInputElement>('.property-value');
-        const kind = (role === 'type' ? (control as HTMLSelectElement).value : typeControl?.value) as PropertyKind | undefined;
+        const kind = (role === 'type' ? capturedValue : capturedType) as PropertyKind | undefined;
         if (!kind || kind === 'unsupported') return;
 
-        const raw = role === 'type'
-          ? rawValueForProperty(property)
-          : valueControl?.type === 'checkbox' ? '' : valueControl?.value ?? rawValueForProperty(property);
-        const checked = role === 'type'
-          ? property.value === true
-          : valueControl?.type === 'checkbox' ? valueControl.checked : false;
+        const raw = role === 'type' ? rawValueForProperty(property) : capturedValue;
+        const checked = role === 'type' ? property.value === true : capturedChecked;
         const value = valueForKind(kind, raw, checked);
-        await commitPropertySource(setFrontmatterProperty(source, oldName, value));
+        await commitPropertySource(setFrontmatterProperty(source, oldName, value), role !== 'value');
+        success = true;
       } finally {
-        renderPropertiesPanel();
+        if (!success || role !== 'value') renderPropertiesPanel();
       }
     });
   }, { signal: abort.signal });
@@ -2097,8 +2105,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (vault) void setting(`autoUpdateLinks:${vault.id}`, autoUpdateLinks).catch(showError);
   }, { signal: abort.signal });
   fileTree.addEventListener('dragover', event => {
-    if (!draggedEntryId || showingTrash || (event.target as Element).closest('.file-row-shell')) return;
-    event.preventDefault(); fileTree.classList.add('drop-root');
+    const carriesEntry = !!draggedEntryId || event.dataTransfer?.types.includes('text/plain') === true;
+    if (!carriesEntry || showingTrash || (event.target as Element).closest('.file-row-shell')) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    fileTree.classList.add('drop-root');
   }, { signal: abort.signal });
   fileTree.addEventListener('dragleave', event => {
     if (!fileTree.contains(event.relatedTarget as Node | null)) fileTree.classList.remove('drop-root');
