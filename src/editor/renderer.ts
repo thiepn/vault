@@ -68,7 +68,13 @@ async function compileWikiAware(source: string, options: RenderMarkdownOptions):
     }
   }
   const compiled = markdown.parse(prepared);
-  return typeof compiled === 'string' ? compiled : await compiled;
+  const html = typeof compiled === 'string' ? compiled : await compiled;
+  if (!options.sourceEntryId) return html;
+  const source = escapeHtml(options.sourceEntryId);
+  return html.replaceAll(
+    '<code class="language-vault-query">',
+    `<code class="language-vault-query" data-vault-query-source="${source}">`,
+  );
 }
 
 const calloutTypes = new Set([
@@ -143,7 +149,7 @@ async function enhanceQueries(root: HTMLElement, bridge: QueryRenderBridge | und
     const pre = code.parentElement;
     if (!pre) continue;
     try {
-      const rendered = await bridge.render(code.textContent ?? '', sourceEntryId);
+      const rendered = await bridge.render(code.textContent ?? '', code.dataset.vaultQuerySource ?? sourceEntryId);
       pre.replaceWith(rendered);
     } catch (error) {
       const warning = document.createElement('aside');
