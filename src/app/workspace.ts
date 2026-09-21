@@ -292,6 +292,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (selected?.kind === 'markdown') perform(() => activateWikiTarget(target, selected!.id));
       },
     },
+    query: {
+      render(source) {
+        return renderDynamicQueryBlock(source, selected?.id);
+      },
+    },
     onChange(text) { saver?.update(text); updateCounts(); schedulePropertiesRender(text); },
     onStats(stats) { editorStats = stats; updateCounts(); highlightCurrentOutline(); },
   });
@@ -626,6 +631,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       renderTasks();
       renderCalendar();
     }
+    editor.refreshPreview();
     if (editorMode === 'reading') await renderReadingCurrent();
   }
 
@@ -1779,6 +1785,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     renderKnowledgePanels();
     renderTasks();
     renderCalendar();
+    editor.refreshPreview();
   }
 
   function fragmentOffset(resolution: WikiResolution): number | null {
@@ -1876,7 +1883,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     renderKnowledgePanels();
   }
 
-  async function renderDynamicQueryBlock(source: string, sourceEntryId?: string): Promise<HTMLElement> {
+  function renderDynamicQueryBlock(source: string, sourceEntryId?: string): HTMLElement {
     const plan = parseDynamicQuery(source);
     const currentEntryId = sourceEntryId && entries.some(entry => entry.id === sourceEntryId)
       ? sourceEntryId as EntryId
