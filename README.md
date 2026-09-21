@@ -2,7 +2,7 @@
 
 **Vault** is a browser-first, local-first Markdown knowledge system.
 
-Vault keeps ordinary Markdown as the source of truth while providing a serious browser application around it.
+Markdown remains canonical while Vault adds professional browser tooling around it.
 
 The repository currently includes browser-certified:
 
@@ -12,139 +12,132 @@ The repository currently includes browser-certified:
 - **Phase 4 — Index + Search Engine**
 - **Phase 5 — Properties & Metadata**
 - **Phase 6 — Templates, Daily Notes & Calendar**
+- **Phase 7 — Tasks & Task Management**
 
 ## Current capabilities
 
 ### Vault and files
 
-- multiple local vaults
-- nested folders
-- stable immutable file/folder IDs
-- create, edit, rename, move and recursively duplicate
-- drag/drop movement
-- Trash and restore
+- multiple local vaults and nested folders
+- immutable file/folder UUIDs
+- create, rename, move, drag/drop and recursive duplicate
+- Trash/restore
 - IndexedDB persistence
-- autosave version checks
-- recovery drafts and checkpoints
-- Markdown ZIP / recovery export
-- responsive desktop/mobile shell
+- autosave version checks, recovery drafts and checkpoints
+- Markdown ZIP/recovery export
+- desktop/mobile shell
 
 ### Markdown editor
 
 - CodeMirror 6
 - Source, Live Preview and Reading modes
-- undo/redo, multi-cursor, find/replace
-- syntax highlighting and formatting controls
-- GFM tables
-- fenced code highlighting
-- KaTeX math
-- callouts
-- Mermaid
+- undo/redo, multi-cursor and find/replace
+- formatting controls and keyboard shortcuts
+- GFM tables, highlighted code, KaTeX, callouts and Mermaid
 - sanitized Reading mode
 
 ### Linked knowledge
 
-- Wiki links and aliases
-- heading and block links
-- embedded notes/headings/blocks
-- note/alias/heading/block autocomplete
-- backlinks
-- unlinked mentions
+- Wiki links, aliases, heading/block links
+- note/heading/block embeds
+- autocomplete
+- backlinks and unlinked mentions
 - outline navigation
-- automatic parsed-link maintenance on rename/move
 - unresolved-note creation
-- cycle/depth-safe transclusion
+- parsed link maintenance after rename/move
 
 ### Search
 
 - dedicated Web Worker index
-- full-text and phrase search
-- Boolean AND / OR / NOT
+- full-text, phrase and Boolean search
 - file/path/tag/property/task filters
-- nested tags
-- property comparisons
-- result snippets and exact source offsets
-- tag/property facets
+- nested tags and property comparisons
 - Quick Switcher
-- incremental index maintenance
-- worker recovery/rebuild
+- exact source offsets
+- incremental reconciliation and worker recovery
 - 10,000-note CI benchmark
 
 ### Visual Properties
 
-- YAML frontmatter remains canonical
+- canonical YAML frontmatter
+- text, number, boolean, date, scalar list, tags and null
 - visual add/edit/rename/delete
-- text, number, boolean, date, list, tags and null
-- comment/order preservation for supported edits
-- LF/CRLF preservation
-- complex YAML read-only fallback
-- Source-mode escape hatch
-- automatic knowledge/search reindex
+- comment/order and LF/CRLF preservation for supported edits
+- complex YAML source fallback
 
-### Templates
+### Templates, Daily Notes & Calendar
 
-Templates are ordinary Markdown notes stored in a configured Templates folder.
+- ordinary Markdown templates
+- default/folder-specific/Daily templates
+- date/time/title/cursor template variables
+- configurable Daily Notes folder/template/filename
+- Previous / Today / Next navigation
+- Monday-first calendar
+- Daily Note/date-property markers
+- mobile Calendar workflow
 
-Supported variables include:
+### Tasks
 
-- `{{title}}`
-- `{{date}}`
-- `{{time}}`
-- `{{datetime}}`
-- `{{weekday}}`
-- `{{year}}`, `{{month}}`, `{{day}}`
-- `{{yesterday}}`, `{{tomorrow}}`
-- `{{date:YYYY-MM-DD}}` and other supported date patterns
-- `{{cursor}}`
+Tasks stay ordinary Markdown checkboxes.
 
-Templates can be:
+Example:
 
-- inserted into an existing note
-- used explicitly when creating a note
-- configured as the vault default
-- configured per destination folder
-- configured specifically for Daily Notes
+```markdown
+- [ ] Ship report @scheduled(2026-09-22) @due(2026-09-25) @priority(high)
+- [ ] Weekly review @due(2026-09-21) @repeat(weekly)
+```
 
-### Daily Notes & Calendar
+Supported task metadata:
 
-- configurable Daily Notes folder
-- configurable Daily Note template
-- configurable filename format
-- collision-safe requirement that formats contain year/month/day
-- previous / today / next navigation
-- `Ctrl/Cmd + Shift + D` opens today's Daily Note
-- auto-open existing daily file or create it
-- default Markdown Daily Note when no template is selected
-- Monday-first 6-week calendar
-- markers for existing Daily Notes
-- markers/counts for notes carrying any `YYYY-MM-DD` YAML property
-- calendar → Daily Note navigation
-- desktop and mobile Calendar workflows
+- `@scheduled(YYYY-MM-DD)`
+- `@due(YYYY-MM-DD)`
+- `@priority(high|medium|low)`
+- `@repeat(daily|weekly|monthly|yearly)`
+- `@repeat(every 2d)`, `every 2w`, `every 2m`, `every 2y`
+- `@done(YYYY-MM-DD)` written when a task is completed
+
+Task management includes:
+
+- vault-wide Tasks tab
+- open/done/all filtering
+- overdue/today/upcoming/undated filtering
+- priority filtering
+- grouping by date, note or priority
+- task-text filtering
+- inline checkbox/text/scheduled/due/priority/recurrence editing
+- jump to source task in CodeMirror
+- add a task to the current note
+- recurring completion that preserves the completed occurrence and inserts the next open occurrence
+- Calendar task markers
+- Calendar task completion
+- extended search filters including `task:overdue`, `task:today`, `task:recurring`, `task:high`
+- desktop and mobile task workflows
 
 ## Canonical data
 
 ```text
-CodeMirror / Visual Properties / Templates
-        ↓
-ordinary Markdown + YAML
-        ↓
-SaveCoordinator
-        ↓
-LocalRepository
-        ↓
-IndexedDB
+CodeMirror / Properties / Templates / Tasks UI
+                 ↓
+          Markdown + YAML
+                 ↓
+          SaveCoordinator
+                 ↓
+          LocalRepository
+                 ↓
+             IndexedDB
 
 Markdown
    ├─→ linked-knowledge index
-   └─→ search worker index
+   ├─→ search worker index
+   ├─→ calendar projection
+   └─→ task projection
 ```
 
-Templates and Daily Notes are files, not proprietary records. Calendar/search/knowledge structures are derived or configuration-only and can be rebuilt from canonical notes.
+Tasks, Daily Notes and templates are files/text—not proprietary application records.
 
 ## Not implemented yet
 
-- advanced task-management UI
-- Dataview-like query language/views
+- Dataview-like query blocks/dynamic views
 - cloud accounts and cross-device sync
 - attachments
 - graph/local graph visualization
@@ -165,15 +158,13 @@ npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts, the 10k search benchmark, the production Vite build, and real Chromium desktop/mobile acceptance.
-
-See `docs/ARCHITECTURE.md` and the phase result/acceptance documents under `docs/`.
+CI runs strict TypeScript, all core contracts, the 10k search benchmark, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.6.0-phase6**
+- Current package version: **0.7.0-phase7**
 
-Vault does not use Obsidian proprietary source code, assets, branding, or plugin runtime.
+Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.

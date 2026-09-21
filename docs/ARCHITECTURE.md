@@ -3,125 +3,117 @@
 ## Canonical-data rule
 
 - Markdown + YAML frontmatter = authored content/metadata truth
+- Markdown checkbox lines = task truth
 - IndexedDB repository = local identity/durability truth
 - CodeMirror = active editing state
 - template configuration = stable IDs/settings only
 - knowledge/search indexes = rebuildable acceleration
-- calendar view = derived navigation
+- calendar/tasks views = derived projections
 - future cloud database = synchronization/remote identity truth
 
-No editor view, Properties panel, template system, calendar, or derived index is a proprietary note store.
+No UI projection is a proprietary note/task store.
 
 ## Local write path
 
 ```text
-CodeMirror / Visual Properties / generated template text
+CodeMirror / Properties / template generation / task mutation
 → canonical Markdown string
-→ SaveCoordinator
-→ LocalRepository.saveMarkdown(expectedVersion)
-→ IndexedDB transaction
+→ SaveCoordinator or version-checked LocalRepository.saveMarkdown
+→ IndexedDB
+→ derived knowledge/search/calendar/task refresh
 ```
 
-Stale writes are rejected rather than silently overwriting canonical content.
+Stale writes fail instead of silently mutating the wrong source.
 
-## Phase 5 — Properties
+## Properties
 
-Visual Properties edits the YAML document inside the note.
+Visual Properties edits YAML frontmatter through a round-trip YAML document model. Complex YAML that cannot be represented faithfully stays source-editable.
+
+## Templates and Daily Notes
+
+Template source is an ordinary Markdown file referenced by stable ID. Daily Note identity is configured folder ID + filename date pattern. Calendar state is derived from Daily filenames and YAML dates.
+
+## Phase 7 — Task projection
+
+A task is a Markdown list checkbox plus optional readable metadata tokens:
+
+```markdown
+- [ ] Task text @scheduled(2026-09-22) @due(2026-09-25) @priority(high) @repeat(weekly)
+```
+
+The parser produces a rebuildable task projection containing:
+
+- original raw task line
+- source UTF-16 range
+- clean display text
+- completed state
+- scheduled date
+- due date
+- priority
+- recurrence
+- completion date
 
 ```text
-Markdown
-→ frontmatter envelope
-→ YAML Document AST
-→ typed visual controls
-→ targeted YAML mutation
-→ same Markdown body
-→ normal save path
+Markdown task line
+→ task parser
+→ KnowledgeTask
+├─→ Tasks view
+├─→ Search Worker
+└─→ Calendar date projection
 ```
 
-Supported visual values are strings, finite numbers, booleans, dates, nulls and scalar lists. Complex nested YAML remains source-editable rather than being flattened.
+### Task mutations
 
-## Phase 6 — Templates
+Every task control retains canonical source identity as:
 
-Template source is a normal Markdown file identified by immutable entry ID.
+- note UUID
+- source range
+- original raw task line
 
-Settings may store:
+Before mutation, Vault re-reads the canonical Markdown and verifies the referenced task. If offsets no longer match, it may relocate only when the exact raw line has one unambiguous match. Otherwise the mutation fails as stale.
 
-- Templates folder ID
-- default template ID
-- Daily Notes folder ID
-- Daily Note template ID
-- Daily filename format
-- folder-ID → template-ID mapping
+For the currently open note, task edits go through its active `SaveCoordinator`. Other notes use `LocalRepository.saveMarkdown(expectedVersion)`.
 
-They do **not** store template bodies.
+### Recurrence
 
-```text
-template Markdown
-→ variable expansion
-→ ordinary Markdown text
-→ create note / insert at CodeMirror selection
-```
+Completing a recurring task:
 
-Unknown template variables remain unchanged. `{{cursor}}` is removed from output and represented only as an ephemeral editor cursor offset.
+1. marks the current occurrence complete
+2. writes `@done(<local date>)`
+3. preserves that completed Markdown line
+4. inserts a new unchecked occurrence immediately below it
+5. advances scheduled/due dates according to recurrence
 
-A configured template is not recursively applied to files created inside the Templates folder.
+Supported recurrences are daily, weekly, monthly, yearly and bounded `every Nd/Nw/Nm/Ny` intervals. Month/year advancement clamps end-of-month dates instead of overflowing into the following month.
 
-## Daily Note identity
+There is no recurrence scheduler/database.
 
-A Daily Note is identified by:
+## Knowledge index
 
-1. configured Daily Notes folder ID
-2. configured filename date pattern
-3. the resulting Markdown filename
-
-The default format is `YYYY-MM-DD`.
-
-Formats must include year, month and day and must generate a portable filename. This prevents multiple dates from collapsing onto the same note.
-
-Daily creation is idempotent at the UI layer: if the expected file already exists, Vault opens it instead of creating a duplicate.
-
-## Calendar derivation
-
-The Calendar does not own events.
-
-It combines:
-
-- Daily Note filenames from the configured Daily folder
-- any exact `YYYY-MM-DD` scalar/list values found in parsed YAML properties
-
-```text
-Markdown files + derived KnowledgeRecord properties
-→ date association map
-→ Monday-first 42-cell calendar month
-→ Daily Note + associated-note markers
-```
-
-Clicking an empty calendar date creates/opens that date's Daily Note. Clicking an existing date opens the same canonical Daily Note.
-
-## Linked knowledge
-
-The versioned derived `knowledge` store contains aliases, headings, block IDs, Wiki references, tags, properties and tasks. It is reconstructable from Markdown.
+The derived knowledge record stores aliases, headings, block IDs, links, tags, properties and parsed task projections. Its version advances when parser semantics change; it remains reconstructable from Markdown.
 
 ## Search
 
-Search is performed in a dedicated module Web Worker over disposable indexes. Edits, property changes, note creation and metadata moves are incrementally reconciled.
+Search runs in a dedicated module Web Worker. Phase 7 extends structured task filters with open/done, overdue/today/upcoming/undated, recurring, scheduled, due and priority categories.
+
+## Calendar
+
+Calendar date cells combine:
+
+- Daily Note identity
+- YAML date-property associations
+- open task scheduled/due dates
+
+Completed tasks are not projected as active calendar tasks.
 
 ## Rendering trust boundary
 
-```text
-untrusted Markdown
-→ Markdown/Wiki compilation
-→ KaTeX
-→ DOMPurify
-→ controlled enhancements
-```
-
-Raw note HTML is not trusted application code.
+Untrusted Markdown is compiled/sanitized before controlled rendering enhancements. Task controls operate on parsed source lines rather than rendered HTML.
 
 ## File identity
 
-Paths are not permanent identity. Files/folders use immutable UUIDs. Rename/move changes path metadata while keeping identity/history.
+Paths are not permanent identity. Files/folders use immutable UUIDs.
 
 ## Sync boundary
 
-Cloud sync remains inactive. Future sync must synchronize canonical notes and stable metadata, not derived search/calendar/index state.
+Cloud sync remains inactive. Future sync must synchronize canonical Markdown/stable metadata, not derived task/search/calendar projections.
