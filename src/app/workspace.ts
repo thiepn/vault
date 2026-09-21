@@ -2893,6 +2893,50 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     });
   }, { signal: abort.signal });
 
+  attachmentFileInput.addEventListener('change', () => {
+    const files = [...(attachmentFileInput.files ?? [])];
+    attachmentFileInput.value = '';
+    if (files.length) perform(() => uploadAttachmentFiles(files));
+  }, { signal: abort.signal });
+
+  attachmentPolicySelect.addEventListener('change', () => {
+    if (attachmentPolicySelect.value !== 'folder' && attachmentPolicySelect.value !== 'note-folder') return;
+    attachmentPolicy = attachmentPolicySelect.value;
+    perform(async () => {
+      if (vault) await setting(`attachmentPolicy:${vault.id}`, attachmentPolicy);
+      renderMediaSettings();
+    });
+  }, { signal: abort.signal });
+
+  attachmentFolderSelect.addEventListener('change', () => {
+    attachmentFolderId = attachmentFolderSelect.value ? attachmentFolderSelect.value as EntryId : null;
+    perform(async () => {
+      if (vault) await setting(`attachmentFolder:${vault.id}`, attachmentFolderId ?? '');
+      renderMediaSettings();
+    });
+  }, { signal: abort.signal });
+
+  editorHost.addEventListener('paste', event => {
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (!files.length) return;
+    event.preventDefault();
+    perform(() => uploadAttachmentFiles(files));
+  }, { signal: abort.signal, capture: true });
+
+  editorHost.addEventListener('dragover', event => {
+    if (!(event.dataTransfer?.files.length)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  }, { signal: abort.signal, capture: true });
+
+  editorHost.addEventListener('drop', event => {
+    const files = [...(event.dataTransfer?.files ?? [])];
+    if (!files.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    perform(() => uploadAttachmentFiles(files));
+  }, { signal: abort.signal, capture: true });
+
   taskFilter.addEventListener('input', () => {
     taskFilterText = taskFilter.value;
     renderTasks();
@@ -3012,6 +3056,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     searchIndex.close();
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
+    for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
+    attachmentObjectUrls.clear();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
   };
 }
