@@ -35,7 +35,7 @@ test('Phase 4 parser derives properties, nested tags, tasks and UTF-16-stable bo
   ].join('\n');
   const record = parseKnowledge({ entryId: 'analysis', vaultId, localVersion: 1, text: source });
 
-  assert.equal(record.indexVersion, 4);
+  assert.equal(record.indexVersion, 5);
   assert.deepEqual(record.aliases, ['Analysis Two']);
   assert.deepEqual(record.tags.sort(), ['analysis/continuity', 'math', 'university/analysis'].sort());
   assert.equal(record.properties.status, 'active');
