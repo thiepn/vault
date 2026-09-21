@@ -249,6 +249,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><section class="properties-panel"><div class="panel-heading"><p class="label">PROPERTIES</p><button type="button" class="property-add" data-property-action="add">+ Add</button></div><p class="properties-status panel-empty"></p><div class="properties-list"></div><button type="button" class="property-source" data-property-action="source">Edit frontmatter in Source</button></section>
         <div class="rule"></div><section class="outline-panel"><div class="panel-heading"><p class="label">OUTLINE</p><span class="outline-count"></span></div><div class="outline-list"></div></section>
         <div class="rule"></div><section class="backlinks-panel"><div class="panel-heading"><p class="label">BACKLINKS</p><span class="backlink-count"></span></div><div class="backlink-list"></div><div class="unlinked-heading">UNLINKED MENTIONS</div><div class="unlinked-list"></div></section>
+        <button type="button" class="local-graph-button" data-action="graph-local">Open local graph</button>
         <label class="knowledge-setting"><input class="auto-update-links" type="checkbox" checked /> Update links on rename/move</label>
         <div class="rule"></div><p class="label">DATA OWNERSHIP</p>
         <button data-command="vault.export" disabled>Markdown ZIP</button>
@@ -468,7 +469,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       : null;
   }
 
-  function renderGraph(): void {
+  function renderGraph(preserveViewport = false): void {
     if (!graphOpen) return;
     const base = graphBaseModel ??= buildKnowledgeGraph(entries, knowledge.records());
     const centerId = graphCenterId();
@@ -520,6 +521,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       groupProperty: graphGroupProperty,
       highlightedIds,
       centerId,
+      preserveViewport,
     });
 
     graphNodeList.replaceChildren();
@@ -1726,6 +1728,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         knowledgeVaultId = vault.id;
       }
       await knowledge.ensureVault(entries, repository);
+      invalidateGraphModel();
       if (searchVaultId === vault.id && searchReady) {
         await reconcileSearchIndex();
       } else {
@@ -1757,9 +1760,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchStatus.textContent = 'No vault open.';
       fileFilter.value = '';
     }
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"]')) button.disabled = !vault;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
     renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts();
+    if (graphOpen) renderGraph();
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
@@ -2211,10 +2215,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     } else if (searchReady) {
       await refreshSearchEntry(entryId);
     }
+    invalidateGraphModel();
     renderKnowledgePanels();
     renderTasks();
     renderMedia();
     renderCalendar();
+    if (graphOpen) renderGraph();
     editor.refreshPreview();
   }
 
@@ -2612,6 +2618,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const pendingCursor = pendingCursorOffsets.get(selected.id);
     if (pendingCursor !== undefined && selected.kind === 'markdown' && selected.deletedAt === null) { pendingCursorOffsets.delete(selected.id); editor.revealOffset(pendingCursor); }
     renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
+    if (graphOpen) renderGraph();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
     if (selected.kind === 'markdown' && selected.deletedAt === null) await rememberRecent(selected.id);
@@ -2638,6 +2645,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('[data-action="restore"]').hidden = true;
     await syncEditorSurface();
     updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
+    if (graphOpen) renderGraph();
   }
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
