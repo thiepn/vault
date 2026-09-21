@@ -9,6 +9,7 @@ import {
   canonicalAttachmentTarget,
   normalizeAttachmentMimeType,
   resolveAttachmentTarget,
+  validateAttachmentName,
 } from '../build/core/media/attachments.js';
 import { rewriteAttachmentReferences } from '../build/core/media/link-updater.js';
 import { compareEntries } from '../build/core/services/file-tree.js';
@@ -80,6 +81,13 @@ async function fixture() {
   const vault = await repository.createVault('Media');
   return { repository, vault };
 }
+
+test('attachment filenames stay portable and Wiki-reference safe', () => {
+  assert.equal(validateAttachmentName('photo 1.png'), 'photo 1.png');
+  assert.throws(() => validateAttachmentName('broken#name.png'), /reserved by Wiki-link syntax/u);
+  assert.throws(() => validateAttachmentName('broken[name].png'), /reserved by Wiki-link syntax/u);
+  assert.throws(() => validateAttachmentName('note.md'), /notes, not attachments/u);
+});
 
 test('Phase 9 stores binary attachments separately from Markdown and reads exact bytes', async () => {
   const { repository, vault } = await fixture();
