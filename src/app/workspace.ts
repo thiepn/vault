@@ -24,11 +24,13 @@ import { buildCalendarMonth, dailyDateForEntry, dailyEntryForDate } from '../pla
 import { dynamicFieldLabel, parseDynamicQuery, runDynamicQuery } from '../queries/dynamic.js';
 import { attachmentMediaKind, attachmentReferenceCounts, attachmentSuggestions, canonicalAttachmentTarget, formatAttachmentSize, resolveAttachmentTarget, type AttachmentMediaKind } from '../media/attachments.js';
 import { updateAttachmentLinksAfterMove } from '../media/link-updater.js';
+import { buildKnowledgeGraph, filterKnowledgeGraph, graphStats, localKnowledgeGraph, type GraphGroupMode, type GraphNode, type KnowledgeGraph } from '../graph/model.js';
+import { GraphCanvasView } from '../graph/canvas-view.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 9 browser workspace: local attachments and media on the accepted Phase 1-8 foundation. */
+/** Phase 10 browser workspace: knowledge graph visualization on the accepted Phase 1-9 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -101,6 +103,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let attachmentPolicy: 'folder' | 'note-folder' = 'folder';
   let attachmentFolderId: EntryId | null = null;
   const attachmentObjectUrls = new Map<EntryId, string>();
+  let graphOpen = false;
+  let graphMode: 'full' | 'local' = 'full';
+  let graphDepth = 2;
+  let graphGroupMode: GraphGroupMode = 'none';
+  let graphGroupProperty = '';
+  let graphSearchText = '';
+  let graphTagText = '';
+  let graphPropertyText = '';
+  let graphOrphanOnly = false;
+  let graphIncludeAttachments = true;
+  let graphModel: KnowledgeGraph = { nodes: [], edges: [], unresolvedReferences: 0, ambiguousReferences: 0 };
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
   let searchBuildChain: Promise<void> = Promise.resolve();
@@ -113,8 +126,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button class="mobile-toggle" data-action="files" aria-label="Toggle files" aria-expanded="false">\u2630</button>
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
+        <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 9 \u00b7 Media</span>
+        <span class="stage">Phase 10 \u00b7 Graph</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -195,9 +209,31 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
+        <section class="graph-surface" hidden aria-label="Knowledge graph">
+          <header class="graph-header">
+            <div class="graph-heading"><p class="eyebrow">KNOWLEDGE GRAPH</p><h1>See how the vault connects.</h1><p class="graph-summary" role="status"></p></div>
+            <button type="button" class="graph-close" data-action="graph-close">Back to note</button>
+          </header>
+          <div class="graph-controls">
+            <label>View<select class="graph-mode"><option value="full">Full vault</option><option value="local">Local graph</option></select></label>
+            <label class="graph-depth-setting">Depth<select class="graph-depth"><option value="1">1 hop</option><option value="2" selected>2 hops</option><option value="3">3 hops</option><option value="4">4 hops</option></select></label>
+            <label>Group<select class="graph-group"><option value="none">No grouping</option><option value="folder">Folder</option><option value="tag">Primary tag</option><option value="kind">Note / attachment</option><option value="property">Property</option></select></label>
+            <label class="graph-group-property-setting" hidden>Group property<input class="graph-group-property" type="text" placeholder="status" /></label>
+            <label>Find<input class="graph-search" type="search" placeholder="Title, path, tag…" /></label>
+            <label>Tag<input class="graph-tag" type="search" placeholder="#project" /></label>
+            <label>Property<input class="graph-property" type="search" placeholder="status=active" /></label>
+            <label class="graph-check"><input class="graph-attachments" type="checkbox" checked /> Attachments</label>
+            <label class="graph-check"><input class="graph-orphans" type="checkbox" /> Orphans only</label>
+          </div>
+          <div class="graph-toolbar" role="group" aria-label="Graph navigation"><button type="button" data-graph-action="zoom-out" aria-label="Zoom out">−</button><button type="button" data-graph-action="fit">Fit</button><button type="button" data-graph-action="zoom-in" aria-label="Zoom in">+</button><span class="graph-hover">Drag to pan · wheel or buttons to zoom · tap a node to open</span></div>
+          <div class="graph-body">
+            <div class="graph-canvas-wrap"><canvas class="graph-canvas"></canvas></div>
+            <aside class="graph-browser" aria-label="Visible graph nodes"><div class="graph-browser-heading"><strong>Visible nodes</strong><span class="graph-browser-count"></span></div><div class="graph-node-list"></div></aside>
+          </div>
+        </section>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 9</p><h1>Notes and media in one local vault.</h1>
-          <p>Paste, drop and organize images, audio, video and files while keeping readable Markdown references and local binary ownership.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 10</p><h1>Build a connected knowledge vault.</h1>
+          <p>Write in Markdown, attach local media, and use the Graph to explore relationships, clusters and isolated notes.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -279,6 +315,21 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const attachmentTitle = element<HTMLElement>('.attachment-title');
   const attachmentDetail = element<HTMLElement>('.attachment-detail');
   const attachmentFileInput = element<HTMLInputElement>('.attachment-file-input');
+  const graphSurface = element<HTMLElement>('.graph-surface');
+  const graphCanvas = element<HTMLCanvasElement>('.graph-canvas');
+  const graphModeSelect = element<HTMLSelectElement>('.graph-mode');
+  const graphDepthSelect = element<HTMLSelectElement>('.graph-depth');
+  const graphGroupSelect = element<HTMLSelectElement>('.graph-group');
+  const graphGroupPropertyInput = element<HTMLInputElement>('.graph-group-property');
+  const graphSearchInput = element<HTMLInputElement>('.graph-search');
+  const graphTagInput = element<HTMLInputElement>('.graph-tag');
+  const graphPropertyInput = element<HTMLInputElement>('.graph-property');
+  const graphAttachmentsToggle = element<HTMLInputElement>('.graph-attachments');
+  const graphOrphansToggle = element<HTMLInputElement>('.graph-orphans');
+  const graphSummary = element<HTMLElement>('.graph-summary');
+  const graphHover = element<HTMLElement>('.graph-hover');
+  const graphNodeList = element<HTMLElement>('.graph-node-list');
+  const graphBrowserCount = element<HTMLElement>('.graph-browser-count');
   const taskList = element<HTMLElement>('.task-list');
   const taskFilter = element<HTMLInputElement>('.task-filter');
   const taskStatusSelect = element<HTMLSelectElement>('.task-status-filter');
@@ -301,6 +352,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const folderTemplateFolder = element<HTMLSelectElement>('.folder-template-folder');
   const folderTemplateTemplate = element<HTMLSelectElement>('.folder-template-template');
   const pathOf = (id: EntryId): string => new VaultTree(entries).path(id);
+  const graphCanvasView = new GraphCanvasView(graphCanvas, {
+    onOpen(entryId) {
+      perform(async () => {
+        closeGraph();
+        await openEntry(entryId);
+      });
+    },
+    onHover(node) {
+      graphHover.textContent = node
+        ? `${node.label} · ${node.kind} · ${node.degree} connection${node.degree === 1 ? '' : 's'}`
+        : 'Drag to pan · wheel or buttons to zoom · tap a node to open';
+    },
+  });
+
   const editor = new MarkdownEditor(editorHost, {
     text: '', mode: 'live', readOnly: true, lineNumbers: false,
     wiki: {
