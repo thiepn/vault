@@ -1,4 +1,5 @@
-import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view';
+import { StateField, type EditorState } from '@codemirror/state';
+import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
 
 export interface QueryEditorBridge {
   render(source: string): HTMLElement;
@@ -56,12 +57,16 @@ class QueryWidget extends WidgetType {
     private readonly source: string,
     private readonly from: number,
     private readonly bridge: QueryEditorBridge,
+    private readonly generation: object,
   ) {
     super();
   }
 
   eq(other: QueryWidget): boolean {
-    return other.source === this.source && other.from === this.from && other.bridge === this.bridge;
+    return other.source === this.source
+      && other.from === this.from
+      && other.bridge === this.bridge
+      && other.generation === this.generation;
   }
 
   toDOM(view: EditorView): HTMLElement {
@@ -100,13 +105,18 @@ class QueryWidget extends WidgetType {
   }
 }
 
-function buildDecorations(view: EditorView, bridge: QueryEditorBridge, fences: readonly QueryFence[]): DecorationSet {
+function buildDecorations(
+  state: EditorState,
+  bridge: QueryEditorBridge,
+  fences: readonly QueryFence[],
+  generation: object,
+): DecorationSet {
   const ranges: ReturnType<Decoration['range']>[] = [];
   for (const fence of fences) {
-    const active = view.state.selection.ranges.some(range => range.from <= fence.to && range.to >= fence.from);
+    const active = state.selection.ranges.some(range => range.from <= fence.to && range.to >= fence.from);
     if (active) continue;
     ranges.push(Decoration.widget({
-      widget: new QueryWidget(fence.source, fence.from, bridge),
+      widget: new QueryWidget(fence.source, fence.from, bridge, generation),
       block: true,
       side: 1,
     }).range(fence.widgetAt));
@@ -115,22 +125,19 @@ function buildDecorations(view: EditorView, bridge: QueryEditorBridge, fences: r
 }
 
 export function queryPreviewExtension(bridge: QueryEditorBridge) {
-  return ViewPlugin.fromClass(class {
-    decorations: DecorationSet;
-    fences: QueryFence[];
-
-    constructor(view: EditorView) {
-      this.fences = parseQueryFences(view.state.doc.toString());
-      this.decorations = buildDecorations(view, bridge, this.fences);
-    }
-
-    update(update: ViewUpdate): void {
-      if (update.docChanged) this.fences = parseQueryFences(update.state.doc.toString());
-      if (update.docChanged || update.selectionSet || update.viewportChanged) {
-        this.decorations = buildDecorations(update.view, bridge, this.fences);
-      }
-    }
-  }, {
-    decorations: value => value.decorations,
+  // Block widgets change the editor's vertical geometry, so they must be
+  // supplied as direct decorations from editor state rather than through
+  // a viewport-derived ViewPlugin decoration source.
+  const generation = {};
+  return StateField.define<DecorationSet>({
+    create(state) {
+      const fences = parseQueryFences(state.doc.toString());
+      return buildDecorations(state, bridge, fences, generation);
+    },
+    update(_value, transaction) {
+      const fences = parseQueryFences(transaction.state.doc.toString());
+      return buildDecorations(transaction.state, bridge, fences, generation);
+    },
+    provide: field => EditorView.decorations.from(field),
   });
 }
