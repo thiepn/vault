@@ -20,8 +20,12 @@ export interface WikiRenderBridge {
   status(target: string, sourceEntryId?: string): 'resolved' | 'ambiguous' | 'unresolved';
   load(target: string, sourceEntryId?: string): Promise<{ entryId: string; markdown: string } | null>;
 }
+export interface QueryRenderBridge {
+  render(source: string, sourceEntryId?: string): Promise<HTMLElement>;
+}
 export interface RenderMarkdownOptions {
   wiki?: WikiRenderBridge;
+  query?: QueryRenderBridge;
   stack?: readonly string[];
   depth?: number;
   sourceEntryId?: string;
@@ -126,6 +130,24 @@ function enhanceCallouts(root: HTMLElement): void {
   }
 }
 
+async function enhanceQueries(root: HTMLElement, bridge: QueryRenderBridge | undefined, sourceEntryId?: string): Promise<void> {
+  if (!bridge) return;
+  const blocks = [...root.querySelectorAll<HTMLElement>('pre > code.language-vault-query')];
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    if (!pre) continue;
+    try {
+      const rendered = await bridge.render(code.textContent ?? '', sourceEntryId);
+      pre.replaceWith(rendered);
+    } catch (error) {
+      const warning = document.createElement('aside');
+      warning.className = 'render-warning query-render-warning';
+      warning.textContent = `Vault query could not run: ${error instanceof Error ? error.message : 'invalid query'}`;
+      pre.replaceWith(warning);
+    }
+  }
+}
+
 function enhanceCode(root: HTMLElement): void {
   for (const code of root.querySelectorAll<HTMLElement>('pre > code')) {
     if (code.classList.contains('language-mermaid')) continue;
@@ -206,6 +228,7 @@ export async function renderMarkdown(markdownSource: string, options: RenderMark
 
   enhanceLinks(container);
   enhanceCallouts(container);
+  await enhanceQueries(container, options.query, options.sourceEntryId);
   enhanceCode(container);
   await enhanceMermaid(container);
   return container;
