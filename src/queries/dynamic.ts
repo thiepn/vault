@@ -163,9 +163,13 @@ function matchesClause(entry: Entry, path: string, record: KnowledgeRecord, clau
     const values = propertyValues(propertyValue(record, clause.name));
     if (clause.operator === 'exists') return values.length > 0;
     const queryValue = scalarQueryValue(clause.value ?? '');
-    if (clause.operator === '=') return values.some(value => scalarEqual(value, queryValue));
-    if (clause.operator === '!=') return values.length > 0 && values.every(value => !scalarEqual(value, queryValue));
-    return values.some(value => compareScalar(value, clause.operator, queryValue));
+    const operator = clause.operator;
+    if (operator === '=') return values.some(value => scalarEqual(value, queryValue));
+    if (operator === '!=') return values.length > 0 && values.every(value => !scalarEqual(value, queryValue));
+    if (operator === '>' || operator === '>=' || operator === '<' || operator === '<=') {
+      return values.some(value => compareScalar(value, operator, queryValue));
+    }
+    return false;
   }
 
   const haystacks = searchableValues(entry, path, record);
