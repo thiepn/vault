@@ -111,10 +111,16 @@ test('Phase 8 renders live table/task queries and task actions mutate canonical 
   ].join('\n'));
 
   await expect(page.locator('[data-action="insert-query"]')).toBeVisible();
+  const liveEditor = page.locator('#vault-editor .cm-content');
+  await liveEditor.click();
+  await page.keyboard.press('Control+Home');
+  await expect(page.locator('#vault-editor .cm-query-widget .query-view[data-query-view="table"]')).toBeVisible();
+  await expect(page.locator('#vault-editor .cm-query-widget .query-view[data-query-view="tasks"]')).toBeVisible();
+
   await page.locator('[data-editor-mode="reading"]').click();
 
-  const tableView = page.locator('.query-view[data-query-view="table"]');
-  const taskView = page.locator('.query-view[data-query-view="tasks"]');
+  const tableView = page.locator('.reading-view .query-view[data-query-view="table"]');
+  const taskView = page.locator('.reading-view .query-view[data-query-view="tasks"]');
   await expect(tableView).toBeVisible();
   await expect(taskView).toBeVisible();
   await expect(tableView.locator('.query-view-header')).toContainText('Active projects');
@@ -161,8 +167,13 @@ test('Phase 8 dynamic list view remains usable on mobile', async ({ page }, test
     '```',
   ].join('\n'));
 
+  const liveEditor = page.locator('#vault-editor .cm-content');
+  await liveEditor.click();
+  await page.keyboard.press('Control+Home');
+  await expect(page.locator('#vault-editor .cm-query-widget .query-view[data-query-view="list"]')).toBeVisible();
+
   await page.locator('[data-editor-mode="reading"]').click();
-  const view = page.locator('.query-view[data-query-view="list"]');
+  const view = page.locator('.reading-view .query-view[data-query-view="list"]');
   await expect(view).toBeVisible();
   await expect(view.locator('.query-view-header')).toContainText('References');
   await expect(view.locator('.query-note-row')).toHaveCount(1);
