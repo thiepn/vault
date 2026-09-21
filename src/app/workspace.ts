@@ -498,8 +498,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (base.ambiguousReferences) warningParts.push(`${base.ambiguousReferences} ambiguous`);
     graphSummary.textContent = [
       modeLabel,
-      `${stats.nodes} nodes`,
-      `${stats.edges} edges`,
+      `${stats.nodes} node${stats.nodes === 1 ? '' : 's'}`,
+      `${stats.edges} edge${stats.edges === 1 ? '' : 's'}`,
       `${stats.orphans} orphan${stats.orphans === 1 ? '' : 's'}`,
       ...warningParts,
     ].join(' · ');
@@ -2091,6 +2091,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const data = selected
       ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : selected.kind === 'attachment' ? 'Attachment' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]]
       : [['Notes', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Attachments', String(entries.filter(entry => entry.kind === 'attachment' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
+    element<HTMLButtonElement>('[data-action="graph-local"]').disabled = !selected || selected.deletedAt !== null || selected.kind === 'directory';
     for (const [key, value] of data) { const dt = document.createElement('dt'); dt.textContent = key!; const dd = document.createElement('dd'); dd.textContent = value!; info.append(dt, dd); }
   }
   function highlightCurrentOutline(): void {
@@ -3282,12 +3283,6 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   window.addEventListener('keydown', event => {
     if (quickDialog.open) return;
     if (dialog.open || recoveryDialog.open) return;
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g') {
-      event.preventDefault();
-      if (graphOpen) closeGraph();
-      else perform(() => openGraph(event.shiftKey ? 'local' : 'full'));
-      return;
-    }
     if (graphOpen && event.key === 'Escape') {
       event.preventDefault();
       closeGraph();
