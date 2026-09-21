@@ -1881,7 +1881,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const currentEntryId = sourceEntryId && entries.some(entry => entry.id === sourceEntryId)
       ? sourceEntryId as EntryId
       : selected?.id;
-    const result = runDynamicQuery(plan, entries, knowledge.records(), { currentEntryId, pathOf });
+    const result = runDynamicQuery(plan, entries, knowledge.records(), {
+      ...(currentEntryId ? { currentEntryId } : {}),
+      pathOf,
+    });
 
     const section = document.createElement('section');
     section.className = 'query-view';
