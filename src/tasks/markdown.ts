@@ -103,7 +103,6 @@ export function parseTaskLine(line: string, from = 0): ParsedTaskLine | null {
   const body = metadataFromBody(match[4]!);
   return {
     raw: line,
-    text: body.text,
     completed: match[2]!.toLocaleLowerCase() === 'x',
     from,
     to: from + line.length,
@@ -220,7 +219,7 @@ export function updateTaskMarkdown(
 
   const due = patch.due === undefined ? current.due : patch.due;
   const scheduled = patch.scheduled === undefined ? current.scheduled : patch.scheduled;
-  if (due !== null && !isTaskDate(due)) throw new VaultError('CORRRUPT', 'Due date must use YYYY-MM-DD.');
+  if (due !== null && !isTaskDate(due)) throw new VaultError('CORRUPT', 'Due date must use YYYY-MM-DD.');
   if (scheduled !== null && !isTaskDate(scheduled)) throw new VaultError('CORRUPT', 'Scheduled date must use YYYY-MM-DD');
 
   const nextCompleted = patch.completed ?? current.completed;
