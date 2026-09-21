@@ -110,7 +110,8 @@ vault-query fence
 → existing search/property/task semantics
 → KnowledgeRecord + active Entry metadata
 → list / table / task projection
-→ detached Reading-mode DOM
+├─→ CodeMirror Live Preview widget
+└─→ detached Reading-mode DOM
 ```
 
 The query executor reads only active Markdown entries and their rebuildable knowledge records. It supports list, table and task projections, property fields, deterministic sort/limit behavior and current-note exclusion.
@@ -119,9 +120,11 @@ Task query rows preserve the same source identity used by the Phase 7 Tasks pane
 
 ### Rendering boundary
 
-Query fences are first compiled as ordinary fenced code by the Markdown renderer. After DOM sanitization, Vault recognizes only `language-vault-query` blocks and replaces them with controlled DOM created through `document.createElement` / `textContent`. Query source never becomes executable HTML or JavaScript.
+In Live Preview, Vault parses only explicit `vault-query` fences and replaces inactive fences with CodeMirror block widgets. Moving the selection into a query fence removes the widget and exposes the canonical Markdown source for editing.
 
-Embedded notes inherit the query-render bridge, so a query block inside a transcluded note is evaluated with the embedded note as its source context.
+In Reading mode, query fences are first compiled as ordinary fenced code by the Markdown renderer. After DOM sanitization, Vault recognizes only `language-vault-query` blocks and replaces them with controlled DOM created through `document.createElement` / `textContent`. Query source never becomes executable HTML or JavaScript.
+
+Embedded Reading-mode notes preserve source-entry context, so `exclude-self` and related source-sensitive behavior refers to the embedded note rather than the outer document.
 
 ## Knowledge index
 
