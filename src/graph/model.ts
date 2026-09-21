@@ -384,7 +384,7 @@ export function filterKnowledgeGraph(graph: KnowledgeGraph, filter: GraphFilter)
 export function graphGroupKey(node: GraphNode, mode: GraphGroupMode, propertyName = ''): string {
   if (mode === 'folder') return node.folder;
   if (mode === 'kind') return node.kind === 'note' ? 'Notes' : 'Attachments';
-  if (mode === 'tag') return [...node.tags].sort((a, b) => a.localeCompare(b))[0] ?? 'Untagged';
+  if (mode === 'tag') return node.tags[0] ?? 'Untagged';
   if (mode === 'property') {
     const key = propertyName.trim();
     if (!key) return 'No property selected';
