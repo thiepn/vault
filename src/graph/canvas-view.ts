@@ -22,6 +22,7 @@ export interface GraphCanvasRenderOptions {
   groupProperty?: string;
   highlightedIds?: ReadonlySet<EntryId>;
   centerId?: EntryId | null;
+  preserveViewport?: boolean;
 }
 
 function hash(value: string): number {
@@ -112,7 +113,8 @@ export class GraphCanvasView {
     this.highlightedIds = options.highlightedIds ?? new Set<EntryId>();
     this.centerId = options.centerId ?? null;
     this.createLayout();
-    this.fit();
+    if (options.preserveViewport) this.draw();
+    else this.fit();
     this.startSimulation();
   }
 
