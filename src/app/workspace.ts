@@ -114,6 +114,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let graphOrphanOnly = false;
   let graphIncludeAttachments = true;
   let graphModel: KnowledgeGraph = { nodes: [], edges: [], unresolvedReferences: 0, ambiguousReferences: 0 };
+  let graphBaseModel: KnowledgeGraph | null = null;
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
   let searchBuildChain: Promise<void> = Promise.resolve();
@@ -457,6 +458,127 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return item?.value;
     });
   }
+  function invalidateGraphModel(): void {
+    graphBaseModel = null;
+  }
+
+  function graphCenterId(): EntryId | null {
+    return selected && selected.deletedAt === null && (selected.kind === 'markdown' || selected.kind === 'attachment')
+      ? selected.id
+      : null;
+  }
+
+  function renderGraph(): void {
+    if (!graphOpen) return;
+    const base = graphBaseModel ??= buildKnowledgeGraph(entries, knowledge.records());
+    const centerId = graphCenterId();
+    let scoped = graphMode === 'local'
+      ? centerId ? localKnowledgeGraph(base, centerId, graphDepth) : { ...base, nodes: [], edges: [] }
+      : base;
+
+    scoped = filterKnowledgeGraph(scoped, {
+      kinds: graphIncludeAttachments ? ['note', 'attachment'] : ['note'],
+      tag: graphTagText,
+      property: graphPropertyText,
+      orphanOnly: graphOrphanOnly,
+    });
+    graphModel = scoped;
+
+    const searchMatches = graphSearchText.trim()
+      ? filterKnowledgeGraph(scoped, { search: graphSearchText }).nodes
+      : [];
+    const highlightedIds = new Set(searchMatches.map(node => node.id));
+    const stats = graphStats(scoped);
+    const modeLabel = graphMode === 'local'
+      ? centerId ? `Local · ${graphDepth} hop${graphDepth === 1 ? '' : 's'}` : 'Local · open a note or attachment first'
+      : 'Full vault';
+    const warningParts: string[] = [];
+    if (base.unresolvedReferences) warningParts.push(`${base.unresolvedReferences} unresolved`);
+    if (base.ambiguousReferences) warningParts.push(`${base.ambiguousReferences} ambiguous`);
+    graphSummary.textContent = [
+      modeLabel,
+      `${stats.nodes} nodes`,
+      `${stats.edges} edges`,
+      `${stats.orphans} orphan${stats.orphans === 1 ? '' : 's'}`,
+      ...warningParts,
+    ].join(' · ');
+
+    graphModeSelect.value = graphMode;
+    graphDepthSelect.value = String(graphDepth);
+    graphGroupSelect.value = graphGroupMode;
+    graphGroupPropertyInput.value = graphGroupProperty;
+    graphSearchInput.value = graphSearchText;
+    graphTagInput.value = graphTagText;
+    graphPropertyInput.value = graphPropertyText;
+    graphAttachmentsToggle.checked = graphIncludeAttachments;
+    graphOrphansToggle.checked = graphOrphanOnly;
+    element<HTMLElement>('.graph-depth-setting').hidden = graphMode !== 'local';
+    element<HTMLElement>('.graph-group-property-setting').hidden = graphGroupMode !== 'property';
+
+    graphCanvasView.setGraph(scoped, {
+      groupMode: graphGroupMode,
+      groupProperty: graphGroupProperty,
+      highlightedIds,
+      centerId,
+    });
+
+    graphNodeList.replaceChildren();
+    const sorted = (graphSearchText.trim() ? searchMatches : scoped.nodes)
+      .slice()
+      .sort((a, b) => {
+        const aHighlight = highlightedIds.has(a.id) ? 1 : 0;
+        const bHighlight = highlightedIds.has(b.id) ? 1 : 0;
+        return bHighlight - aHighlight || b.degree - a.degree || a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' });
+      });
+    const visible = sorted.slice(0, 200);
+    graphBrowserCount.textContent = graphSearchText.trim()
+      ? `${sorted.length} match${sorted.length === 1 ? '' : 'es'} · ${stats.nodes} visible`
+      : stats.nodes > 200 ? `200 of ${stats.nodes}` : String(stats.nodes);
+
+    for (const node of visible) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'graph-node-button';
+      button.dataset.graphEntry = node.id;
+      if (highlightedIds.has(node.id)) button.classList.add('match');
+      if (node.orphan) button.classList.add('orphan');
+      const title = document.createElement('span');
+      title.className = 'graph-node-title';
+      title.textContent = node.label;
+      const meta = document.createElement('span');
+      meta.className = 'graph-node-meta';
+      meta.textContent = `${node.kind} · ${node.degree} connection${node.degree === 1 ? '' : 's'} · ${node.path}`;
+      button.append(title, meta);
+      graphNodeList.append(button);
+    }
+
+    if (!visible.length) {
+      const empty = document.createElement('p');
+      empty.className = 'graph-node-empty';
+      empty.textContent = graphSearchText.trim() ? 'No visible nodes match this search.' : 'No graph nodes match these filters.';
+      graphNodeList.append(empty);
+    }
+  }
+
+  async function openGraph(mode: 'full' | 'local' = graphMode): Promise<void> {
+    if (saver) await saver.flush();
+    graphMode = mode;
+    graphOpen = true;
+    graphSurface.hidden = false;
+    workspace.dataset.graphOpen = 'true';
+    workspace.dataset.sidebarOpen = 'false';
+    element<HTMLElement>('[data-action="files"]').setAttribute('aria-expanded', 'false');
+    renderGraph();
+    graphCanvas.focus();
+  }
+
+  function closeGraph(): void {
+    graphOpen = false;
+    graphSurface.hidden = true;
+    workspace.dataset.graphOpen = 'false';
+    graphHover.textContent = 'Drag to pan · wheel or buttons to zoom · tap a node to open';
+  }
+
   async function ask(title: string, label: string, value = '', folders = false): Promise<string | null> {
     element<HTMLElement>('#vault-dialog-title').textContent = title;
     element<HTMLElement>('.dialog-label').textContent = label;
