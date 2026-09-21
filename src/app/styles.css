@@ -443,3 +443,7 @@
 @media(prefers-reduced-motion:reduce){
   .graph-canvas{scroll-behavior:auto}
 }
+
+.workspace[data-graph-open="true"]{grid-template-columns:245px minmax(0,1fr)}
+.workspace[data-graph-open="true"] .inspector{display:none!important}
+@media(max-width:640px){.workspace[data-graph-open="true"]{grid-template-columns:minmax(0,1fr)}}
