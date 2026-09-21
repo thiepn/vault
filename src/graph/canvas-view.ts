@@ -113,8 +113,11 @@ export class GraphCanvasView {
     this.highlightedIds = options.highlightedIds ?? new Set<EntryId>();
     this.centerId = options.centerId ?? null;
     this.createLayout();
-    if (options.preserveViewport) this.draw();
-    else this.fit();
+    if (options.preserveViewport) {
+      this.draw();
+      return;
+    }
+    this.fit();
     this.startSimulation();
   }
 
