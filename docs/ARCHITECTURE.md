@@ -8,7 +8,7 @@
 - CodeMirror = active editing state
 - template configuration = stable IDs/settings only
 - knowledge/search indexes = rebuildable acceleration
-- calendar/tasks/query views = derived projections
+- calendar/tasks/query/graph views = derived projections
 - attachment store = local binary payload truth keyed by stable entry ID
 - future cloud database = synchronization/remote identity truth
 
@@ -150,6 +150,46 @@ Reading-mode rendering never trusts attachment markup as HTML. The sanitized Mar
 Object URLs are cached by stable attachment ID for the session and revoked on deletion or workspace disposal.
 
 Attachment exports preserve the original bytes and vault paths. Recovery snapshot format v2 serializes binary payloads as base64 so the JSON backup remains self-contained.
+
+## Phase 10 — Knowledge graph projection
+
+The graph is reconstructed from active `Entry` metadata plus `KnowledgeRecord.links`. It introduces no graph tables, graph documents or persistent layout state.
+
+```text
+Markdown + attachment paths
+        ↓
+KnowledgeRecord links + active Entry tree
+        ↓
+resolved directed relationships
+        ↓
+full/local/filter/group projection
+        ↓
+Canvas visualization + accessible node browser
+```
+
+Graph nodes are active Markdown notes and attachments. Edges are directed resolved references and retain whether the source was a normal link, note embed, attachment link or attachment embed. Repeated identical source/target/type references are collapsed into one weighted visual edge while preserving the reference count.
+
+Unresolved and ambiguous references never create guessed edges; they are counted separately for diagnostics.
+
+### Local graph
+
+Local mode performs an undirected breadth-first traversal over the resolved relationship topology while preserving the original directed edges in the resulting projection. Depth is bounded to prevent accidental unbounded local expansion.
+
+### Filters and grouping
+
+Search highlighting and tag/property/kind/orphan filters operate on disposable `GraphNode` projections. Grouping by folder, primary tag, node kind or property affects layout only.
+
+### Rendering and large vaults
+
+The Canvas renderer starts from deterministic clustered positions. Smaller graphs receive bounded frame-by-frame link/collision relaxation. Reduced-motion users and graphs above the large-vault threshold use the deterministic static layout immediately instead of running continuous physics.
+
+Search-only changes preserve the current viewport and positions rather than restarting layout.
+
+The canvas is paired with ordinary DOM controls and a keyboard-accessible node browser so graph navigation does not depend on pointer precision or Canvas accessibility.
+
+### Canonical boundary
+
+Graph coordinates, zoom/pan state, groups, filters, orphan views and highlighted search matches are not canonical or synchronized data. Future cloud sync should continue synchronizing Markdown, stable entry metadata and attachment payloads only.
 
 ## Knowledge index
 
