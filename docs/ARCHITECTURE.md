@@ -92,7 +92,7 @@ There is no recurrence scheduler/database.
 
 A dynamic view is authored as a fenced Markdown block:
 
-```markdown
+````markdown
 ```vault-query
 view: table
 query: tag:#project AND property:status=active
@@ -100,7 +100,7 @@ fields: file, path, property:status
 sort: updated desc
 limit: 25
 ```
-```
+````
 
 The fenced source is canonical. Parsed plans and rendered rows are not stored.
 
