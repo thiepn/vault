@@ -33,6 +33,7 @@
     "src/tasks/**/*.ts",
     "src/queries/**/*.ts",
     "src/media/**/*.ts",
+    "src/graph/**/*.ts",
     "src/app/workspace.ts",
     "src/editor/**/*.ts"
   ]
