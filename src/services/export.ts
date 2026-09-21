@@ -1,26 +1,59 @@
 import { VaultError } from '../domain/errors.js';
-import type { MarkdownContent, VaultSnapshot } from '../domain/model.js';
+import type { AttachmentSnapshot, MarkdownContent, VaultSnapshot } from '../domain/model.js';
 import { VaultTree } from '../domain/tree.js';
 import { nameKey, validateName } from '../domain/paths.js';
 import { assertMarkdownContent } from '../domain/integrity.js';
 
 export interface ExportFile { path: string; bytes: Uint8Array }
-export function markdownFiles(snapshot: VaultSnapshot): ExportFile[] {
+
+function base64Bytes(value: string): Uint8Array {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const clean = value.replace(/\s+/gu, '');
+  if (clean.length % 4 !== 0 || /[^A-Za-z0-9+/=]/u.test(clean)) throw new VaultError('CORRUPT', 'Attachment backup data is not valid base64.');
+  const output: number[] = [];
+  for (let index = 0; index < clean.length; index += 4) {
+    const chunk = clean.slice(index, index + 4);
+    const values = [...chunk].map(character => character === '=' ? 0 : alphabet.indexOf(character));
+    if (values.some(value => value < 0)) throw new VaultError('CORRUPT', 'Attachment backup data is not valid base64.');
+    const combined = (values[0]! << 18) | (values[1]! << 12) | (values[2]! << 6) | values[3]!;
+    output.push((combined >>> 16) & 255);
+    if (chunk[2] !== '=') output.push((combined >>> 8) & 255);
+    if (chunk[3] !== '=') output.push(combined & 255);
+  }
+  return Uint8Array.from(output);
+}
+
+export function vaultFiles(snapshot: VaultSnapshot): ExportFile[] {
   const encoder = new TextEncoder();
   const tree = new VaultTree(snapshot.entries);
   const contents = new Map<string, MarkdownContent>();
+  const attachments = new Map<string, AttachmentSnapshot>();
   for (const content of snapshot.contents) {
     if (contents.has(content.entryId) || typeof content.text !== 'string') throw new VaultError('CORRUPT', 'Duplicate or invalid canonical Markdown content.');
     contents.set(content.entryId, content);
   }
+  for (const attachment of snapshot.attachments ?? []) {
+    if (attachments.has(attachment.entryId) || !Number.isInteger(attachment.size) || attachment.size < 0) throw new VaultError('CORRUPT', 'Duplicate or invalid attachment backup.');
+    attachments.set(attachment.entryId, attachment);
+  }
   return snapshot.entries.filter(entry => entry.deletedAt === null).map(entry => {
     const path = tree.path(entry.id);
     if (entry.kind === 'directory') return { path: `${path}/`, bytes: new Uint8Array() };
+    if (entry.kind === 'attachment') {
+      const attachment = attachments.get(entry.id);
+      if (!attachment) throw new VaultError('CORRUPT', 'Attachment bytes are missing from this backup.');
+      const bytes = base64Bytes(attachment.dataBase64);
+      if (bytes.byteLength !== attachment.size) throw new VaultError('CORRUPT', 'Attachment size does not match its backup data.');
+      return { path, bytes };
+    }
     const content = contents.get(entry.id);
     assertMarkdownContent(entry, content);
     return { path, bytes: encoder.encode(content.text) };
   });
 }
+
+/** Backwards-compatible name retained for older callers; Phase 9 now exports all active vault files. */
+export const markdownFiles = vaultFiles;
 
 const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
   let crc = value;
