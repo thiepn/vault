@@ -13,6 +13,7 @@ The repository currently includes browser-certified:
 - **Phase 5 — Properties & Metadata**
 - **Phase 6 — Templates, Daily Notes & Calendar**
 - **Phase 7 — Tasks & Task Management**
+- **Phase 8 — Queries & Dynamic Views**
 
 ## Current capabilities
 
@@ -113,10 +114,44 @@ Task management includes:
 - extended search filters including `task:overdue`, `task:today`, `task:recurring`, `task:high`
 - desktop and mobile task workflows
 
+### Queries & Dynamic Views
+
+Queries are stored directly in Markdown fenced blocks and evaluated against rebuildable vault projections.
+
+```vault-query
+view: table
+title: Active projects
+query: tag:#project AND property:status=active
+fields: file, path, tags, property:status
+sort: updated desc
+limit: 25
+exclude-self: true
+```
+
+Supported views:
+
+- `list` — compact linked note results
+- `table` — selected file/property/tag/task-count columns
+- `tasks` — live task rows backed by canonical Markdown checkboxes
+
+Query definitions support:
+
+- the existing text/phrase/Boolean search language
+- tag, file, path, property and task clauses
+- deterministic sorting and result limits
+- property columns
+- current-note exclusion
+- task status/date/priority row filters
+- source-note navigation
+- task completion directly from Reading mode
+- responsive desktop/mobile rendering
+
+Dynamic views do not persist result rows. They are recomputed from Markdown-derived knowledge records.
+
 ## Canonical data
 
 ```text
-CodeMirror / Properties / Templates / Tasks UI
+CodeMirror / Properties / Templates / Tasks / Query definitions
                  ↓
           Markdown + YAML
                  ↓
@@ -130,14 +165,14 @@ Markdown
    ├─→ linked-knowledge index
    ├─→ search worker index
    ├─→ calendar projection
-   └─→ task projection
+   ├─→ task projection
+   └─→ dynamic query projection
 ```
 
-Tasks, Daily Notes and templates are files/text—not proprietary application records.
+Tasks, Daily Notes, templates and query definitions are files/text—not proprietary application records. Query results are disposable projections.
 
 ## Not implemented yet
 
-- Dataview-like query blocks/dynamic views
 - cloud accounts and cross-device sync
 - attachments
 - graph/local graph visualization
@@ -165,6 +200,6 @@ CI runs strict TypeScript, all core contracts, the 10k search benchmark, product
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.7.0-phase7**
+- Current package version: **0.8.0-phase8**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
