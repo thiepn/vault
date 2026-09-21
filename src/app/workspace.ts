@@ -638,6 +638,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function renderTaskCard(item: TaskViewItem): HTMLElement {
     const card = document.createElement('article');
     card.className = 'task-card';
+    card.dataset.taskText = item.task.text;
     if (item.task.completed) card.classList.add('completed');
     card.classList.add(`task-state-${taskDateState(item.task)}`);
     if (item.task.priority) card.classList.add(`task-priority-${item.task.priority}`);

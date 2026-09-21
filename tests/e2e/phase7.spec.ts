@@ -45,7 +45,7 @@ async function createNote(page: Page, name: string, text: string): Promise<void>
 }
 
 function taskCard(page: Page, title: string): Locator {
-  return page.getByDisplayValue(title).locator('..').locator('..');
+  return page.locator(`.task-card[data-task-text="${title.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"]`);
 }
 
 async function sourceText(page: Page): Promise<string> {
@@ -82,21 +82,21 @@ test('Phase 7 task management edits Markdown, recurs tasks and feeds Calendar', 
   await expect(page.locator('.task-summary')).toContainText('1 overdue');
   await expect(page.locator('.task-summary')).toContainText('1 today');
   await expect(taskCard(page, 'Overdue report')).toHaveClass(/task-state-overdue/);
-  await expect(page.getByDisplayValue('Finished task')).toHaveCount(0);
+  await expect(taskCard(page, 'Finished task')).toHaveCount(0);
 
   await page.locator('.task-status-filter').selectOption('all');
-  await expect(page.getByDisplayValue('Finished task')).toBeVisible();
+  await expect(taskCard(page, 'Finished task')).toBeVisible();
 
   await page.locator('.task-date-filter').selectOption('overdue');
-  await expect(page.getByDisplayValue('Overdue report')).toBeVisible();
-  await expect(page.getByDisplayValue('Weekly review')).toHaveCount(0);
+  await expect(taskCard(page, 'Overdue report')).toBeVisible();
+  await expect(taskCard(page, 'Weekly review')).toHaveCount(0);
   await page.locator('.task-date-filter').selectOption('all');
 
   let overdue = taskCard(page, 'Overdue report');
   const title = overdue.locator('.task-title-input');
   await title.fill('Send report');
   await title.press('Tab');
-  await expect(page.getByDisplayValue('Send report')).toBeVisible();
+  await expect(taskCard(page, 'Send report')).toBeVisible();
 
   overdue = taskCard(page, 'Send report');
   await overdue.locator('.task-date-input').nth(1).fill(dates.today);
@@ -106,8 +106,8 @@ test('Phase 7 task management edits Markdown, recurs tasks and feeds Calendar', 
 
   const weekly = taskCard(page, 'Weekly review');
   await weekly.locator('.task-check').check();
-  await expect(page.getByDisplayValue('Weekly review')).toHaveCount(2);
-  const openWeekly = page.locator('.task-card:not(.completed)').filter({ has: page.getByDisplayValue('Weekly review') });
+  await expect(taskCard(page, 'Weekly review')).toHaveCount(2);
+  const openWeekly = page.locator('.task-card[data-task-text="Weekly review"]:not(.completed)');
   await expect(openWeekly.locator('.task-date-input').nth(1)).toHaveValue(dates.nextWeek);
 
   await openPanel(page, 'calendar');
@@ -139,20 +139,20 @@ test('Phase 7 Tasks panel is usable on mobile and can add/complete tasks', async
   await createNote(page, 'Mobile', `# Mobile\n- [ ] Mobile task @due(${today})`);
 
   await openPanel(page, 'tasks');
-  await expect(page.getByDisplayValue('Mobile task')).toBeVisible();
+  await expect(taskCard(page, 'Mobile task')).toBeVisible();
   await expect(page.locator('.task-summary')).toContainText('1 open');
 
   await taskCard(page, 'Mobile task').locator('.task-check').check();
-  await expect(page.getByDisplayValue('Mobile task')).toHaveCount(0);
+  await expect(taskCard(page, 'Mobile task')).toHaveCount(0);
   await expect(page.locator('.task-summary')).toContainText('0 open');
 
   await page.locator('[data-task-action="add"]').click();
-  await expect(page.getByDisplayValue('New task')).toBeVisible();
+  await expect(taskCard(page, 'New task')).toBeVisible();
 
   const newTask = taskCard(page, 'New task').locator('.task-title-input');
   await newTask.fill('Phone follow-up');
   await newTask.press('Tab');
-  await expect(page.getByDisplayValue('Phone follow-up')).toBeVisible();
+  await expect(taskCard(page, 'Phone follow-up')).toBeVisible();
 
   await openPanel(page, 'calendar');
   await expect(page.locator('.calendar-grid')).toBeVisible();
