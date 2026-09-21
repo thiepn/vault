@@ -1890,7 +1890,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   function renderInfo(): void {
     const info = element<HTMLElement>('.file-info'); info.replaceChildren();
-    const data = selected ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]] : [['Files', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
+    const data = selected
+      ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : selected.kind === 'attachment' ? 'Attachment' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]]
+      : [['Notes', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Attachments', String(entries.filter(entry => entry.kind === 'attachment' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
     for (const [key, value] of data) { const dt = document.createElement('dt'); dt.textContent = key!; const dd = document.createElement('dd'); dd.textContent = value!; info.append(dt, dd); }
   }
   function highlightCurrentOutline(): void {
@@ -2417,7 +2419,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     await syncEditorSurface();
     const pendingCursor = pendingCursorOffsets.get(selected.id);
     if (pendingCursor !== undefined && selected.kind === 'markdown' && selected.deletedAt === null) { pendingCursorOffsets.delete(selected.id); editor.revealOffset(pendingCursor); }
-    renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderCalendar(); updateCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
     if (selected.kind === 'markdown' && selected.deletedAt === null) await rememberRecent(selected.id);
@@ -2433,7 +2435,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (saver) await saver.close();
     saver = undefined;
     if (previousEntryId && entries.some(entry => entry.id === previousEntryId && entry.deletedAt === null)) await refreshKnowledgeEntry(previousEntryId);
-    selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); editor.setReadOnly(true); editor.setText(''); renderPropertiesPanel(null);
+    selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); attachmentView.hidden = true; attachmentPreview.replaceChildren(); editor.setReadOnly(true); editor.setText(''); renderPropertiesPanel(null);
     element<HTMLElement>('.empty-state').hidden = false;
     element<HTMLElement>('.folder-message').hidden = true;
     element<HTMLElement>('.breadcrumb').textContent = 'No file selected';
@@ -2443,7 +2445,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const action of ['rename', 'move', 'duplicate', 'delete', 'export-draft', 'checkpoint']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = true;
     element<HTMLElement>('[data-action="restore"]').hidden = true;
     await syncEditorSurface();
-    updateDailyDocumentNav(); renderTasks(); renderCalendar(); updateCounts();
+    updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
   }
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
@@ -2461,9 +2463,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     showingTrash = false; await refresh(); await openEntry(entry.id);
     if (kind === 'markdown') editor.focus();
   } });
-  registry.register({ id: 'vault.export', label: 'Export active Markdown ZIP', enabled: () => !!vault, run: async () => {
+  registry.register({ id: 'vault.export', label: 'Export active vault ZIP', enabled: () => !!vault, run: async () => {
     if (!vault) return; if (saver) await saver.flush();
-    const bytes = zipStore(markdownFiles(await repository.snapshot(vault.id)));
+    const bytes = zipStore(vaultFiles(await repository.snapshot(vault.id)));
     download(`${vault.name}.zip`, new Uint8Array(bytes).buffer, 'application/zip');
   } });
   registry.register({ id: 'vault.backup', label: 'Export recovery backup', enabled: () => !!vault, run: async () => {
@@ -2522,7 +2524,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const panelButton = (event.target as Element).closest<HTMLButtonElement>('[data-sidebar-panel]');
     if (panelButton?.dataset.sidebarPanel) {
       const panel = panelButton.dataset.sidebarPanel;
-      if (panel === 'files' || panel === 'search' || panel === 'tags' || panel === 'tasks' || panel === 'calendar') switchSidebarPanel(panel);
+      if (panel === 'files' || panel === 'search' || panel === 'tags' || panel === 'tasks' || panel === 'media' || panel === 'calendar') switchSidebarPanel(panel);
+      return;
+    }
+
+    const mediaEntryButton = (event.target as Element).closest<HTMLButtonElement>('[data-media-entry]');
+    if (mediaEntryButton?.dataset.mediaEntry) {
+      perform(() => openEntry(mediaEntryButton.dataset.mediaEntry as EntryId));
       return;
     }
 
@@ -2655,6 +2663,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if (action === 'quick-switcher') { void openQuickSwitcher().catch(showError); return; }
+    if (action === 'attachment-upload') { attachmentFileInput.click(); return; }
+    if (action === 'attachment-download') {
+      if (selected?.kind !== 'attachment') return;
+      perform(async () => {
+        const attachment = await repository.readAttachment(selected!.id);
+        download(selected!.name, attachment.bytes, attachment.mimeType);
+      });
+      return;
+    }
     if (action === 'insert-template') {
       perform(async () => {
         if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null) return;
