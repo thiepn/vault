@@ -1669,17 +1669,21 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function moveEntryWithLinkUpdates(entry: Entry, parentId: EntryId | null, name: string): Promise<Entry> {
     const oldEntries = entries.map(item => ({ ...item }));
     const oldRecords = knowledge.records();
+    const descendants = entry.kind === 'directory'
+      ? new VaultTree(oldEntries).descendants(entry.id)
+      : [];
     const affectedIds: EntryId[] = entry.kind === 'markdown'
       ? [entry.id]
-      : new VaultTree(oldEntries).descendants(entry.id)
-          .filter(item => item.kind === 'markdown' && item.deletedAt === null)
-          .map(item => item.id);
+      : descendants.filter(item => item.kind === 'markdown' && item.deletedAt === null).map(item => item.id);
+    const affectedAttachmentIds: EntryId[] = entry.kind === 'attachment'
+      ? [entry.id]
+      : descendants.filter(item => item.kind === 'attachment' && item.deletedAt === null).map(item => item.id);
 
     const moved = await repository.move(entry.id, parentId, name, entry.localVersion);
     const locationChanged = moved.parentId !== entry.parentId || moved.name !== entry.name;
     await refresh();
 
-    if (autoUpdateLinks && locationChanged && affectedIds.length) {
+    if (autoUpdateLinks && locationChanged && (affectedIds.length || affectedAttachmentIds.length)) {
       for (const targetEntryId of affectedIds) {
         await updateInboundLinksAfterMove({
           targetEntryId,
@@ -1689,6 +1693,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           repository,
           index: knowledge,
         });
+      }
+      for (const targetEntryId of affectedAttachmentIds) {
+        await updateAttachmentLinksAfterMove({
+          targetEntryId,
+          oldEntries,
+          newEntries: entries,
+          repository,
+          index: knowledge,
+        });
+        revokeAttachmentUrl(targetEntryId);
       }
       await refresh();
     }
@@ -2006,6 +2020,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     renderKnowledgePanels();
     renderTasks();
+    renderMedia();
     renderCalendar();
     editor.refreshPreview();
   }
@@ -2068,6 +2083,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   async function activateWikiTarget(target: string, sourceEntryId: EntryId): Promise<void> {
+    const rawAttachmentTarget = target.split('#', 1)[0] ?? target;
+    const attachment = resolveAttachmentTarget(rawAttachmentTarget, sourceEntryId, entries);
+    if (attachment.status === 'ambiguous') {
+      throw new VaultError('COLLISION', 'This attachment link is ambiguous. Use its folder-qualified path.');
+    }
+    if (attachment.status === 'resolved') {
+      await openEntry(attachment.entryId);
+      return;
+    }
+
     const resolution = knowledge.resolveRaw(target, sourceEntryId, entries);
     if (resolution.status === 'ambiguous') {
       throw new VaultError('COLLISION', 'This Wiki link is ambiguous. Use a folder-qualified path to choose the intended note.');
@@ -2299,6 +2324,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           return renderDynamicQueryBlock(source, sourceEntryId);
         },
       },
+      attachment: {
+        status(target, sourceEntryId) {
+          const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : rootEntryId;
+          return resolveAttachmentTarget(target, source, entries).status;
+        },
+        async load(target, sourceEntryId) {
+          return await attachmentRenderPayload(target, sourceEntryId);
+        },
+      },
     });
     if (generation !== renderGeneration || editorMode !== 'reading' || selected?.kind !== 'markdown') return;
     readingView.replaceChildren(rendered);
@@ -2308,6 +2342,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const noteOpen = selected?.kind === 'markdown';
     editorHost.hidden = !noteOpen || editorMode === 'reading';
     readingView.hidden = !noteOpen || editorMode !== 'reading';
+    attachmentView.hidden = selected?.kind !== 'attachment';
     element<HTMLElement>('.editor-toolbar').hidden = !noteOpen || editorMode === 'reading' || selected?.deletedAt !== null;
     editor.setMode(editorMode === 'source' ? 'source' : 'live');
     editor.setLineNumbers(lineNumbers);
@@ -2323,6 +2358,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     lines.classList.toggle('active', lineNumbers);
     if (noteOpen && editorMode === 'reading') await renderReadingCurrent();
     else { renderGeneration++; readingView.replaceChildren(); delete readingView.dataset.loading; }
+    if (selected?.kind === 'attachment') await renderAttachmentViewer();
   }
   async function setEditorMode(mode: EditorMode): Promise<void> {
     if (!selected || selected.kind !== 'markdown') return;
