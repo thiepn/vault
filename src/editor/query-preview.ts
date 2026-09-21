@@ -52,18 +52,36 @@ export function parseQueryFences(text: string): QueryFence[] {
 class QueryWidget extends WidgetType {
   constructor(
     private readonly source: string,
+    private readonly from: number,
     private readonly bridge: QueryEditorBridge,
   ) {
     super();
   }
 
   eq(other: QueryWidget): boolean {
-    return other.source === this.source && other.bridge === this.bridge;
+    return other.source === this.source && other.from === this.from && other.bridge === this.bridge;
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const shell = document.createElement('div');
     shell.className = 'cm-query-widget';
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'cm-query-edit';
+    edit.textContent = 'Edit query';
+    edit.setAttribute('aria-label', 'Edit this dynamic query');
+    edit.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      view.dispatch({
+        selection: { anchor: Math.min(view.state.doc.length, this.from + 1) },
+        scrollIntoView: true,
+      });
+      view.focus();
+    });
+    shell.append(edit);
+
     try {
       shell.append(this.bridge.render(this.source));
     } catch (error) {
@@ -86,7 +104,7 @@ function buildDecorations(view: EditorView, bridge: QueryEditorBridge, fences: r
     const active = view.state.selection.ranges.some(range => range.from <= fence.to && range.to >= fence.from);
     if (active) continue;
     ranges.push(Decoration.replace({
-      widget: new QueryWidget(fence.source, bridge),
+      widget: new QueryWidget(fence.source, fence.from, bridge),
       block: true,
     }).range(fence.from, fence.to));
   }
