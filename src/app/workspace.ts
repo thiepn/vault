@@ -14,7 +14,8 @@ import { KnowledgeIndexService } from '../knowledge/index-service.js';
 import { extractFragment } from '../knowledge/fragments.js';
 import { updateInboundLinksAfterMove } from '../knowledge/link-updater.js';
 import { canonicalWikiNote } from '../knowledge/resolver.js';
-import type { WikiResolution } from '../knowledge/types.js';
+import type { KnowledgeTask, WikiResolution } from '../knowledge/types.js';
+import { taskDateState, taskEffectiveDate, updateTaskMarkdown, type TaskPatch, type TaskPriority } from '../tasks/markdown.js';
 import { SearchIndexClient } from '../search/client.js';
 import type { QuickSwitchResult, SearchFacets, SearchInput, SearchResult, SearchStats } from '../search/types.js';
 import { deleteFrontmatterProperty, inspectFrontmatter, rawValueForProperty, renameFrontmatterProperty, setFrontmatterProperty, valueForKind, type PropertyKind } from '../metadata/frontmatter.js';
@@ -24,7 +25,7 @@ import { buildCalendarMonth, dailyDateForEntry, dailyEntryForDate } from '../pla
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 6 browser workspace: templates, Daily Notes and calendar on the accepted Phase 1-5 foundation. */
+/** Phase 7 browser workspace: Markdown-native task management on the accepted Phase 1-6 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -68,7 +69,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let searchIndexedVersions = new Map<EntryId, number>();
   let searchMetadata = new Map<EntryId, string>();
   let recentEntries: EntryId[] = [];
-  let sidebarPanel: 'files' | 'search' | 'tags' | 'calendar' = 'files';
+  let sidebarPanel: 'files' | 'search' | 'tags' | 'tasks' | 'calendar' = 'files';
   let searchResults: SearchResult[] = [];
   let searchFacets: SearchFacets = { tags: [], properties: [] };
   let searchStats: SearchStats = { documents: 0, tokens: 0, tags: 0, properties: 0 };
@@ -89,6 +90,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let folderTemplates: Record<string, string> = {};
   let calendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1, 12, 0, 0, 0);
   let calendarSelectedKey = dateKey(new Date());
+  let taskStatusFilter: 'open' | 'done' | 'all' = 'open';
+  let taskDateFilter: 'all' | 'overdue' | 'today' | 'upcoming' | 'undated' = 'all';
+  let taskPriorityFilter: 'all' | TaskPriority | 'none' = 'all';
+  let taskGroup: 'date' | 'note' | 'priority' | 'none' = 'date';
+  let taskFilterText = '';
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
   let searchBuildChain: Promise<void> = Promise.resolve();
@@ -102,13 +108,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 6 \u00b7 Daily Notes</span>
+        <span class="stage">Phase 7 \u00b7 Tasks</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
         <div class="vault-picker"><select id="vault-vault" aria-label="Active vault"></select><button data-action="vault-rename" aria-label="Rename active vault" title="Rename vault">\u270e</button></div>
         <button data-command="vault.create" class="quiet">+ New vault</button>
-        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button><button type="button" role="tab" data-sidebar-panel="calendar" aria-selected="false">Calendar</button></div>
+        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button><button type="button" role="tab" data-sidebar-panel="tasks" aria-selected="false">Tasks</button><button type="button" role="tab" data-sidebar-panel="calendar" aria-selected="false">Calendar</button></div>
         <section class="sidebar-panel files-panel" data-panel="files">
           <div class="section-heading"><span>EXPLORER</span><button data-action="reload" aria-label="Reload file list">\u21bb</button></div>
           <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button></div><button type="button" class="quiet create-template-note" data-action="create-from-template">+ Note from template</button>
@@ -122,7 +128,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <section class="sidebar-panel search-panel" data-panel="search" hidden>
           <div class="section-heading"><span>VAULT SEARCH</span><button data-action="rebuild-search" aria-label="Rebuild search index">\u21bb</button></div>
           <input class="global-search" type="search" placeholder="Search notes\u2026" aria-label="Search vault" autocomplete="off" />
-          <p class="search-help">Try words, "exact phrase", tag:#math, path:University, file:Analysis, property:status=active, task:open, AND/OR/NOT.</p>
+          <p class="search-help">Try words, "exact phrase", tag:#math, property:status=active, task:open, task:overdue, task:recurring, AND/OR/NOT.</p>
           <p class="search-status" role="status">Search index is preparing\u2026</p>
           <div class="search-results" role="list" aria-label="Search results"></div>
         </section>
@@ -131,6 +137,19 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <input class="tag-filter" type="search" placeholder="Filter tags/properties\u2026" aria-label="Filter tags and properties" />
           <div class="facet-heading">TAGS</div><div class="tag-list"></div>
           <div class="facet-heading">PROPERTIES</div><div class="property-list"></div>
+        </section>
+        <section class="sidebar-panel tasks-panel" data-panel="tasks" hidden>
+          <div class="section-heading"><span>TASKS</span><button type="button" data-task-action="add" class="task-add">+ Current note</button></div>
+          <input class="task-filter" type="search" placeholder="Filter tasks…" aria-label="Filter tasks" />
+          <div class="task-filter-grid">
+            <select class="task-status-filter" aria-label="Task status"><option value="open">Open</option><option value="done">Done</option><option value="all">All</option></select>
+            <select class="task-date-filter" aria-label="Task date"><option value="all">Any date</option><option value="overdue">Overdue</option><option value="today">Today</option><option value="upcoming">Upcoming</option><option value="undated">Undated</option></select>
+            <select class="task-priority-filter" aria-label="Task priority"><option value="all">Any priority</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="none">No priority</option></select>
+            <select class="task-group-select" aria-label="Group tasks"><option value="date">Group: date</option><option value="note">Group: note</option><option value="priority">Group: priority</option><option value="none">No grouping</option></select>
+          </div>
+          <p class="task-summary" role="status"></p>
+          <div class="task-list" aria-label="Vault tasks"></div>
+          <p class="task-syntax-help">Metadata stays in Markdown: @due(YYYY-MM-DD) · @scheduled(YYYY-MM-DD) · @priority(high) · @repeat(weekly)</p>
         </section>
         <section class="sidebar-panel calendar-panel" data-panel="calendar" hidden>
           <div class="calendar-heading"><button type="button" data-calendar-action="prev-month" aria-label="Previous month">‹</button><strong class="calendar-label"></strong><button type="button" data-calendar-action="next-month" aria-label="Next month">›</button></div>
@@ -161,8 +180,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 6</p><h1>Your notes, on a rhythm.</h1>
-          <p>Create notes from Markdown templates, open today's note instantly, and move through a calendar derived from ordinary files and date properties.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 7</p><h1>Tasks that remain Markdown.</h1>
+          <p>Manage checkboxes, due dates, priorities and recurring work across the vault without moving task truth into a separate database.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -233,6 +252,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const tagFilter = element<HTMLInputElement>('.tag-filter');
   const tagList = element<HTMLElement>('.tag-list');
   const propertyList = element<HTMLElement>('.property-list');
+  const taskList = element<HTMLElement>('.task-list');
+  const taskFilter = element<HTMLInputElement>('.task-filter');
+  const taskStatusSelect = element<HTMLSelectElement>('.task-status-filter');
+  const taskDateSelect = element<HTMLSelectElement>('.task-date-filter');
+  const taskPrioritySelect = element<HTMLSelectElement>('.task-priority-filter');
+  const taskGroupSelect = element<HTMLSelectElement>('.task-group-select');
+  const taskSummary = element<HTMLElement>('.task-summary');
   const searchIndexStatus = element<HTMLElement>('.search-index-status');
   const quickDialog = element<HTMLDialogElement>('.quick-switcher-dialog');
   const quickInput = element<HTMLInputElement>('.quick-switcher-input');
@@ -513,6 +539,249 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
   }
 
+  interface TaskViewItem {
+    entry: Entry;
+    path: string;
+    task: KnowledgeTask;
+  }
+
+  function allTaskItems(): TaskViewItem[] {
+    const tree = new VaultTree(entries);
+    const byId = new Map(entries.filter(entry => entry.kind === 'markdown' && entry.deletedAt === null).map(entry => [entry.id, entry]));
+    const items: TaskViewItem[] = [];
+    for (const record of knowledge.records()) {
+      const entry = byId.get(record.entryId);
+      if (!entry) continue;
+      const path = tree.path(entry.id);
+      for (const task of record.tasks) items.push({ entry, path, task });
+    }
+    return items;
+  }
+
+  function taskPriorityRank(priority: TaskPriority | null): number {
+    return priority === 'high' ? 0 : priority === 'medium' ? 1 : priority === 'low' ? 2 : 3;
+  }
+
+  function taskGroupLabel(item: TaskViewItem): string {
+    if (taskGroup === 'note') return item.path;
+    if (taskGroup === 'priority') return item.task.priority ? `${item.task.priority[0]!.toUpperCase()}${item.task.priority.slice(1)} priority` : 'No priority';
+    if (taskGroup === 'date') {
+      const state = taskDateState(item.task);
+      return state === 'overdue' ? 'Overdue' : state === 'today' ? 'Today' : state === 'upcoming' ? 'Upcoming' : state === 'undated' ? 'Undated' : 'Completed';
+    }
+    return '';
+  }
+
+  function taskSort(left: TaskViewItem, right: TaskViewItem): number {
+    if (left.task.completed !== right.task.completed) return left.task.completed ? 1 : -1;
+    const leftDate = taskEffectiveDate(left.task) ?? '9999-99-99';
+    const rightDate = taskEffectiveDate(right.task) ?? '9999-99-99';
+    if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
+    const priority = taskPriorityRank(left.task.priority) - taskPriorityRank(right.task.priority);
+    if (priority) return priority;
+    return left.path.localeCompare(right.path) || left.task.from - right.task.from;
+  }
+
+  function assignTaskDataset(element: HTMLElement, item: TaskViewItem): void {
+    element.dataset.taskEntry = item.entry.id;
+    element.dataset.taskFrom = String(item.task.from);
+    element.dataset.taskTo = String(item.task.to);
+    element.dataset.taskRaw = item.task.raw;
+  }
+
+  function taskItemFromDataset(element: HTMLElement): { entryId: EntryId; task: Pick<KnowledgeTask, 'from' | 'to' | 'raw'> } | null {
+    const entryId = element.dataset.taskEntry as EntryId | undefined;
+    const from = Number(element.dataset.taskFrom);
+    const to = Number(element.dataset.taskTo);
+    const raw = element.dataset.taskRaw;
+    if (!entryId || !Number.isInteger(from) || !Number.isInteger(to) || raw === undefined) return null;
+    return { entryId, task: { from, to, raw } };
+  }
+
+  async function mutateTask(
+    entryId: EntryId,
+    task: Pick<KnowledgeTask, 'from' | 'to' | 'raw'>,
+    patch: TaskPatch,
+  ): Promise<void> {
+    if (selected?.id === entryId && saver) await saver.flush();
+    const file = await repository.read(entryId);
+    if (file.entry.kind !== 'markdown' || file.entry.deletedAt !== null || !file.content) {
+      throw new VaultError('NOT_FOUND', 'The task source note is unavailable.');
+    }
+    const mutation = updateTaskMarkdown(file.content.text, task, patch);
+
+    if (selected?.id === entryId && saver) {
+      editor.setText(mutation.text);
+      saver.update(mutation.text);
+      await saver.flush();
+      await refreshKnowledgeEntry(entryId);
+    } else {
+      const saved = await repository.saveMarkdown(entryId, mutation.text, file.entry.localVersion);
+      const index = entries.findIndex(entry => entry.id === saved.id);
+      if (index >= 0) entries[index] = saved;
+      await knowledge.upsert(saved, mutation.text);
+      await refreshSearchEntry(entryId);
+      renderTree();
+      renderTasks();
+      renderCalendar();
+    }
+  }
+
+  async function openTaskSource(entryId: EntryId, from: number): Promise<void> {
+    await openEntry(entryId);
+    if (editorMode === 'reading') await setEditorMode('live');
+    const record = knowledge.get(entryId);
+    const current = record?.tasks.find(task => task.from === from) ?? record?.tasks.find(task => task.from >= from);
+    editor.revealRange(current?.from ?? from, current?.to ?? from);
+  }
+
+  function renderTaskCard(item: TaskViewItem): HTMLElement {
+    const card = document.createElement('article');
+    card.className = 'task-card';
+    if (item.task.completed) card.classList.add('completed');
+    card.classList.add(`task-state-${taskDateState(item.task)}`);
+    if (item.task.priority) card.classList.add(`task-priority-${item.task.priority}`);
+    assignTaskDataset(card, item);
+
+    const top = document.createElement('div');
+    top.className = 'task-card-top';
+
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'task-check';
+    check.checked = item.task.completed;
+    check.dataset.taskRole = 'completed';
+    check.setAttribute('aria-label', `Complete task: ${item.task.text}`);
+
+    const title = document.createElement('input');
+    title.type = 'text';
+    title.className = 'task-title-input';
+    title.value = item.task.text;
+    title.dataset.taskRole = 'text';
+    title.setAttribute('aria-label', 'Task text');
+
+    const source = document.createElement('button');
+    source.type = 'button';
+    source.className = 'task-source';
+    source.dataset.taskAction = 'source';
+    source.textContent = item.path;
+    source.title = `Open ${item.path}`;
+
+    top.append(check, title);
+    card.append(top, source);
+
+    const metadata = document.createElement('div');
+    metadata.className = 'task-metadata';
+
+    const scheduled = document.createElement('input');
+    scheduled.type = 'date';
+    scheduled.className = 'task-date-input';
+    scheduled.value = item.task.scheduled ?? '';
+    scheduled.dataset.taskRole = 'scheduled';
+    scheduled.title = 'Scheduled date';
+    scheduled.setAttribute('aria-label', 'Scheduled date');
+
+    const due = document.createElement('input');
+    due.type = 'date';
+    due.className = 'task-date-input';
+    due.value = item.task.due ?? '';
+    due.dataset.taskRole = 'due';
+    due.title = 'Due date';
+    due.setAttribute('aria-label', 'Due date');
+
+    const priority = document.createElement('select');
+    priority.className = 'task-priority-input';
+    priority.dataset.taskRole = 'priority';
+    priority.setAttribute('aria-label', 'Task priority');
+    priority.add(new Option('No priority', ''));
+    priority.add(new Option('High', 'high'));
+    priority.add(new Option('Medium', 'medium'));
+    priority.add(new Option('Low', 'low'));
+    priority.value = item.task.priority ?? '';
+
+    const recurrence = document.createElement('input');
+    recurrence.type = 'text';
+    recurrence.className = 'task-repeat-input';
+    recurrence.dataset.taskRole = 'recurrence';
+    recurrence.value = item.task.recurrence ?? '';
+    recurrence.placeholder = 'repeat';
+    recurrence.title = 'daily, weekly, monthly, yearly, every 2w…';
+    recurrence.setAttribute('aria-label', 'Task recurrence');
+
+    metadata.append(scheduled, due, priority, recurrence);
+    card.append(metadata);
+
+    if (item.task.completedOn) {
+      const done = document.createElement('span');
+      done.className = 'task-done-date';
+      done.textContent = `Done ${item.task.completedOn}`;
+      card.append(done);
+    }
+    return card;
+  }
+
+  function renderTasks(): void {
+    taskList.replaceChildren();
+    const all = allTaskItems();
+    const open = all.filter(item => !item.task.completed);
+    const overdue = open.filter(item => taskDateState(item.task) === 'overdue').length;
+    const today = open.filter(item => taskDateState(item.task) === 'today').length;
+    taskSummary.textContent = `${open.length} open · ${overdue} overdue · ${today} today · ${all.length} total`;
+    element<HTMLButtonElement>('[data-task-action="add"]').disabled = !selected || selected.kind !== 'markdown' || selected.deletedAt !== null;
+
+    const query = taskFilterText.trim().normalize('NFC').toLocaleLowerCase();
+    const filtered = all.filter(item => {
+      if (taskStatusFilter === 'open' && item.task.completed) return false;
+      if (taskStatusFilter === 'done' && !item.task.completed) return false;
+      if (taskDateFilter !== 'all' && taskDateState(item.task) !== taskDateFilter) return false;
+      if (taskPriorityFilter !== 'all') {
+        if (taskPriorityFilter === 'none' ? item.task.priority !== null : item.task.priority !== taskPriorityFilter) return false;
+      }
+      if (query && !item.task.text.normalize('NFC').toLocaleLowerCase().includes(query) && !item.path.normalize('NFC').toLocaleLowerCase().includes(query)) return false;
+      return true;
+    }).sort(taskSort);
+
+    if (!filtered.length) {
+      const empty = document.createElement('p');
+      empty.className = 'task-empty';
+      empty.textContent = all.length ? 'No tasks match these filters.' : 'No Markdown tasks found. Use - [ ] in any note.';
+      taskList.append(empty);
+      return;
+    }
+
+    const groups = new Map<string, TaskViewItem[]>();
+    for (const item of filtered) {
+      const label = taskGroupLabel(item);
+      const bucket = groups.get(label) ?? [];
+      bucket.push(item);
+      groups.set(label, bucket);
+    }
+    for (const [label, items] of groups) {
+      if (taskGroup !== 'none') {
+        const heading = document.createElement('h3');
+        heading.className = 'task-group-heading';
+        heading.textContent = label;
+        taskList.append(heading);
+      }
+      for (const item of items) taskList.append(renderTaskCard(item));
+    }
+  }
+
+  async function addTaskToCurrentNote(): Promise<void> {
+    if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null || !saver) {
+      throw new VaultError('UNSUPPORTED', 'Open an active Markdown note before adding a task.');
+    }
+    await saver.flush();
+    const source = editor.getText();
+    const separator = source.length === 0 || source.endsWith('\n') ? '' : '\n';
+    const next = source + separator + '- [ ] New task';
+    editor.setText(next);
+    saver.update(next);
+    await saver.flush();
+    await refreshKnowledgeEntry(selected.id);
+    switchSidebarPanel('tasks');
+  }
+
   function renderCalendar(): void {
     calendarGrid.replaceChildren();
     calendarDayNotes.replaceChildren();
@@ -533,9 +802,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (day.isToday) button.classList.add('today');
       if (day.dailyEntryId) button.classList.add('has-daily');
       if (day.associatedEntryIds.length) button.classList.add('has-associated');
+      if (day.tasks.length) button.classList.add('has-task');
       if (day.key === calendarSelectedKey) button.classList.add('selected');
       button.dataset.calendarDate = day.key;
-      button.setAttribute('aria-label', `${day.key}${day.dailyEntryId ? ', daily note exists' : ', create daily note'}${day.associatedEntryIds.length ? `, ${day.associatedEntryIds.length} associated notes` : ''}`);
+      button.setAttribute('aria-label', `${day.key}${day.dailyEntryId ? ', daily note exists' : ', create daily note'}${day.associatedEntryIds.length ? `, ${day.associatedEntryIds.length} associated notes` : ''}${day.tasks.length ? `, ${day.tasks.length} open tasks` : ''}`);
       const number = document.createElement('span');
       number.className = 'calendar-day-number';
       number.textContent = String(day.date.getDate());
@@ -550,6 +820,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         const count = document.createElement('small');
         count.textContent = String(day.associatedEntryIds.length);
         marks.append(count);
+      }
+      if (day.tasks.length) {
+        const taskCount = document.createElement('b');
+        taskCount.className = 'calendar-task-count';
+        taskCount.textContent = String(day.tasks.length);
+        marks.append(taskCount);
       }
       button.append(number, marks);
       calendarGrid.append(button);
@@ -572,16 +848,37 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         button.textContent = entry.name.replace(/\.md$/iu, '');
         calendarDayNotes.append(button);
       }
-      if (!ids.length) {
+      for (const task of chosen.tasks) {
+        const entry = entries.find(item => item.id === task.entryId);
+        if (!entry) continue;
+        const item: TaskViewItem = { entry, path: pathOf(entry.id), task: { ...task, to: task.from + task.raw.length, recurrence: null, completedOn: null } };
+        const row = document.createElement('div');
+        row.className = 'calendar-task-row';
+        assignTaskDataset(row, item);
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = false;
+        checkbox.dataset.taskRole = 'completed';
+        checkbox.setAttribute('aria-label', `Complete calendar task: ${task.text}`);
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.dataset.taskAction = 'source';
+        open.textContent = task.text;
+        const meta = document.createElement('span');
+        meta.textContent = task.due === chosen.key ? 'Due' : 'Scheduled';
+        row.append(checkbox, open, meta);
+        calendarDayNotes.append(row);
+      }
+      if (!ids.length && !chosen.tasks.length) {
         const empty = document.createElement('p');
         empty.className = 'panel-empty';
-        empty.textContent = 'No dated notes yet. Click the day to create its Daily Note.';
+        empty.textContent = 'No dated notes or tasks yet. Click the day to create its Daily Note.';
         calendarDayNotes.append(empty);
       }
     }
   }
 
-  function switchSidebarPanel(panel: 'files' | 'search' | 'tags' | 'calendar'): void {
+  function switchSidebarPanel(panel: 'files' | 'search' | 'tags' | 'tasks' | 'calendar'): void {
     sidebarPanel = panel;
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-sidebar-panel]')) {
       const active = button.dataset.sidebarPanel === panel;
@@ -593,6 +890,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     if (panel === 'search') globalSearch.focus();
     if (panel === 'tags') tagFilter.focus();
+    if (panel === 'tasks') { renderTasks(); taskFilter.focus(); }
     if (panel === 'calendar') renderCalendar();
   }
 
@@ -1038,7 +1336,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderCalendar(); updateVaultCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderCalendar(); updateVaultCounts();
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
@@ -1475,6 +1773,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await refreshSearchEntry(entryId);
     }
     renderKnowledgePanels();
+    renderTasks();
     renderCalendar();
   }
 
@@ -1681,7 +1980,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     await syncEditorSurface();
     const pendingCursor = pendingCursorOffsets.get(selected.id);
     if (pendingCursor !== undefined && selected.kind === 'markdown' && selected.deletedAt === null) { pendingCursorOffsets.delete(selected.id); editor.revealOffset(pendingCursor); }
-    renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderCalendar(); updateCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderCalendar(); updateCounts();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
     if (selected.kind === 'markdown' && selected.deletedAt === null) await rememberRecent(selected.id);
@@ -1707,7 +2006,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const action of ['rename', 'move', 'duplicate', 'delete', 'export-draft', 'checkpoint']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = true;
     element<HTMLElement>('[data-action="restore"]').hidden = true;
     await syncEditorSurface();
-    updateDailyDocumentNav(); renderCalendar(); updateCounts();
+    updateDailyDocumentNav(); renderTasks(); renderCalendar(); updateCounts();
   }
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
@@ -1738,6 +2037,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   } });
 
   root.addEventListener('click', event => {
+    const taskAction = (event.target as Element).closest<HTMLButtonElement>('[data-task-action]');
+    if (taskAction?.dataset.taskAction) {
+      const action = taskAction.dataset.taskAction;
+      if (action === 'add') { perform(addTaskToCurrentNote); return; }
+      if (action === 'source') {
+        const holder = taskAction.closest<HTMLElement>('[data-task-entry]');
+        const item = holder ? taskItemFromDataset(holder) : null;
+        if (item) perform(() => openTaskSource(item.entryId, item.task.from));
+        return;
+      }
+    }
+
     const propertyAction = (event.target as Element).closest<HTMLButtonElement>('[data-property-action]');
     if (propertyAction?.dataset.propertyAction) {
       const action = propertyAction.dataset.propertyAction;
@@ -1774,7 +2085,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const panelButton = (event.target as Element).closest<HTMLButtonElement>('[data-sidebar-panel]');
     if (panelButton?.dataset.sidebarPanel) {
       const panel = panelButton.dataset.sidebarPanel;
-      if (panel === 'files' || panel === 'search' || panel === 'tags' || panel === 'calendar') switchSidebarPanel(panel);
+      if (panel === 'files' || panel === 'search' || panel === 'tags' || panel === 'tasks' || panel === 'calendar') switchSidebarPanel(panel);
       return;
     }
 
@@ -2046,6 +2357,26 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   root.addEventListener('change', event => {
+    const control = (event.target as Element).closest<HTMLInputElement | HTMLSelectElement>('[data-task-role]');
+    if (!control) return;
+    const holder = control.closest<HTMLElement>('[data-task-entry]');
+    const item = holder ? taskItemFromDataset(holder) : null;
+    if (!item) return;
+    const role = control.dataset.taskRole;
+    const value = control instanceof HTMLInputElement && control.type === 'checkbox' ? '' : control.value;
+    const checked = control instanceof HTMLInputElement && control.type === 'checkbox' ? control.checked : false;
+    const patch: TaskPatch = {};
+    if (role === 'completed') patch.completed = checked;
+    else if (role === 'text') patch.text = value;
+    else if (role === 'due') patch.due = value || null;
+    else if (role === 'scheduled') patch.scheduled = value || null;
+    else if (role === 'priority') patch.priority = (value || null) as TaskPriority | null;
+    else if (role === 'recurrence') patch.recurrence = value || null;
+    else return;
+    perform(() => mutateTask(item.entryId, item.task, patch));
+  }, { signal: abort.signal });
+
+  root.addEventListener('change', event => {
     const control = (event.target as Element).closest<HTMLInputElement | HTMLSelectElement>('[data-property-role]');
     if (!control) return;
     const row = control.closest<HTMLElement>('.property-row');
@@ -2082,6 +2413,27 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (!success || role !== 'value') renderPropertiesPanel();
       }
     });
+  }, { signal: abort.signal });
+
+  taskFilter.addEventListener('input', () => {
+    taskFilterText = taskFilter.value;
+    renderTasks();
+  }, { signal: abort.signal });
+  taskStatusSelect.addEventListener('change', () => {
+    if (taskStatusSelect.value === 'open' || taskStatusSelect.value === 'done' || taskStatusSelect.value === 'all') taskStatusFilter = taskStatusSelect.value;
+    renderTasks();
+  }, { signal: abort.signal });
+  taskDateSelect.addEventListener('change', () => {
+    if (taskDateSelect.value === 'all' || taskDateSelect.value === 'overdue' || taskDateSelect.value === 'today' || taskDateSelect.value === 'upcoming' || taskDateSelect.value === 'undated') taskDateFilter = taskDateSelect.value;
+    renderTasks();
+  }, { signal: abort.signal });
+  taskPrioritySelect.addEventListener('change', () => {
+    if (taskPrioritySelect.value === 'all' || taskPrioritySelect.value === 'high' || taskPrioritySelect.value === 'medium' || taskPrioritySelect.value === 'low' || taskPrioritySelect.value === 'none') taskPriorityFilter = taskPrioritySelect.value;
+    renderTasks();
+  }, { signal: abort.signal });
+  taskGroupSelect.addEventListener('change', () => {
+    if (taskGroupSelect.value === 'date' || taskGroupSelect.value === 'note' || taskGroupSelect.value === 'priority' || taskGroupSelect.value === 'none') taskGroup = taskGroupSelect.value;
+    renderTasks();
   }, { signal: abort.signal });
 
   recoverySelect.addEventListener('change', showRecoverySelection, { signal: abort.signal });

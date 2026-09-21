@@ -2,6 +2,17 @@ import type { Entry, EntryId } from '../domain/model.js';
 import type { KnowledgeRecord, KnowledgePropertyValue } from '../knowledge/types.js';
 import { addLocalDays, dateKey, parseDateFilename, safeDailyFilename } from './templates.js';
 
+export interface CalendarTaskReference {
+  entryId: EntryId;
+  from: number;
+  raw: string;
+  text: string;
+  completed: boolean;
+  due: string | null;
+  scheduled: string | null;
+  priority: 'high' | 'medium' | 'low' | null;
+}
+
 export interface CalendarDay {
   date: Date;
   key: string;
@@ -9,6 +20,7 @@ export interface CalendarDay {
   isToday: boolean;
   dailyEntryId: EntryId | null;
   associatedEntryIds: EntryId[];
+  tasks: CalendarTaskReference[];
 }
 
 export interface CalendarMonth {
@@ -38,6 +50,31 @@ export function dateAssociations(records: readonly KnowledgeRecord[]): Map<strin
       for (const key of scalarDates(value)) {
         const bucket = map.get(key) ?? new Set<EntryId>();
         bucket.add(record.entryId);
+        map.set(key, bucket);
+      }
+    }
+  }
+  return map;
+}
+
+export function taskDateAssociations(records: readonly KnowledgeRecord[]): Map<string, CalendarTaskReference[]> {
+  const map = new Map<string, CalendarTaskReference[]>();
+  for (const record of records) {
+    for (const task of record.tasks) {
+      if (task.completed) continue;
+      const dates = [...new Set([task.scheduled, task.due].filter((value): value is string => typeof value === 'string'))];
+      for (const key of dates) {
+        const bucket = map.get(key) ?? [];
+        bucket.push({
+          entryId: record.entryId,
+          from: task.from,
+          raw: task.raw,
+          text: task.text,
+          completed: task.completed,
+          due: task.due,
+          scheduled: task.scheduled,
+          priority: task.priority,
+        });
         map.set(key, bucket);
       }
     }
@@ -76,6 +113,7 @@ export function buildCalendarMonth(
   const start = addLocalDays(first, -((first.getDay() + 6) % 7));
   const todayKey = dateKey(options.today ?? new Date());
   const associations = dateAssociations(records);
+  const taskAssociations = taskDateAssociations(records);
   const days: CalendarDay[] = [];
   for (let index = 0; index < 42; index++) {
     const date = addLocalDays(start, index);
@@ -90,6 +128,7 @@ export function buildCalendarMonth(
       isToday: key === todayKey,
       dailyEntryId: daily?.id ?? null,
       associatedEntryIds: associated,
+      tasks: taskAssociations.get(key) ?? [],
     });
   }
   return {

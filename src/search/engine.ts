@@ -1,4 +1,5 @@
 import { parseKnowledge } from '../knowledge/parser.js';
+import { taskDateState } from '../tasks/markdown.js';
 import type { EntryId } from '../domain/model.js';
 import type { KnowledgePropertyValue, KnowledgeScalar } from '../knowledge/types.js';
 import { parseSearchQuery, positiveClauses, type SearchAst, type SearchClause } from './query.js';
@@ -295,9 +296,17 @@ export class SearchEngine {
     }
     if (clause.kind === 'task') {
       return new Set([...this.documents.values()].filter(document => {
-        if (clause.value === 'any') return document.knowledge.tasks.length > 0;
-        if (clause.value === 'open') return document.knowledge.tasks.some(task => !task.completed);
-        return document.knowledge.tasks.some(task => task.completed);
+        const tasks = document.knowledge.tasks;
+        if (clause.value === 'any') return tasks.length > 0;
+        if (clause.value === 'open') return tasks.some(task => !task.completed);
+        if (clause.value === 'done') return tasks.some(task => task.completed);
+        if (clause.value === 'recurring') return tasks.some(task => !task.completed && task.recurrence !== null);
+        if (clause.value === 'scheduled') return tasks.some(task => !task.completed && task.scheduled !== null);
+        if (clause.value === 'due') return tasks.some(task => !task.completed && task.due !== null);
+        if (clause.value === 'high' || clause.value === 'medium' || clause.value === 'low') {
+          return tasks.some(task => !task.completed && task.priority === clause.value);
+        }
+        return tasks.some(task => taskDateState(task) === clause.value);
       }).map(document => document.entryId));
     }
     if (clause.kind === 'property') {

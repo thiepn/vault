@@ -1,7 +1,8 @@
 import type { EntryId, VaultId } from '../domain/model.js';
 import type { KnowledgeBlock, KnowledgeHeading, KnowledgePropertyValue, KnowledgeRecord, KnowledgeScalar, KnowledgeTask, WikiReference } from './types.js';
+import { parseTaskLine } from '../tasks/markdown.js';
 
-export const KNOWLEDGE_INDEX_VERSION = 4;
+export const KNOWLEDGE_INDEX_VERSION = 5;
 
 interface Range { from: number; to: number }
 
@@ -276,14 +277,8 @@ function parseTasks(text: string, ignored: readonly Range[]): KnowledgeTask[] {
   const tasks: KnowledgeTask[] = [];
   for (const line of lineRanges(text)) {
     if (inside(ignored, line.from)) continue;
-    const task = /^\s*[-*+]\s+\[([ xX])\]\s+(.+?)\s*$/u.exec(line.text);
-    if (!task) continue;
-    tasks.push({
-      text: task[2]!,
-      completed: task[1]!.toLocaleLowerCase() === 'x',
-      from: line.from,
-      to: line.to,
-    });
+    const task = parseTaskLine(line.text, line.from);
+    if (task) tasks.push(task);
   }
   return tasks;
 }

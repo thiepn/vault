@@ -1,4 +1,5 @@
 import type { EntryId, VaultId } from '../domain/model.js';
+import type { TaskPriority } from '../tasks/markdown.js';
 
 export interface WikiReference {
   raw: string;
@@ -35,10 +36,16 @@ export type KnowledgeScalar = string | number | boolean | null;
 export type KnowledgePropertyValue = KnowledgeScalar | KnowledgeScalar[];
 
 export interface KnowledgeTask {
+  raw: string;
   text: string;
   completed: boolean;
   from: number;
   to: number;
+  due: string | null;
+  scheduled: string | null;
+  priority: TaskPriority | null;
+  recurrence: string | null;
+  completedOn: string | null;
 }
 
 export interface KnowledgeRecord {

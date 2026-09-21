@@ -213,3 +213,52 @@
   .template-dialog{padding:16px}
   .template-dialog select{font-size:16px}
 }
+
+
+/* Phase 7 — Markdown-native task management */
+.sidebar-tabs{grid-template-columns:repeat(5,minmax(0,1fr))}
+.tasks-panel{overflow:auto;padding-bottom:10px}
+.task-add{width:auto!important;margin:0!important;padding:4px 7px!important;font-size:9px!important}
+.task-filter{margin-top:4px}
+.task-filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px}
+.task-filter-grid select{min-width:0;width:100%;border:1px solid var(--line);border-radius:4px;background:#fff;color:inherit;padding:5px 4px;font-size:9px}
+.task-summary{margin:8px 1px 4px;color:var(--muted);font-size:9px}
+.task-list{display:grid;gap:5px}
+.task-group-heading{position:sticky;top:0;z-index:1;margin:7px 0 1px;padding:4px 2px;background:var(--surface);color:var(--muted);font-size:9px;letter-spacing:.55px;text-transform:uppercase}
+.task-card{display:grid;gap:5px;padding:7px;border:1px solid #e1e7e3;border-radius:5px;background:#fff}
+.task-card.completed{opacity:.62}
+.task-card.task-state-overdue{border-left:3px solid #b45c50}
+.task-card.task-state-today{border-left:3px solid #a88229}
+.task-card.task-priority-high:not(.task-state-overdue){border-left:3px solid #a45a52}
+.task-card-top{display:grid;grid-template-columns:20px minmax(0,1fr);gap:5px;align-items:center}
+.task-check{width:16px;height:16px;margin:0}
+.task-title-input{width:100%;min-width:0;border:0;background:transparent;padding:2px 0;font-size:10px;font-weight:590}
+.task-title-input:focus{outline:0;border-bottom:1px solid var(--accent)}
+.task-card.completed .task-title-input{text-decoration:line-through}
+.task-source{width:100%!important;margin:0!important;padding:2px 0!important;border:0!important;background:transparent!important;color:var(--muted)!important;text-align:left!important;font-size:8px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-source:hover{color:var(--accent)!important}
+.task-metadata{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.task-metadata input,.task-metadata select{min-width:0;width:100%;border:1px solid var(--line);border-radius:4px;background:#fafcfb;color:inherit;padding:4px;font-size:9px}
+.task-repeat-input{grid-column:1/3}
+.task-done-date{font-size:8px;color:var(--muted)}
+.task-empty,.task-syntax-help{font-size:9px;line-height:1.5;color:var(--muted)}
+.task-syntax-help{margin:10px 1px}
+.calendar-task-count{display:grid;place-items:center;min-width:11px;height:11px;padding:0 2px;border-radius:8px;background:#dbe7f1;color:#3e617d;font-size:7px;font-weight:700}
+.calendar-day.has-task{background-image:linear-gradient(to bottom,transparent 0,transparent)}
+.calendar-task-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:5px;align-items:center;padding:5px 4px;border-radius:4px;background:#f2f6f8}
+.calendar-task-row input{margin:0}
+.calendar-task-row button{border:0!important;background:transparent!important;padding:0!important;text-align:left!important;font-size:9px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.calendar-task-row span{font-size:8px;color:var(--muted)}
+@media(max-width:640px){
+  .sidebar-tabs{grid-template-columns:repeat(5,minmax(0,1fr))}
+  .sidebar-tabs button{font-size:9px}
+  .task-add{min-height:34px!important;font-size:10px!important}
+  .task-filter-grid select{min-height:38px;font-size:12px}
+  .task-card{padding:9px;gap:7px}
+  .task-card-top{grid-template-columns:24px minmax(0,1fr)}
+  .task-check{width:20px;height:20px}
+  .task-title-input{font-size:16px}
+  .task-source{font-size:10px!important}
+  .task-metadata input,.task-metadata select{min-height:38px;font-size:14px}
+  .task-summary,.task-syntax-help{font-size:10px}
+}

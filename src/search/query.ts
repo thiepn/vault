@@ -5,7 +5,7 @@ export type SearchClause =
   | { kind: 'tag'; value: string }
   | { kind: 'path'; value: string }
   | { kind: 'file'; value: string }
-  | { kind: 'task'; value: 'open' | 'done' | 'any' }
+  | { kind: 'task'; value: 'open' | 'done' | 'any' | 'overdue' | 'today' | 'upcoming' | 'undated' | 'recurring' | 'scheduled' | 'due' | 'high' | 'medium' | 'low' }
   | { kind: 'property'; name: string; operator: PropertyOperator; value: string | null };
 
 export type SearchAst =
@@ -101,6 +101,9 @@ function clauseFromWord(value: string, phrase = false): SearchClause {
     const task = payload.toLocaleLowerCase();
     if (task === 'open' || task === 'todo') return { kind: 'task', value: 'open' };
     if (task === 'done' || task === 'completed' || task === 'closed') return { kind: 'task', value: 'done' };
+    if (task === 'overdue' || task === 'today' || task === 'upcoming' || task === 'undated' || task === 'recurring' || task === 'scheduled' || task === 'due' || task === 'high' || task === 'medium' || task === 'low') {
+      return { kind: 'task', value: task };
+    }
     return { kind: 'task', value: 'any' };
   }
   if (field === 'property') return propertyClause(payload);
