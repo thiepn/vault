@@ -2,12 +2,13 @@ import { VaultError } from '../domain/errors.js';
 import { activeKey, markdownName, validateName } from '../domain/paths.js';
 import { assertMarkdownContent, assertVersion, nextVersion } from '../domain/integrity.js';
 import { VaultTree } from '../domain/tree.js';
-import { newId, type DirtyEntry, type Entry, type EntryId, type EntryWithContent, type LocalRevision, type MarkdownContent, type RecoveryDraft, type Vault, type VaultId, type VaultSnapshot } from '../domain/model.js';
+import { newId, type AttachmentContent, type AttachmentSnapshot, type DirtyEntry, type Entry, type EntryId, type EntryWithContent, type LocalRevision, type MarkdownContent, type RecoveryDraft, type Vault, type VaultId, type VaultSnapshot } from '../domain/model.js';
+import { normalizeAttachmentMimeType, validateAttachmentBytes, validateAttachmentName } from '../media/attachments.js';
 import type { FileRepository, RevisionRepository, VaultRepository } from '../services/ports.js';
 import type { StoreName } from './database.js';
 import { storageDriver, type LocalStorageDriver, type StorageTransaction } from './driver.js';
 
-const WRITE_STORES: readonly StoreName[] = ['vaults', 'entries', 'contents', 'dirty', 'revisions', 'drafts'];
+const WRITE_STORES: readonly StoreName[] = ['vaults', 'entries', 'contents', 'attachments', 'dirty', 'revisions', 'drafts'];
 const now = (): string => new Date().toISOString();
 
 async function requiredEntry(tx: StorageTransaction, id: EntryId): Promise<Entry> {
@@ -36,6 +37,22 @@ async function assertAvailable(tx: StorageTransaction, key: string, self?: Entry
 }
 export interface PreserveDraftInput {
   id: string; entryId: EntryId; vaultId: VaultId; baseVersion: number; text: string;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let output = '';
+  for (let index = 0; index < bytes.length; index += 3) {
+    const a = bytes[index]!;
+    const b = bytes[index + 1];
+    const c = bytes[index + 2];
+    const value = (a << 16) | ((b ?? 0) << 8) | (c ?? 0);
+    output += alphabet[(value >>> 18) & 63]!;
+    output += alphabet[(value >>> 12) & 63]!;
+    output += b === undefined ? '=' : alphabet[(value >>> 6) & 63]!;
+    output += c === undefined ? '=' : alphabet[value & 63]!;
+  }
+  return output;
 }
 
 export class LocalRepository implements VaultRepository, FileRepository, RevisionRepository {
@@ -80,8 +97,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       return contents;
     });
   }
-  private async create(tx: StorageTransaction, vaultId: VaultId, parentId: EntryId | null, raw: string, kind: Entry['kind'], text: string): Promise<Entry> {
-    if (kind !== 'markdown' && kind !== 'directory') throw new VaultError('UNSUPPORTED', 'Unsupported file type.');
+  private async create(tx: StorageTransaction, vaultId: VaultId, parentId: EntryId | null, raw: string, kind: Exclude<Entry['kind'], 'attachment'>, text: string): Promise<Entry> {
     if (typeof text !== 'string') throw new VaultError('CORRUPT', 'Markdown content must be text.');
     const name = kind === 'markdown' ? markdownName(raw) : validateName(raw);
     if (!await tx.store('vaults').get(vaultId)) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
@@ -92,15 +108,73 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     if (kind === 'markdown') await tx.store('contents').add({ entryId: entry.id, text, localVersion: 1 } satisfies MarkdownContent);
     await dirty(tx, entry, 'upsert'); return entry;
   }
-  async createEntry(vaultId: VaultId, parentId: EntryId | null, raw: string, kind: Entry['kind'], text = ''): Promise<Entry> {
+  async createEntry(vaultId: VaultId, parentId: EntryId | null, raw: string, kind: Exclude<Entry['kind'], 'attachment'>, text = ''): Promise<Entry> {
     return this.driver.transaction(WRITE_STORES, 'readwrite', tx => this.create(tx, vaultId, parentId, raw, kind, text));
   }
+
+  private async createAttachmentInTransaction(
+    tx: StorageTransaction,
+    vaultId: VaultId,
+    parentId: EntryId | null,
+    raw: string,
+    mimeType: string,
+    bytes: Uint8Array,
+  ): Promise<Entry> {
+    validateAttachmentBytes(bytes);
+    const name = validateAttachmentName(raw);
+    if (!await tx.store('vaults').get(vaultId)) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
+    await validateParent(tx, vaultId, parentId);
+    const key = activeKey(vaultId, parentId, name);
+    await assertAvailable(tx, key);
+    const entry: Entry = {
+      id: newId<'entry'>(),
+      vaultId,
+      parentId,
+      name,
+      kind: 'attachment',
+      createdAt: now(),
+      updatedAt: now(),
+      localVersion: 1,
+      deletedAt: null,
+      deletionBatch: null,
+      activeKey: key,
+    };
+    const content: AttachmentContent = {
+      entryId: entry.id,
+      vaultId,
+      mimeType: normalizeAttachmentMimeType(name, mimeType),
+      size: bytes.byteLength,
+      bytes: bytes.slice(),
+    };
+    await tx.store('entries').add(entry);
+    await tx.store('attachments').add(content);
+    await dirty(tx, entry, 'upsert');
+    return entry;
+  }
+
+  async createAttachment(vaultId: VaultId, parentId: EntryId | null, raw: string, mimeType: string, bytes: Uint8Array): Promise<Entry> {
+    return this.driver.transaction(WRITE_STORES, 'readwrite', tx => this.createAttachmentInTransaction(tx, vaultId, parentId, raw, mimeType, bytes));
+  }
+
   async read(entryId: EntryId): Promise<EntryWithContent> {
-    return this.driver.transaction(['entries', 'contents'], 'readonly', async tx => {
-      const entry = await requiredEntry(tx, entryId); const content = await tx.store('contents').get<MarkdownContent>(entryId);
+    return this.driver.transaction(['entries', 'contents', 'attachments'], 'readonly', async tx => {
+      const entry = await requiredEntry(tx, entryId);
+      const content = await tx.store('contents').get<MarkdownContent>(entryId);
+      const attachment = await tx.store('attachments').get<AttachmentContent>(entryId);
       if (entry.kind === 'markdown') assertMarkdownContent(entry, content);
-      return { entry, content: content ?? null };
+      if (entry.kind === 'attachment') {
+        if (!attachment || attachment.entryId !== entry.id || attachment.vaultId !== entry.vaultId || attachment.size !== attachment.bytes.byteLength) {
+          throw new VaultError('CORRUPT', 'Attachment bytes are missing or inconsistent.');
+        }
+      }
+      return { entry, content: content ?? null, attachment: attachment ?? null };
     });
+  }
+
+  async readAttachment(entryId: EntryId): Promise<AttachmentContent> {
+    const result = await this.read(entryId);
+    if (result.entry.kind !== 'attachment' || !result.attachment) throw new VaultError('UNSUPPORTED', 'This entry is not an attachment.');
+    return result.attachment;
   }
   private async draft(tx: StorageTransaction, entry: Entry, text: string, baseVersion: number, reason: RecoveryDraft['reason']): Promise<void> {
     await tx.store('drafts').add({ id: newId<'draft'>(), entryId: entry.id, vaultId: entry.vaultId, baseVersion, text, createdAt: now(), reason } satisfies RecoveryDraft);
@@ -161,7 +235,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     return this.driver.transaction(WRITE_STORES, 'readwrite', async tx => {
       const entry = await requiredEntry(tx, entryId); live(entry);
       if (entry.localVersion !== expectedVersion) throw new VaultError('STALE_WRITE', 'The file changed. Reopen it before moving or renaming.');
-      const name = entry.kind === 'markdown' ? markdownName(raw) : validateName(raw);
+      const name = entry.kind === 'markdown' ? markdownName(raw) : entry.kind === 'attachment' ? validateAttachmentName(raw) : validateName(raw);
       await validateParent(tx, entry.vaultId, parentId, entryId);
       const key = activeKey(entry.vaultId, parentId, name); await assertAvailable(tx, key, entryId);
       const content = await tx.store('contents').get<MarkdownContent>(entryId);
@@ -189,10 +263,18 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
 
       const copyName = async (entry: Entry, parentId: EntryId | null): Promise<string> => {
         const markdown = entry.kind === 'markdown';
-        const base = markdown ? entry.name.replace(/\.md$/iu, '') : entry.name;
+        const attachment = entry.kind === 'attachment';
+        const extensionIndex = attachment ? entry.name.lastIndexOf('.') : -1;
+        const attachmentBase = extensionIndex > 0 ? entry.name.slice(0, extensionIndex) : entry.name;
+        const attachmentExtension = extensionIndex > 0 ? entry.name.slice(extensionIndex) : '';
+        const base = markdown ? entry.name.replace(/\.md$/iu, '') : attachmentBase;
         for (let index = 1; index <= 10_000; index++) {
           const suffix = index === 1 ? ' copy' : ` copy ${index}`;
-          const candidate = markdown ? `${base}${suffix}.md` : `${base}${suffix}`;
+          const candidate = markdown
+            ? `${base}${suffix}.md`
+            : attachment
+              ? `${base}${suffix}${attachmentExtension}`
+              : `${base}${suffix}`;
           validateName(candidate);
           const key = activeKey(entry.vaultId, parentId, candidate);
           if (!await tx.store('entries').fromIndex<Entry>('activeKey', key)) return candidate;
@@ -200,20 +282,27 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
         throw new VaultError('COLLISION', 'Could not find an available copy name.');
       };
 
-      const sourceContent = source.kind === 'markdown' ? await tx.store('contents').get<MarkdownContent>(source.id) : undefined;
-      if (source.kind === 'markdown') assertMarkdownContent(source, sourceContent);
+      const cloneEntry = async (entry: Entry, parentId: EntryId | null, name: string): Promise<Entry> => {
+        if (entry.kind === 'attachment') {
+          const attachment = await tx.store('attachments').get<AttachmentContent>(entry.id);
+          if (!attachment) throw new VaultError('CORRUPT', 'Attachment bytes are missing.');
+          return this.createAttachmentInTransaction(tx, entry.vaultId, parentId, name, attachment.mimeType, attachment.bytes);
+        }
+        const content = entry.kind === 'markdown' ? await tx.store('contents').get<MarkdownContent>(entry.id) : undefined;
+        if (entry.kind === 'markdown') assertMarkdownContent(entry, content);
+        return this.create(tx, entry.vaultId, parentId, name, entry.kind, content?.text ?? '');
+      };
+
       const rootName = await copyName(source, source.parentId);
-      const duplicated = await this.create(tx, source.vaultId, source.parentId, rootName, source.kind, sourceContent?.text ?? '');
-      if (source.kind === 'markdown') return duplicated;
+      const duplicated = await cloneEntry(source, source.parentId, rootName);
+      if (source.kind !== 'directory') return duplicated;
 
       const idMap = new Map<EntryId, EntryId>([[source.id, duplicated.id]]);
       const descendants = tree.descendants(source.id, entry => entry.deletedAt === null);
       for (const descendant of descendants) {
         const parentId = descendant.parentId ? idMap.get(descendant.parentId) : undefined;
         if (!parentId) throw new VaultError('CORRUPT', 'A duplicated folder contains an invalid descendant relationship.');
-        const content = descendant.kind === 'markdown' ? await tx.store('contents').get<MarkdownContent>(descendant.id) : undefined;
-        if (descendant.kind === 'markdown') assertMarkdownContent(descendant, content);
-        const clone = await this.create(tx, descendant.vaultId, parentId, descendant.name, descendant.kind, content?.text ?? '');
+        const clone = await cloneEntry(descendant, parentId, descendant.name);
         idMap.set(descendant.id, clone.id);
       }
       return duplicated;
@@ -272,14 +361,25 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     return this.driver.transaction(['dirty'], 'readonly', tx => tx.store('dirty').allFromIndex<DirtyEntry>('vaultId', vaultId));
   }
   async snapshot(vaultId: VaultId): Promise<VaultSnapshot> {
-    return this.driver.transaction(['vaults', 'entries', 'contents', 'drafts', 'revisions'], 'readonly', async tx => {
+    return this.driver.transaction(['vaults', 'entries', 'contents', 'attachments', 'drafts', 'revisions'], 'readonly', async tx => {
       const vault = await tx.store('vaults').get<Vault>(vaultId);
       if (!vault) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
-      const entries = await tx.store('entries').allFromIndex<Entry>('vaultId', vaultId); const contents: MarkdownContent[] = [];
-      for (const entry of entries) { const content = await tx.store('contents').get<MarkdownContent>(entry.id); if (content) contents.push(content); }
+      const entries = await tx.store('entries').allFromIndex<Entry>('vaultId', vaultId);
+      const contents: MarkdownContent[] = [];
+      for (const entry of entries) {
+        const content = await tx.store('contents').get<MarkdownContent>(entry.id);
+        if (content) contents.push(content);
+      }
+      const attachmentContents = await tx.store('attachments').allFromIndex<AttachmentContent>('vaultId', vaultId);
+      const attachments: AttachmentSnapshot[] = attachmentContents.map(attachment => ({
+        entryId: attachment.entryId,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        dataBase64: bytesToBase64(attachment.bytes),
+      }));
       const recoveryDrafts = await tx.store('drafts').allFromIndex<RecoveryDraft>('vaultId', vaultId);
       const revisions = await tx.store('revisions').allFromIndex<LocalRevision>('vaultId', vaultId);
-      return { format: 'vault-local-backup', version: 1, exportedAt: now(), vault, entries, contents, recoveryDrafts, revisions };
+      return { format: 'vault-local-backup', version: 2, exportedAt: now(), vault, entries, contents, attachments, recoveryDrafts, revisions };
     });
   }
 }

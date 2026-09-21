@@ -5,7 +5,7 @@ import { openDatabase } from '../storage/database.js';
 import { LocalRepository } from '../storage/local-repository.js';
 import { request, transact } from '../storage/idb.js';
 import { SaveCoordinator } from '../services/save-coordinator.js';
-import { markdownFiles, zipStore } from '../services/export.js';
+import { vaultFiles, zipStore } from '../services/export.js';
 import { CommandRegistry } from '../commands/registry.js';
 import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file-tree.js';
 import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
@@ -22,11 +22,13 @@ import { deleteFrontmatterProperty, inspectFrontmatter, rawValueForProperty, ren
 import { addLocalDays, dateKey, renderTemplate, safeDailyFilename } from '../planning/templates.js';
 import { buildCalendarMonth, dailyDateForEntry, dailyEntryForDate } from '../planning/calendar.js';
 import { dynamicFieldLabel, parseDynamicQuery, runDynamicQuery } from '../queries/dynamic.js';
+import { attachmentMediaKind, attachmentReferenceCounts, attachmentSuggestions, canonicalAttachmentTarget, formatAttachmentSize, resolveAttachmentTarget, type AttachmentMediaKind } from '../media/attachments.js';
+import { updateAttachmentLinksAfterMove } from '../media/link-updater.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 8 browser workspace: Markdown-native queries and dynamic views on the accepted Phase 1-7 foundation. */
+/** Phase 9 browser workspace: local attachments and media on the accepted Phase 1-8 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -70,7 +72,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let searchIndexedVersions = new Map<EntryId, number>();
   let searchMetadata = new Map<EntryId, string>();
   let recentEntries: EntryId[] = [];
-  let sidebarPanel: 'files' | 'search' | 'tags' | 'tasks' | 'calendar' = 'files';
+  let sidebarPanel: 'files' | 'search' | 'tags' | 'tasks' | 'media' | 'calendar' = 'files';
   let searchResults: SearchResult[] = [];
   let searchFacets: SearchFacets = { tags: [], properties: [] };
   let searchStats: SearchStats = { documents: 0, tokens: 0, tags: 0, properties: 0 };
@@ -96,6 +98,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let taskPriorityFilter: 'all' | TaskPriority | 'none' = 'all';
   let taskGroup: 'date' | 'note' | 'priority' | 'none' = 'date';
   let taskFilterText = '';
+  let attachmentPolicy: 'folder' | 'note-folder' = 'folder';
+  let attachmentFolderId: EntryId | null = null;
+  const attachmentObjectUrls = new Map<EntryId, string>();
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
   let searchBuildChain: Promise<void> = Promise.resolve();
@@ -109,16 +114,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 8 \u00b7 Queries</span>
+        <span class="stage">Phase 9 \u00b7 Media</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
         <div class="vault-picker"><select id="vault-vault" aria-label="Active vault"></select><button data-action="vault-rename" aria-label="Rename active vault" title="Rename vault">\u270e</button></div>
         <button data-command="vault.create" class="quiet">+ New vault</button>
-        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button><button type="button" role="tab" data-sidebar-panel="tasks" aria-selected="false">Tasks</button><button type="button" role="tab" data-sidebar-panel="calendar" aria-selected="false">Calendar</button></div>
+        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button><button type="button" role="tab" data-sidebar-panel="tasks" aria-selected="false">Tasks</button><button type="button" role="tab" data-sidebar-panel="media" aria-selected="false">Media</button><button type="button" role="tab" data-sidebar-panel="calendar" aria-selected="false">Calendar</button></div>
         <section class="sidebar-panel files-panel" data-panel="files">
           <div class="section-heading"><span>EXPLORER</span><button data-action="reload" aria-label="Reload file list">\u21bb</button></div>
-          <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button></div><button type="button" class="quiet create-template-note" data-action="create-from-template">+ Note from template</button>
+          <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button><button type="button" data-action="attachment-upload">+ Media</button></div><button type="button" class="quiet create-template-note" data-action="create-from-template">+ Note from template</button>
           <input class="file-filter" type="search" placeholder="Filter files\u2026" aria-label="Filter files" />
           <div class="explorer-options"><select class="file-sort" aria-label="Sort files"><option value="name-asc">Name A\u2013Z</option><option value="name-desc">Name Z\u2013A</option><option value="modified-desc">Modified newest</option><option value="modified-asc">Modified oldest</option><option value="created-desc">Created newest</option><option value="created-asc">Created oldest</option></select><label><input class="folders-first" type="checkbox" checked /> Folders first</label></div>
           <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
@@ -152,6 +157,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="task-list" aria-label="Vault tasks"></div>
           <p class="task-syntax-help">Metadata stays in Markdown: @due(YYYY-MM-DD) · @scheduled(YYYY-MM-DD) · @priority(high) · @repeat(weekly)</p>
         </section>
+        <section class="sidebar-panel media-panel" data-panel="media" hidden>
+          <div class="section-heading"><span>ATTACHMENTS</span><button type="button" data-action="attachment-upload">+ Add</button></div>
+          <p class="media-summary" role="status"></p>
+          <div class="media-list" aria-label="Vault attachments"></div>
+          <details class="media-settings"><summary>Attachment location</summary>
+            <label>Save new attachments<select class="attachment-policy-select"><option value="folder">In attachment folder</option><option value="note-folder">Beside current note</option></select></label>
+            <label class="attachment-folder-setting">Attachment folder<select class="attachment-folder-select"></select></label>
+            <p class="media-help">Paste or drop files into the editor. Images, audio and video use embedded <code>![[...]]</code> references; other files use <code>[[...]]</code>.</p>
+          </details>
+        </section>
         <section class="sidebar-panel calendar-panel" data-panel="calendar" hidden>
           <div class="calendar-heading"><button type="button" data-calendar-action="prev-month" aria-label="Previous month">‹</button><strong class="calendar-label"></strong><button type="button" data-calendar-action="next-month" aria-label="Next month">›</button></div>
           <div class="calendar-weekdays" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
@@ -177,18 +192,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 8</p><h1>Live views from ordinary Markdown.</h1>
-          <p>Turn search, properties and tasks into saved list, table and task views without creating a second content database.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 9</p><h1>Notes and media in one local vault.</h1>
+          <p>Paste, drop and organize images, audio, video and files while keeping readable Markdown references and local binary ownership.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
         <div id="vault-editor" class="editor-host" hidden aria-label="Markdown source editor"></div>
         <article class="reading-view" hidden aria-label="Rendered Markdown"></article>
+        <section class="attachment-view" hidden aria-label="Attachment preview"><div class="attachment-preview"></div><div class="attachment-meta"><h2 class="attachment-title"></h2><p class="attachment-detail"></p><button type="button" data-action="attachment-download">Download</button></div></section>
         <div class="folder-message" hidden></div>
+        <input class="attachment-file-input" type="file" multiple hidden />
       </main>
       <aside class="inspector" aria-label="Knowledge and storage information"><button type="button" class="inspector-close" data-action="knowledge-panel" aria-label="Close knowledge panel">\u00d7</button>
         <p class="label">FILE INFORMATION</p><dl class="file-info"></dl>
@@ -203,7 +220,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 2</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 3</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
@@ -253,6 +270,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const tagFilter = element<HTMLInputElement>('.tag-filter');
   const tagList = element<HTMLElement>('.tag-list');
   const propertyList = element<HTMLElement>('.property-list');
+  const mediaList = element<HTMLElement>('.media-list');
+  const mediaSummary = element<HTMLElement>('.media-summary');
+  const attachmentPolicySelect = element<HTMLSelectElement>('.attachment-policy-select');
+  const attachmentFolderSelect = element<HTMLSelectElement>('.attachment-folder-select');
+  const attachmentView = element<HTMLElement>('.attachment-view');
+  const attachmentPreview = element<HTMLElement>('.attachment-preview');
+  const attachmentTitle = element<HTMLElement>('.attachment-title');
+  const attachmentDetail = element<HTMLElement>('.attachment-detail');
+  const attachmentFileInput = element<HTMLInputElement>('.attachment-file-input');
   const taskList = element<HTMLElement>('.task-list');
   const taskFilter = element<HTMLInputElement>('.task-filter');
   const taskStatusSelect = element<HTMLSelectElement>('.task-status-filter');
@@ -279,14 +305,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     text: '', mode: 'live', readOnly: true, lineNumbers: false,
     wiki: {
       suggest(query) {
-        return selected?.kind === 'markdown'
-          ? knowledge.suggestions(query, selected.id, entries)
-          : [];
+        if (selected?.kind !== 'markdown') return [];
+        return [...knowledge.suggestions(query, selected.id, entries), ...attachmentSuggestions(query, entries)]
+          .sort((a, b) => b.boost - a.boost || a.label.localeCompare(b.label))
+          .slice(0, 60);
       },
       resolve(target) {
-        return selected?.kind === 'markdown'
-          ? knowledge.resolveRaw(target, selected.id, entries).status
-          : 'unresolved';
+        if (selected?.kind !== 'markdown') return 'unresolved';
+        const attachment = resolveAttachmentTarget(target.split('#', 1)[0] ?? target, selected.id, entries);
+        if (attachment.status !== 'unresolved') return attachment.status;
+        return knowledge.resolveRaw(target, selected.id, entries).status;
       },
       activate(target) {
         if (selected?.kind === 'markdown') perform(() => activateWikiTarget(target, selected!.id));
@@ -324,6 +352,38 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function downloadDraft(): void {
     if (!selected || selected.kind !== 'markdown') return;
     download(selected.name, saver?.draft ?? editor.getText(), 'text/markdown;charset=utf-8');
+  }
+
+  async function attachmentObjectUrl(entryId: EntryId): Promise<string> {
+    const cached = attachmentObjectUrls.get(entryId);
+    if (cached) return cached;
+    const attachment = await repository.readAttachment(entryId);
+    const url = URL.createObjectURL(new Blob([attachment.bytes], { type: attachment.mimeType }));
+    attachmentObjectUrls.set(entryId, url);
+    return url;
+  }
+
+  function revokeAttachmentUrl(entryId: EntryId): void {
+    const url = attachmentObjectUrls.get(entryId);
+    if (!url) return;
+    URL.revokeObjectURL(url);
+    attachmentObjectUrls.delete(entryId);
+  }
+
+  async function attachmentRenderPayload(target: string, sourceEntryId?: string): Promise<{ entryId: string; name: string; mimeType: string; size: number; url: string } | null> {
+    const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : selected?.id;
+    const resolution = resolveAttachmentTarget(target, source, entries);
+    if (resolution.status !== 'resolved') return null;
+    const entry = entries.find(item => item.id === resolution.entryId && item.kind === 'attachment' && item.deletedAt === null);
+    if (!entry) return null;
+    const attachment = await repository.readAttachment(entry.id);
+    return {
+      entryId: entry.id,
+      name: entry.name,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      url: await attachmentObjectUrl(entry.id),
+    };
   }
   async function setting(key: string, value?: unknown): Promise<unknown> {
     return transact(db, ['settings'], value === undefined ? 'readonly' : 'readwrite', async tx => {
@@ -393,6 +453,167 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   function activeFolders(): Entry[] {
     return entries.filter(entry => entry.kind === 'directory' && entry.deletedAt === null);
+  }
+
+  function activeAttachments(): Entry[] {
+    return entries.filter(entry => entry.kind === 'attachment' && entry.deletedAt === null);
+  }
+
+  function uniqueAttachmentName(parentId: EntryId | null, rawName: string): string {
+    const siblings = new Set(entries
+      .filter(entry => entry.deletedAt === null && entry.parentId === parentId)
+      .map(entry => entry.name.normalize('NFC').toLocaleLowerCase()));
+    if (!siblings.has(rawName.normalize('NFC').toLocaleLowerCase())) return rawName;
+    const dot = rawName.lastIndexOf('.');
+    const base = dot > 0 ? rawName.slice(0, dot) : rawName;
+    const extension = dot > 0 ? rawName.slice(dot) : '';
+    for (let index = 2; index <= 10_000; index++) {
+      const candidate = `${base} ${index}${extension}`;
+      if (!siblings.has(candidate.normalize('NFC').toLocaleLowerCase())) return candidate;
+    }
+    throw new VaultError('COLLISION', 'Could not find an available attachment filename.');
+  }
+
+  async function ensureAttachmentFolder(): Promise<EntryId | null> {
+    if (!vault) return null;
+    if (attachmentFolderId && activeFolders().some(folder => folder.id === attachmentFolderId)) return attachmentFolderId;
+    const existing = activeFolders().find(folder => folder.parentId === null && folder.name.normalize('NFC').toLocaleLowerCase() === 'attachments');
+    if (existing) {
+      attachmentFolderId = existing.id;
+      await setting(`attachmentFolder:${vault.id}`, existing.id);
+      return existing.id;
+    }
+    const created = await repository.createEntry(vault.id, null, 'Attachments', 'directory');
+    entries.push(created);
+    attachmentFolderId = created.id;
+    await setting(`attachmentFolder:${vault.id}`, created.id);
+    return created.id;
+  }
+
+  async function attachmentUploadParent(): Promise<EntryId | null> {
+    if (attachmentPolicy === 'note-folder' && selected?.kind === 'markdown' && selected.deletedAt === null) return selected.parentId;
+    return await ensureAttachmentFolder();
+  }
+
+  function renderMediaSettings(): void {
+    const folderIds = new Set(activeFolders().map(entry => entry.id));
+    if (attachmentFolderId && !folderIds.has(attachmentFolderId)) attachmentFolderId = null;
+    attachmentPolicySelect.value = attachmentPolicy;
+    fillFolderSelect(attachmentFolderSelect, true);
+    if (attachmentFolderSelect.options[0]) attachmentFolderSelect.options[0].textContent = 'Automatic: Attachments';
+    attachmentFolderSelect.value = attachmentFolderId && [...attachmentFolderSelect.options].some(option => option.value === attachmentFolderId)
+      ? attachmentFolderId
+      : '';
+    element<HTMLElement>('.attachment-folder-setting').hidden = attachmentPolicy === 'note-folder';
+    attachmentPolicySelect.disabled = !vault;
+    attachmentFolderSelect.disabled = !vault || attachmentPolicy === 'note-folder';
+  }
+
+  function renderMedia(): void {
+    mediaList.replaceChildren();
+    const attachments = activeAttachments().sort((a, b) => pathOf(a.id).localeCompare(pathOf(b.id), undefined, { numeric: true, sensitivity: 'base' }));
+    const counts = attachmentReferenceCounts(entries, knowledge.records());
+    const orphaned = attachments.filter(entry => (counts.get(entry.id) ?? 0) === 0);
+    mediaSummary.textContent = `${attachments.length} attachment${attachments.length === 1 ? '' : 's'} · ${orphaned.length} unreferenced`;
+
+    if (!attachments.length) {
+      const empty = document.createElement('p');
+      empty.className = 'media-empty';
+      empty.textContent = 'No attachments yet. Paste, drop, or add files.';
+      mediaList.append(empty);
+      renderMediaSettings();
+      return;
+    }
+
+    for (const entry of attachments) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'media-item';
+      button.dataset.mediaEntry = entry.id;
+      const name = document.createElement('span');
+      name.className = 'media-item-name';
+      name.textContent = entry.name;
+      const path = document.createElement('span');
+      path.className = 'media-item-path';
+      path.textContent = pathOf(entry.id);
+      const count = document.createElement('span');
+      count.className = 'media-item-count';
+      const references = counts.get(entry.id) ?? 0;
+      count.textContent = references ? `${references} ref${references === 1 ? '' : 's'}` : 'Unreferenced';
+      if (!references) button.classList.add('orphan');
+      button.append(name, path, count);
+      mediaList.append(button);
+    }
+    renderMediaSettings();
+  }
+
+  async function uploadAttachmentFiles(files: readonly File[], insertIntoNote = true): Promise<void> {
+    if (!vault || !files.length) return;
+    const noteId = insertIntoNote && selected?.kind === 'markdown' && selected.deletedAt === null ? selected.id : undefined;
+    if (noteId && editorMode === 'reading') await setEditorMode('live');
+    if (noteId && saver) await saver.flush();
+    const parentId = await attachmentUploadParent();
+    const references: string[] = [];
+
+    for (const file of files) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const name = uniqueAttachmentName(parentId, file.name || 'attachment');
+      const created = await repository.createAttachment(vault.id, parentId, name, file.type, bytes);
+      entries.push(created);
+      const attachment = await repository.readAttachment(created.id);
+      const target = new VaultTree(entries).path(created.id);
+      const kind = attachmentMediaKind(attachment.mimeType);
+      const embed = kind === 'image' || kind === 'audio' || kind === 'video';
+      references.push(`${embed ? '!' : ''}[[${target}]]`);
+    }
+
+    await refresh();
+    if (noteId && selected?.id === noteId && saver && references.length) {
+      const source = editor.getText();
+      const at = Math.max(0, Math.min(editorStats.position, source.length));
+      const before = at > 0 && source[at - 1] !== '\n' ? '\n' : '';
+      const after = at < source.length && source[at] !== '\n' ? '\n' : (source.length ? '\n' : '');
+      editor.insertText(before + references.join('\n') + after);
+    }
+    renderMedia();
+  }
+
+  async function renderAttachmentViewer(): Promise<void> {
+    attachmentPreview.replaceChildren();
+    attachmentView.hidden = selected?.kind !== 'attachment';
+    if (!selected || selected.kind !== 'attachment') return;
+    const attachment = await repository.readAttachment(selected.id);
+    const url = await attachmentObjectUrl(selected.id);
+    const kind = attachmentMediaKind(attachment.mimeType);
+    attachmentTitle.textContent = selected.name;
+    attachmentDetail.textContent = `${attachment.mimeType} · ${formatAttachmentSize(attachment.size)} · stored locally`;
+
+    if (kind === 'image') {
+      const image = document.createElement('img');
+      image.src = url;
+      image.alt = selected.name;
+      image.className = 'attachment-preview-image';
+      attachmentPreview.append(image);
+    } else if (kind === 'audio') {
+      const audio = document.createElement('audio');
+      audio.src = url;
+      audio.controls = true;
+      audio.preload = 'metadata';
+      attachmentPreview.append(audio);
+    } else if (kind === 'video') {
+      const video = document.createElement('video');
+      video.src = url;
+      video.controls = true;
+      video.preload = 'metadata';
+      attachmentPreview.append(video);
+    } else {
+      const card = document.createElement('a');
+      card.className = 'attachment-preview-file';
+      card.href = url;
+      card.download = selected.name;
+      card.textContent = kind === 'pdf' ? 'Open / download PDF' : 'Download file';
+      attachmentPreview.append(card);
+    }
   }
 
   function templateEntries(): Entry[] {
@@ -888,7 +1109,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
   }
 
-  function switchSidebarPanel(panel: 'files' | 'search' | 'tags' | 'tasks' | 'calendar'): void {
+  function switchSidebarPanel(panel: 'files' | 'search' | 'tags' | 'tasks' | 'media' | 'calendar'): void {
     sidebarPanel = panel;
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-sidebar-panel]')) {
       const active = button.dataset.sidebarPanel === panel;
@@ -901,6 +1122,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (panel === 'search') globalSearch.focus();
     if (panel === 'tags') tagFilter.focus();
     if (panel === 'tasks') { renderTasks(); taskFilter.focus(); }
+    if (panel === 'media') renderMedia();
     if (panel === 'calendar') renderCalendar();
   }
 
@@ -1276,6 +1498,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const rawDailyTemplate = await setting(`dailyTemplate:${vault.id}`);
     const rawDailyFormat = await setting(`dailyFormat:${vault.id}`);
     const rawFolderTemplates = await setting(`folderTemplates:${vault.id}`);
+    const rawAttachmentPolicy = await setting(`attachmentPolicy:${vault.id}`);
+    const rawAttachmentFolder = await setting(`attachmentFolder:${vault.id}`);
     sortMode = isFileSort(rawSort) ? rawSort : 'name-asc';
     foldersFirst = typeof rawFoldersFirst === 'boolean' ? rawFoldersFirst : true;
     autoUpdateLinks = typeof rawAutoUpdateLinks === 'boolean' ? rawAutoUpdateLinks : true;
@@ -1290,6 +1514,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     folderTemplates = rawFolderTemplates && typeof rawFolderTemplates === 'object' && !Array.isArray(rawFolderTemplates)
       ? Object.fromEntries(Object.entries(rawFolderTemplates as Record<string, unknown>).filter((item): item is [string, string] => typeof item[1] === 'string'))
       : {};
+    attachmentPolicy = rawAttachmentPolicy === 'note-folder' ? 'note-folder' : 'folder';
+    attachmentFolderId = typeof rawAttachmentFolder === 'string' && rawAttachmentFolder ? rawAttachmentFolder as EntryId : null;
     preferencesVaultId = vault.id;
     fileSort.value = sortMode;
     foldersFirstToggle.checked = foldersFirst;
@@ -1344,13 +1570,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchStatus.textContent = 'No vault open.';
       fileFilter.value = '';
     }
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"]')) button.disabled = !vault;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderCalendar(); updateVaultCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts();
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
-    element<HTMLElement>('.vault-counts').textContent = vault ? `${active.filter(entry => entry.kind === 'markdown').length} notes \u00b7 ${active.filter(entry => entry.kind === 'directory').length} folders` : '';
+    element<HTMLElement>('.vault-counts').textContent = vault ? `${active.filter(entry => entry.kind === 'markdown').length} notes · ${active.filter(entry => entry.kind === 'attachment').length} media · ${active.filter(entry => entry.kind === 'directory').length} folders` : '';
   }
   function persistCollapsed(): void {
     if (!vault) return;
@@ -1401,8 +1627,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         row.type = 'button';
         row.draggable = !showingTrash;
         row.title = item.path;
-        row.setAttribute('aria-label', `${entry.kind === 'directory' ? 'Folder' : 'Note'} ${entry.name}`);
-        const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = entry.kind === 'directory' ? '\u25b1' : '\u00b7';
+        row.setAttribute('aria-label', `${entry.kind === 'directory' ? 'Folder' : entry.kind === 'attachment' ? 'Attachment' : 'Note'} ${entry.name}`);
+        const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = entry.kind === 'directory' ? '\u25b1' : entry.kind === 'attachment' ? '\u25c7' : '\u00b7';
         const label = document.createElement('span'); label.className = 'file-name'; label.textContent = showingTrash ? item.path : entry.name;
         row.append(icon, label);
         if (dirtyIds.has(entry.id) && !showingTrash) {
@@ -1447,17 +1673,21 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function moveEntryWithLinkUpdates(entry: Entry, parentId: EntryId | null, name: string): Promise<Entry> {
     const oldEntries = entries.map(item => ({ ...item }));
     const oldRecords = knowledge.records();
+    const descendants = entry.kind === 'directory'
+      ? new VaultTree(oldEntries).descendants(entry.id)
+      : [];
     const affectedIds: EntryId[] = entry.kind === 'markdown'
       ? [entry.id]
-      : new VaultTree(oldEntries).descendants(entry.id)
-          .filter(item => item.kind === 'markdown' && item.deletedAt === null)
-          .map(item => item.id);
+      : descendants.filter(item => item.kind === 'markdown' && item.deletedAt === null).map(item => item.id);
+    const affectedAttachmentIds: EntryId[] = entry.kind === 'attachment'
+      ? [entry.id]
+      : descendants.filter(item => item.kind === 'attachment' && item.deletedAt === null).map(item => item.id);
 
     const moved = await repository.move(entry.id, parentId, name, entry.localVersion);
     const locationChanged = moved.parentId !== entry.parentId || moved.name !== entry.name;
     await refresh();
 
-    if (autoUpdateLinks && locationChanged && affectedIds.length) {
+    if (autoUpdateLinks && locationChanged && (affectedIds.length || affectedAttachmentIds.length)) {
       for (const targetEntryId of affectedIds) {
         await updateInboundLinksAfterMove({
           targetEntryId,
@@ -1467,6 +1697,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           repository,
           index: knowledge,
         });
+      }
+      for (const targetEntryId of affectedAttachmentIds) {
+        await updateAttachmentLinksAfterMove({
+          targetEntryId,
+          oldEntries,
+          newEntries: entries,
+          repository,
+          index: knowledge,
+        });
+        revokeAttachmentUrl(targetEntryId);
       }
       await refresh();
     }
@@ -1654,7 +1894,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   function renderInfo(): void {
     const info = element<HTMLElement>('.file-info'); info.replaceChildren();
-    const data = selected ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]] : [['Files', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
+    const data = selected
+      ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : selected.kind === 'attachment' ? 'Attachment' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]]
+      : [['Notes', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Attachments', String(entries.filter(entry => entry.kind === 'attachment' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
     for (const [key, value] of data) { const dt = document.createElement('dt'); dt.textContent = key!; const dd = document.createElement('dd'); dd.textContent = value!; info.append(dt, dd); }
   }
   function highlightCurrentOutline(): void {
@@ -1784,6 +2026,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     renderKnowledgePanels();
     renderTasks();
+    renderMedia();
     renderCalendar();
     editor.refreshPreview();
   }
@@ -1846,6 +2089,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   async function activateWikiTarget(target: string, sourceEntryId: EntryId): Promise<void> {
+    const rawAttachmentTarget = target.split('#', 1)[0] ?? target;
+    const attachment = resolveAttachmentTarget(rawAttachmentTarget, sourceEntryId, entries);
+    if (attachment.status === 'ambiguous') {
+      throw new VaultError('COLLISION', 'This attachment link is ambiguous. Use its folder-qualified path.');
+    }
+    if (attachment.status === 'resolved') {
+      await openEntry(attachment.entryId);
+      return;
+    }
+
     const resolution = knowledge.resolveRaw(target, sourceEntryId, entries);
     if (resolution.status === 'ambiguous') {
       throw new VaultError('COLLISION', 'This Wiki link is ambiguous. Use a folder-qualified path to choose the intended note.');
@@ -2077,6 +2330,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           return renderDynamicQueryBlock(source, sourceEntryId);
         },
       },
+      attachment: {
+        status(target, sourceEntryId) {
+          const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : rootEntryId;
+          return resolveAttachmentTarget(target, source, entries).status;
+        },
+        async load(target, sourceEntryId) {
+          return await attachmentRenderPayload(target, sourceEntryId);
+        },
+      },
     });
     if (generation !== renderGeneration || editorMode !== 'reading' || selected?.kind !== 'markdown') return;
     readingView.replaceChildren(rendered);
@@ -2086,6 +2348,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const noteOpen = selected?.kind === 'markdown';
     editorHost.hidden = !noteOpen || editorMode === 'reading';
     readingView.hidden = !noteOpen || editorMode !== 'reading';
+    attachmentView.hidden = selected?.kind !== 'attachment';
     element<HTMLElement>('.editor-toolbar').hidden = !noteOpen || editorMode === 'reading' || selected?.deletedAt !== null;
     editor.setMode(editorMode === 'source' ? 'source' : 'live');
     editor.setLineNumbers(lineNumbers);
@@ -2101,6 +2364,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     lines.classList.toggle('active', lineNumbers);
     if (noteOpen && editorMode === 'reading') await renderReadingCurrent();
     else { renderGeneration++; readingView.replaceChildren(); delete readingView.dataset.loading; }
+    if (selected?.kind === 'attachment') await renderAttachmentViewer();
   }
   async function setEditorMode(mode: EditorMode): Promise<void> {
     if (!selected || selected.kind !== 'markdown') return;
@@ -2136,6 +2400,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null;
     element<HTMLButtonElement>('[data-action="export-draft"]').disabled = selected.kind !== 'markdown';
     element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null;
+    if (selected.kind !== 'markdown') renderPropertiesPanel(null);
     if (selected.kind === 'markdown' && item.content) {
       editor.setText(item.content.text);
       renderPropertiesPanel(item.content.text);
@@ -2159,7 +2424,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     await syncEditorSurface();
     const pendingCursor = pendingCursorOffsets.get(selected.id);
     if (pendingCursor !== undefined && selected.kind === 'markdown' && selected.deletedAt === null) { pendingCursorOffsets.delete(selected.id); editor.revealOffset(pendingCursor); }
-    renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderCalendar(); updateCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
     if (selected.kind === 'markdown' && selected.deletedAt === null) await rememberRecent(selected.id);
@@ -2175,7 +2440,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (saver) await saver.close();
     saver = undefined;
     if (previousEntryId && entries.some(entry => entry.id === previousEntryId && entry.deletedAt === null)) await refreshKnowledgeEntry(previousEntryId);
-    selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); editor.setReadOnly(true); editor.setText(''); renderPropertiesPanel(null);
+    selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); attachmentView.hidden = true; attachmentPreview.replaceChildren(); editor.setReadOnly(true); editor.setText(''); renderPropertiesPanel(null);
     element<HTMLElement>('.empty-state').hidden = false;
     element<HTMLElement>('.folder-message').hidden = true;
     element<HTMLElement>('.breadcrumb').textContent = 'No file selected';
@@ -2185,7 +2450,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const action of ['rename', 'move', 'duplicate', 'delete', 'export-draft', 'checkpoint']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = true;
     element<HTMLElement>('[data-action="restore"]').hidden = true;
     await syncEditorSurface();
-    updateDailyDocumentNav(); renderTasks(); renderCalendar(); updateCounts();
+    updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
   }
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
@@ -2203,9 +2468,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     showingTrash = false; await refresh(); await openEntry(entry.id);
     if (kind === 'markdown') editor.focus();
   } });
-  registry.register({ id: 'vault.export', label: 'Export active Markdown ZIP', enabled: () => !!vault, run: async () => {
+  registry.register({ id: 'vault.export', label: 'Export active vault ZIP', enabled: () => !!vault, run: async () => {
     if (!vault) return; if (saver) await saver.flush();
-    const bytes = zipStore(markdownFiles(await repository.snapshot(vault.id)));
+    const bytes = zipStore(vaultFiles(await repository.snapshot(vault.id)));
     download(`${vault.name}.zip`, new Uint8Array(bytes).buffer, 'application/zip');
   } });
   registry.register({ id: 'vault.backup', label: 'Export recovery backup', enabled: () => !!vault, run: async () => {
@@ -2264,7 +2529,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const panelButton = (event.target as Element).closest<HTMLButtonElement>('[data-sidebar-panel]');
     if (panelButton?.dataset.sidebarPanel) {
       const panel = panelButton.dataset.sidebarPanel;
-      if (panel === 'files' || panel === 'search' || panel === 'tags' || panel === 'tasks' || panel === 'calendar') switchSidebarPanel(panel);
+      if (panel === 'files' || panel === 'search' || panel === 'tags' || panel === 'tasks' || panel === 'media' || panel === 'calendar') switchSidebarPanel(panel);
+      return;
+    }
+
+    const mediaEntryButton = (event.target as Element).closest<HTMLButtonElement>('[data-media-entry]');
+    if (mediaEntryButton?.dataset.mediaEntry) {
+      perform(() => openEntry(mediaEntryButton.dataset.mediaEntry as EntryId));
       return;
     }
 
@@ -2397,6 +2668,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if (action === 'quick-switcher') { void openQuickSwitcher().catch(showError); return; }
+    if (action === 'attachment-upload') { attachmentFileInput.click(); return; }
+    if (action === 'attachment-download') {
+      if (selected?.kind !== 'attachment') return;
+      perform(async () => {
+        const attachment = await repository.readAttachment(selected!.id);
+        download(selected!.name, attachment.bytes, attachment.mimeType);
+      });
+      return;
+    }
     if (action === 'insert-template') {
       perform(async () => {
         if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null) return;
@@ -2487,7 +2767,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         selected = moved;
         await openEntry(moved.id);
       }
-      if (action === 'delete') { await repository.trash(selected.id, selected.localVersion); if (saver) await saver.close(); saver = undefined; await clearSelection(); await refresh(); }
+      if (action === 'delete') {
+        const deletedId = selected.id;
+        await repository.trash(selected.id, selected.localVersion);
+        revokeAttachmentUrl(deletedId);
+        if (saver) await saver.close();
+        saver = undefined;
+        await clearSelection();
+        await refresh();
+      }
       if (action === 'restore') { await repository.restore(selected.id); const id = selected.id; showingTrash = false; await refresh(); await openEntry(id); }
     });
   }, { signal: abort.signal });
@@ -2618,6 +2906,50 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     });
   }, { signal: abort.signal });
 
+  attachmentFileInput.addEventListener('change', () => {
+    const files = [...(attachmentFileInput.files ?? [])];
+    attachmentFileInput.value = '';
+    if (files.length) perform(() => uploadAttachmentFiles(files));
+  }, { signal: abort.signal });
+
+  attachmentPolicySelect.addEventListener('change', () => {
+    if (attachmentPolicySelect.value !== 'folder' && attachmentPolicySelect.value !== 'note-folder') return;
+    attachmentPolicy = attachmentPolicySelect.value;
+    perform(async () => {
+      if (vault) await setting(`attachmentPolicy:${vault.id}`, attachmentPolicy);
+      renderMediaSettings();
+    });
+  }, { signal: abort.signal });
+
+  attachmentFolderSelect.addEventListener('change', () => {
+    attachmentFolderId = attachmentFolderSelect.value ? attachmentFolderSelect.value as EntryId : null;
+    perform(async () => {
+      if (vault) await setting(`attachmentFolder:${vault.id}`, attachmentFolderId ?? '');
+      renderMediaSettings();
+    });
+  }, { signal: abort.signal });
+
+  editorHost.addEventListener('paste', event => {
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (!files.length) return;
+    event.preventDefault();
+    perform(() => uploadAttachmentFiles(files));
+  }, { signal: abort.signal, capture: true });
+
+  editorHost.addEventListener('dragover', event => {
+    if (!(event.dataTransfer?.files.length)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  }, { signal: abort.signal, capture: true });
+
+  editorHost.addEventListener('drop', event => {
+    const files = [...(event.dataTransfer?.files ?? [])];
+    if (!files.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    perform(() => uploadAttachmentFiles(files));
+  }, { signal: abort.signal, capture: true });
+
   taskFilter.addEventListener('input', () => {
     taskFilterText = taskFilter.value;
     renderTasks();
@@ -2737,6 +3069,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     searchIndex.close();
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
+    for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
+    attachmentObjectUrls.clear();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
   };
 }

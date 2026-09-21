@@ -32,7 +32,7 @@ class MemoryStore {
   #key(value) {
     if (this.name === 'vaults') return value.id;
     if (this.name === 'entries') return value.id;
-    if (this.name === 'contents') return value.entryId;
+    if (this.name === 'contents' || this.name === 'attachments') return value.entryId;
     if (this.name === 'dirty') return value.entryId;
     if (this.name === 'revisions' || this.name === 'drafts' || this.name === 'outbox') return value.id;
     if (this.name === 'settings') return value.key;
@@ -50,7 +50,7 @@ class MemoryStore {
 class MemoryDriver {
   stores = new Map();
   constructor() {
-    for (const name of ['vaults','entries','contents','dirty','outbox','revisions','drafts','settings','remoteShadows','syncCursors']) this.stores.set(name, new Map());
+    for (const name of ['vaults','entries','contents','attachments','dirty','outbox','revisions','drafts','settings','remoteShadows','syncCursors']) this.stores.set(name, new Map());
   }
   async transaction(names, mode, body) {
     const working = new Map();

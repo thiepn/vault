@@ -21,7 +21,7 @@ export interface TreeRow {
 const compareText = (a: string, b: string): number => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 
 export function compareEntries(a: Entry, b: Entry, sort: FileSort, foldersFirst: boolean): number {
-  if (foldersFirst && a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+  if (foldersFirst && (a.kind === 'directory') !== (b.kind === 'directory')) return a.kind === 'directory' ? -1 : 1;
   let result = 0;
   switch (sort) {
     case 'name-asc': result = compareText(a.name, b.name); break;

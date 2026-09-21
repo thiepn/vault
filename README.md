@@ -14,6 +14,7 @@ The repository currently includes browser-certified:
 - **Phase 6 — Templates, Daily Notes & Calendar**
 - **Phase 7 — Tasks & Task Management**
 - **Phase 8 — Queries & Dynamic Views**
+- **Phase 9 — Attachments, Images & Media**
 
 ## Current capabilities
 
@@ -150,6 +151,33 @@ Query definitions support:
 
 Dynamic views do not persist result rows. They are recomputed from Markdown-derived knowledge records.
 
+### Attachments, Images & Media
+
+Attachments are first-class local vault entries with stable IDs and binary payloads stored separately from note text.
+
+Supported workflows include:
+
+- file picker upload
+- clipboard paste into the Markdown editor
+- drag/drop files into the editor
+- configurable dedicated attachment folder
+- optional “beside current note” placement
+- automatic collision-safe filenames
+- Obsidian-style `![[path/file.png]]` media embeds
+- `[[path/file.pdf]]` file links
+- image, audio and video rendering in Reading mode
+- PDF/other-file download cards
+- dedicated attachment preview screen
+- attachment library with reference counts
+- unreferenced/orphan detection
+- rename/move reference rewriting
+- attachment and attachment-folder duplication
+- Trash/restore through the normal vault lifecycle
+- Markdown ZIP export with original binary bytes
+- recovery backups containing attachment payloads
+
+Individual browser-stored attachments are currently limited to 128 MB. The existing in-memory ZIP exporter remains capped at 512 MB.
+
 ## Canonical data
 
 ```text
@@ -162,6 +190,8 @@ CodeMirror / Properties / Templates / Tasks / Query definitions
           LocalRepository
                  ↓
              IndexedDB
+                 │
+                 └─ binary attachment store
 
 Markdown
    ├─→ linked-knowledge index
@@ -171,12 +201,11 @@ Markdown
    └─→ dynamic query projection
 ```
 
-Tasks, Daily Notes, templates and query definitions are files/text—not proprietary application records. Query results are disposable projections.
+Tasks, Daily Notes, templates and query definitions remain file/text concepts. Attachment bytes are stored as separate local binary records keyed by stable vault entry IDs; Markdown contains readable attachment paths. Query results remain disposable projections.
 
 ## Not implemented yet
 
 - cloud accounts and cross-device sync
-- attachments
 - graph/local graph visualization
 - Kanban
 - Canvas
@@ -202,6 +231,6 @@ CI runs strict TypeScript, all core contracts, the 10k search benchmark, product
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.8.0-phase8**
+- Current package version: **0.9.0-phase9**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.

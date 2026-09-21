@@ -1,4 +1,4 @@
-import type { Entry, EntryId, EntryWithContent, Vault, VaultId, VaultSnapshot } from '../domain/model.js';
+import type { AttachmentContent, Entry, EntryId, EntryWithContent, Vault, VaultId, VaultSnapshot } from '../domain/model.js';
 
 export interface VaultRepository {
   listVaults(): Promise<Vault[]>;
@@ -8,8 +8,10 @@ export interface VaultRepository {
 }
 export interface FileRepository {
   listEntries(vaultId: VaultId, includeTrash?: boolean): Promise<Entry[]>;
-  createEntry(vaultId: VaultId, parentId: EntryId | null, name: string, kind: Entry['kind'], text?: string): Promise<Entry>;
+  createEntry(vaultId: VaultId, parentId: EntryId | null, name: string, kind: Exclude<Entry['kind'], 'attachment'>, text?: string): Promise<Entry>;
+  createAttachment(vaultId: VaultId, parentId: EntryId | null, name: string, mimeType: string, bytes: Uint8Array): Promise<Entry>;
   read(entryId: EntryId): Promise<EntryWithContent>;
+  readAttachment(entryId: EntryId): Promise<AttachmentContent>;
   saveMarkdown(entryId: EntryId, text: string, expectedVersion: number): Promise<Entry>;
   move(entryId: EntryId, parentId: EntryId | null, name: string, expectedVersion: number): Promise<Entry>;
   duplicate(entryId: EntryId, expectedVersion: number): Promise<Entry>;

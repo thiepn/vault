@@ -9,9 +9,10 @@
 - template configuration = stable IDs/settings only
 - knowledge/search indexes = rebuildable acceleration
 - calendar/tasks/query views = derived projections
+- attachment store = local binary payload truth keyed by stable entry ID
 - future cloud database = synchronization/remote identity truth
 
-No UI projection is a proprietary note/task/query-result store.
+No UI projection is a proprietary note/task/query-result store. Binary files are intentionally not encoded into Markdown; Markdown stores readable attachment references while IndexedDB owns the local bytes.
 
 ## Local write path
 
@@ -126,6 +127,30 @@ In Reading mode, query fences are first compiled as ordinary fenced code by the 
 
 Embedded Reading-mode notes preserve source-entry context, so `exclude-self` and related source-sensitive behavior refers to the embedded note rather than the outer document.
 
+## Phase 9 — Attachment and media boundary
+
+Attachments use the same immutable entry identity and folder tree as notes, but their bytes live in the schema-v3 `attachments` object store:
+
+```text
+Entry(kind=attachment)
+├─ stable entry UUID
+├─ vault/folder/name metadata
+└─ AttachmentContent
+   ├─ MIME type
+   ├─ byte length
+   └─ Uint8Array payload
+```
+
+Notes reference attachments with readable Wiki-style paths such as `![[Attachments/photo.png]]` or `[[Attachments/report.pdf]]`. Resolution considers full vault paths, paths relative to the source note, same-folder filenames and unambiguous vault-wide filenames.
+
+Renaming or moving an attachment re-resolves existing references against the old tree and rewrites them to the new canonical path. Moving a folder applies the same rule to all descendant attachments.
+
+Reading-mode rendering never trusts attachment markup as HTML. The sanitized Markdown surface contains controlled placeholders; Vault then resolves those placeholders and constructs image/audio/video/file elements with DOM APIs and local object URLs.
+
+Object URLs are cached by stable attachment ID for the session and revoked on deletion or workspace disposal.
+
+Attachment exports preserve the original bytes and vault paths. Recovery snapshot format v2 serializes binary payloads as base64 so the JSON backup remains self-contained.
+
 ## Knowledge index
 
 The derived knowledge record stores aliases, headings, block IDs, links, tags, properties and parsed task projections. Its version advances when parser semantics change; it remains reconstructable from Markdown.
@@ -154,4 +179,4 @@ Paths are not permanent identity. Files/folders use immutable UUIDs.
 
 ## Sync boundary
 
-Cloud sync remains inactive. Future sync must synchronize canonical Markdown/stable metadata, not derived task/search/calendar/query projections.
+Cloud sync remains inactive. Future sync must synchronize canonical Markdown, stable entry metadata and attachment payloads, not derived task/search/calendar/query projections.
