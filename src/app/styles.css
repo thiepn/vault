@@ -313,3 +313,8 @@
   .query-task-title{font-size:14px!important}
   .query-task-detail{font-size:10px}
 }
+
+.cm-query-widget{display:block;width:100%;padding:4px 0}
+.cm-query-widget .query-view{margin:6px 0}
+.cm-query-widget .query-view button,.cm-query-widget .query-view input,.cm-query-widget .query-view select{font-family:var(--sans)}
+.cm-query-widget:focus-within{position:relative;z-index:2}
