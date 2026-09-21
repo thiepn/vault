@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseKnowledge } from '../build/core/knowledge/parser.js';
 import { parseDynamicQuery, runDynamicQuery } from '../build/core/queries/dynamic.js';
+import { parseQueryFences } from '../build/core/editor/query-preview.js';
 
 const vaultId = '11111111-1111-4111-8111-111111111111';
 const now = '2026-09-21T10:00:00.000Z';
@@ -30,6 +31,33 @@ function record(entry, text) {
     text,
   });
 }
+
+
+test('Live Preview identifies only explicit vault-query fences and preserves source ranges', () => {
+  const source = [
+    '# Dashboard',
+    '',
+    '```vault-query',
+    'view: list',
+    'query: tag:#project',
+    '```',
+    '',
+    '```js',
+    'console.log("vault-query")',
+    '```',
+    '',
+    '~~~VAULT-QUERY',
+    'view: tasks',
+    'task-status: open',
+    '~~~~',
+  ].join('\n');
+  const fences = parseQueryFences(source);
+  assert.equal(fences.length, 2);
+  assert.equal(fences[0].source, 'view: list\nquery: tag:#project');
+  assert.equal(source.slice(fences[0].from, fences[0].to).startsWith('```vault-query'), true);
+  assert.equal(fences[1].source, 'view: tasks\ntask-status: open');
+  assert.equal(source.slice(fences[1].from, fences[1].to).startsWith('~~~VAULT-QUERY'), true);
+});
 
 test('Phase 8 parses strict Markdown-native dynamic query definitions', () => {
   const plan = parseDynamicQuery([
