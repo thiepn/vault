@@ -90,6 +90,12 @@ export function renderTemplate(source: string, context: TemplateContext): Render
 }
 
 export function safeDailyFilename(date: Date, format = 'YYYY-MM-DD'): string {
+  const hasYear = format.includes('YYYY') || format.includes('YY');
+  const hasMonth = format.includes('MM') || format.includes('M');
+  const hasDay = format.includes('DD') || format.includes('D');
+  if (!hasYear || !hasMonth || !hasDay) {
+    throw new Error('Daily note format must include year, month and day.');
+  }
   const filename = formatDatePattern(date, format).trim();
   if (!filename || /[<>:"\/\\|?*\u0000-\u001F]/u.test(filename) || filename === '.' || filename === '..') {
     throw new Error('Daily note format creates an invalid portable filename.');

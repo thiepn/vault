@@ -58,7 +58,10 @@ test('date formatting and filename parsing round-trip supported formats', () => 
   assert.equal(dateKey(parsedWithWeekday), '2026-09-21');
 
   assert.throws(() => safeDailyFilename(date, 'YYYY/MM/DD'));
+  assert.throws(() => safeDailyFilename(date, 'YYYY'));
+  assert.throws(() => safeDailyFilename(date, 'MM-DD'));
 });
+
 
 test('local day navigation stays on calendar dates', () => {
   const march28 = new Date(2026, 2, 28, 12, 0, 0, 0);
