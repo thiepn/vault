@@ -455,6 +455,163 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     return entries.filter(entry => entry.kind === 'directory' && entry.deletedAt === null);
   }
 
+  function activeAttachments(): Entry[] {
+    return entries.filter(entry => entry.kind === 'attachment' && entry.deletedAt === null);
+  }
+
+  function uniqueAttachmentName(parentId: EntryId | null, rawName: string): string {
+    const siblings = new Set(entries
+      .filter(entry => entry.deletedAt === null && entry.parentId === parentId)
+      .map(entry => entry.name.normalize('NFC').toLocaleLowerCase()));
+    if (!siblings.has(rawName.normalize('NFC').toLocaleLowerCase())) return rawName;
+    const dot = rawName.lastIndexOf('.');
+    const base = dot > 0 ? rawName.slice(0, dot) : rawName;
+    const extension = dot > 0 ? rawName.slice(dot) : '';
+    for (let index = 2; index <= 10_000; index++) {
+      const candidate = `${base} ${index}${extension}`;
+      if (!siblings.has(candidate.normalize('NFC').toLocaleLowerCase())) return candidate;
+    }
+    throw new VaultError('COLLISION', 'Could not find an available attachment filename.');
+  }
+
+  async function ensureAttachmentFolder(): Promise<EntryId | null> {
+    if (!vault) return null;
+    if (attachmentFolderId && activeFolders().some(folder => folder.id === attachmentFolderId)) return attachmentFolderId;
+    const existing = activeFolders().find(folder => folder.parentId === null && folder.name.normalize('NFC').toLocaleLowerCase() === 'attachments');
+    if (existing) {
+      attachmentFolderId = existing.id;
+      await setting(`attachmentFolder:${vault.id}`, existing.id);
+      return existing.id;
+    }
+    const created = await repository.createEntry(vault.id, null, 'Attachments', 'directory');
+    entries.push(created);
+    attachmentFolderId = created.id;
+    await setting(`attachmentFolder:${vault.id}`, created.id);
+    return created.id;
+  }
+
+  async function attachmentUploadParent(): Promise<EntryId | null> {
+    if (attachmentPolicy === 'note-folder' && selected?.kind === 'markdown' && selected.deletedAt === null) return selected.parentId;
+    return await ensureAttachmentFolder();
+  }
+
+  function renderMediaSettings(): void {
+    const folderIds = new Set(activeFolders().map(entry => entry.id));
+    if (attachmentFolderId && !folderIds.has(attachmentFolderId)) attachmentFolderId = null;
+    attachmentPolicySelect.value = attachmentPolicy;
+    fillFolderSelect(attachmentFolderSelect, true);
+    if (attachmentFolderSelect.options[0]) attachmentFolderSelect.options[0].textContent = 'Automatic: Attachments';
+    attachmentFolderSelect.value = attachmentFolderId && [...attachmentFolderSelect.options].some(option => option.value === attachmentFolderId)
+      ? attachmentFolderId
+      : '';
+    element<HTMLElement>('.attachment-folder-setting').hidden = attachmentPolicy === 'note-folder';
+    attachmentPolicySelect.disabled = !vault;
+    attachmentFolderSelect.disabled = !vault || attachmentPolicy === 'note-folder';
+  }
+
+  function renderMedia(): void {
+    mediaList.replaceChildren();
+    const attachments = activeAttachments().sort((a, b) => pathOf(a.id).localeCompare(pathOf(b.id), undefined, { numeric: true, sensitivity: 'base' }));
+    const counts = attachmentReferenceCounts(entries, knowledge.records());
+    const orphaned = attachments.filter(entry => (counts.get(entry.id) ?? 0) === 0);
+    mediaSummary.textContent = `${attachments.length} attachment${attachments.length === 1 ? '' : 's'} · ${orphaned.length} unreferenced`;
+
+    if (!attachments.length) {
+      const empty = document.createElement('p');
+      empty.className = 'media-empty';
+      empty.textContent = 'No attachments yet. Paste, drop, or add files.';
+      mediaList.append(empty);
+      renderMediaSettings();
+      return;
+    }
+
+    for (const entry of attachments) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'media-item';
+      button.dataset.mediaEntry = entry.id;
+      const name = document.createElement('span');
+      name.className = 'media-item-name';
+      name.textContent = entry.name;
+      const path = document.createElement('span');
+      path.className = 'media-item-path';
+      path.textContent = pathOf(entry.id);
+      const count = document.createElement('span');
+      count.className = 'media-item-count';
+      const references = counts.get(entry.id) ?? 0;
+      count.textContent = references ? `${references} ref${references === 1 ? '' : 's'}` : 'Unreferenced';
+      if (!references) button.classList.add('orphan');
+      button.append(name, path, count);
+      mediaList.append(button);
+    }
+    renderMediaSettings();
+  }
+
+  async function uploadAttachmentFiles(files: readonly File[], insertIntoNote = true): Promise<void> {
+    if (!vault || !files.length) return;
+    const noteId = insertIntoNote && selected?.kind === 'markdown' && selected.deletedAt === null ? selected.id : undefined;
+    if (noteId && editorMode === 'reading') await setEditorMode('live');
+    const parentId = await attachmentUploadParent();
+    const references: string[] = [];
+
+    for (const file of files) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const name = uniqueAttachmentName(parentId, file.name || 'attachment');
+      const created = await repository.createAttachment(vault.id, parentId, name, file.type, bytes);
+      entries.push(created);
+      const attachment = await repository.readAttachment(created.id);
+      const target = new VaultTree(entries).path(created.id);
+      const kind = attachmentMediaKind(attachment.mimeType);
+      const embed = kind === 'image' || kind === 'audio' || kind === 'video';
+      references.push(`${embed ? '!' : ''}[[${target}]]`);
+    }
+
+    await refresh();
+    if (noteId && selected?.id === noteId && saver && references.length) {
+      const separator = editor.getText().length === 0 || editor.getText().endsWith('\n') ? '' : '\n';
+      editor.insertText(separator + references.join('\n') + '\n');
+    }
+    renderMedia();
+  }
+
+  async function renderAttachmentViewer(): Promise<void> {
+    attachmentPreview.replaceChildren();
+    attachmentView.hidden = selected?.kind !== 'attachment';
+    if (!selected || selected.kind !== 'attachment') return;
+    const attachment = await repository.readAttachment(selected.id);
+    const url = await attachmentObjectUrl(selected.id);
+    const kind = attachmentMediaKind(attachment.mimeType);
+    attachmentTitle.textContent = selected.name;
+    attachmentDetail.textContent = `${attachment.mimeType} · ${formatAttachmentSize(attachment.size)} · stored locally`;
+
+    if (kind === 'image') {
+      const image = document.createElement('img');
+      image.src = url;
+      image.alt = selected.name;
+      image.className = 'attachment-preview-image';
+      attachmentPreview.append(image);
+    } else if (kind === 'audio') {
+      const audio = document.createElement('audio');
+      audio.src = url;
+      audio.controls = true;
+      audio.preload = 'metadata';
+      attachmentPreview.append(audio);
+    } else if (kind === 'video') {
+      const video = document.createElement('video');
+      video.src = url;
+      video.controls = true;
+      video.preload = 'metadata';
+      attachmentPreview.append(video);
+    } else {
+      const card = document.createElement('a');
+      card.className = 'attachment-preview-file';
+      card.href = url;
+      card.download = selected.name;
+      card.textContent = kind === 'pdf' ? 'Open / download PDF' : 'Download file';
+      attachmentPreview.append(card);
+    }
+  }
+
   function templateEntries(): Entry[] {
     if (!templatesFolderId) return [];
     return activeMarkdownEntries()
