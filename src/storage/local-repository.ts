@@ -3,7 +3,7 @@ import { activeKey, markdownName, validateName } from '../domain/paths.js';
 import { assertMarkdownContent, assertVersion, nextVersion } from '../domain/integrity.js';
 import { VaultTree } from '../domain/tree.js';
 import { newId, type AttachmentContent, type AttachmentSnapshot, type DirtyEntry, type Entry, type EntryId, type EntryWithContent, type LocalRevision, type MarkdownContent, type RecoveryDraft, type Vault, type VaultId, type VaultSnapshot } from '../domain/model.js';
-import { normalizeAttachmentMimeType, validateAttachmentBytes } from '../media/attachments.js';
+import { normalizeAttachmentMimeType, validateAttachmentBytes, validateAttachmentName } from '../media/attachments.js';
 import type { FileRepository, RevisionRepository, VaultRepository } from '../services/ports.js';
 import type { StoreName } from './database.js';
 import { storageDriver, type LocalStorageDriver, type StorageTransaction } from './driver.js';
@@ -121,7 +121,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     bytes: Uint8Array,
   ): Promise<Entry> {
     validateAttachmentBytes(bytes);
-    const name = validateName(raw);
+    const name = validateAttachmentName(raw);
     if (!await tx.store('vaults').get(vaultId)) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
     await validateParent(tx, vaultId, parentId);
     const key = activeKey(vaultId, parentId, name);
@@ -235,7 +235,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     return this.driver.transaction(WRITE_STORES, 'readwrite', async tx => {
       const entry = await requiredEntry(tx, entryId); live(entry);
       if (entry.localVersion !== expectedVersion) throw new VaultError('STALE_WRITE', 'The file changed. Reopen it before moving or renaming.');
-      const name = entry.kind === 'markdown' ? markdownName(raw) : validateName(raw);
+      const name = entry.kind === 'markdown' ? markdownName(raw) : entry.kind === 'attachment' ? validateAttachmentName(raw) : validateName(raw);
       await validateParent(tx, entry.vaultId, parentId, entryId);
       const key = activeKey(entry.vaultId, parentId, name); await assertAvailable(tx, key, entryId);
       const content = await tx.store('contents').get<MarkdownContent>(entryId);
