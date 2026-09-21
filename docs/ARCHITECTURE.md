@@ -8,19 +8,19 @@
 - CodeMirror = active editing state
 - template configuration = stable IDs/settings only
 - knowledge/search indexes = rebuildable acceleration
-- calendar/tasks views = derived projections
+- calendar/tasks/query views = derived projections
 - future cloud database = synchronization/remote identity truth
 
-No UI projection is a proprietary note/task store.
+No UI projection is a proprietary note/task/query-result store.
 
 ## Local write path
 
 ```text
-CodeMirror / Properties / template generation / task mutation
+CodeMirror / Properties / template generation / task mutation / query definition editing
 → canonical Markdown string
 → SaveCoordinator or version-checked LocalRepository.saveMarkdown
 → IndexedDB
-→ derived knowledge/search/calendar/task refresh
+→ derived knowledge/search/calendar/task/query refresh
 ```
 
 Stale writes fail instead of silently mutating the wrong source.
@@ -88,13 +88,48 @@ Supported recurrences are daily, weekly, monthly, yearly and bounded `every Nd/N
 
 There is no recurrence scheduler/database.
 
+## Phase 8 — Query projection
+
+A dynamic view is authored as a fenced Markdown block:
+
+```markdown
+```vault-query
+view: table
+query: tag:#project AND property:status=active
+fields: file, path, property:status
+sort: updated desc
+limit: 25
+```
+```
+
+The fenced source is canonical. Parsed plans and rendered rows are not stored.
+
+```text
+vault-query fence
+→ strict query-plan parser
+→ existing search/property/task semantics
+→ KnowledgeRecord + active Entry metadata
+→ list / table / task projection
+→ detached Reading-mode DOM
+```
+
+The query executor reads only active Markdown entries and their rebuildable knowledge records. It supports list, table and task projections, property fields, deterministic sort/limit behavior and current-note exclusion.
+
+Task query rows preserve the same source identity used by the Phase 7 Tasks panel. Completing a task from a query result therefore re-reads and version-checks the source Markdown before mutation.
+
+### Rendering boundary
+
+Query fences are first compiled as ordinary fenced code by the Markdown renderer. After DOM sanitization, Vault recognizes only `language-vault-query` blocks and replaces them with controlled DOM created through `document.createElement` / `textContent`. Query source never becomes executable HTML or JavaScript.
+
+Embedded notes inherit the query-render bridge, so a query block inside a transcluded note is evaluated with the embedded note as its source context.
+
 ## Knowledge index
 
 The derived knowledge record stores aliases, headings, block IDs, links, tags, properties and parsed task projections. Its version advances when parser semantics change; it remains reconstructable from Markdown.
 
 ## Search
 
-Search runs in a dedicated module Web Worker. Phase 7 extends structured task filters with open/done, overdue/today/upcoming/undated, recurring, scheduled, due and priority categories.
+Search runs in a dedicated module Web Worker. Phase 7 extends structured task filters with open/done, overdue/today/upcoming/undated, recurring, scheduled, due and priority categories. Phase 8 reuses the same query grammar for dynamic views rather than introducing a competing filter language.
 
 ## Calendar
 
@@ -108,7 +143,7 @@ Completed tasks are not projected as active calendar tasks.
 
 ## Rendering trust boundary
 
-Untrusted Markdown is compiled/sanitized before controlled rendering enhancements. Task controls operate on parsed source lines rather than rendered HTML.
+Untrusted Markdown is compiled/sanitized before controlled rendering enhancements. Task controls operate on parsed source lines rather than rendered HTML. Dynamic query results are also constructed as controlled DOM after sanitization.
 
 ## File identity
 
@@ -116,4 +151,4 @@ Paths are not permanent identity. Files/folders use immutable UUIDs.
 
 ## Sync boundary
 
-Cloud sync remains inactive. Future sync must synchronize canonical Markdown/stable metadata, not derived task/search/calendar projections.
+Cloud sync remains inactive. Future sync must synchronize canonical Markdown/stable metadata, not derived task/search/calendar/query projections.
