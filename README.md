@@ -143,7 +143,7 @@ Query definitions support:
 - current-note exclusion
 - task status/date/priority row filters
 - source-note navigation
-- Live Preview widgets that reveal their Markdown source while actively edited
+- Live Preview result widgets alongside directly editable Markdown query definitions
 - Reading-mode rendering
 - task completion directly from dynamic task views
 - responsive desktop/mobile rendering
