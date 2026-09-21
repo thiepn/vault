@@ -15,6 +15,7 @@ The repository currently includes browser-certified:
 - **Phase 7 — Tasks & Task Management**
 - **Phase 8 — Queries & Dynamic Views**
 - **Phase 9 — Attachments, Images & Media**
+- **Phase 10 — Graph View & Knowledge Visualization**
 
 ## Current capabilities
 
@@ -151,6 +152,35 @@ Query definitions support:
 
 Dynamic views do not persist result rows. They are recomputed from Markdown-derived knowledge records.
 
+### Graph View & Knowledge Visualization
+
+The Graph is rebuilt from active vault entries and the derived knowledge index. It does not store a second relationship database.
+
+Graph capabilities include:
+
+- full-vault graph
+- local graph centered on the current note or attachment
+- configurable 1–4 hop local depth
+- directed Wiki-link and embed relationships
+- attachment link/embed relationships
+- repeated-reference edge weighting
+- unresolved/ambiguous reference diagnostics
+- orphan-note and orphan-attachment discovery
+- title/path/tag/property search highlighting
+- tag filtering
+- property filtering such as `status=active`
+- note/attachment filtering
+- folder, primary-tag, kind and property grouping
+- click/tap-to-open navigation
+- wheel, keyboard and button zoom
+- drag/touch panning
+- accessible visible-node browser
+- reduced-motion static layout
+- automatic static-layout fallback for large graphs
+- dedicated 10,000-node performance certification
+
+Graph coordinates, grouping and filter state are presentation-only. Relationships are recomputed from Markdown references and attachment paths.
+
 ### Attachments, Images & Media
 
 Attachments are first-class local vault entries with stable IDs and binary payloads stored separately from note text.
@@ -198,7 +228,8 @@ Markdown
    ├─→ search worker index
    ├─→ calendar projection
    ├─→ task projection
-   └─→ dynamic query projection
+   ├─→ dynamic query projection
+   └─→ knowledge graph projection
 ```
 
 Tasks, Daily Notes, templates and query definitions remain file/text concepts. Attachment bytes are stored as separate local binary records keyed by stable vault entry IDs; Markdown contains readable attachment paths. Query results remain disposable projections.
@@ -206,7 +237,6 @@ Tasks, Daily Notes, templates and query definitions remain file/text concepts. A
 ## Not implemented yet
 
 - cloud accounts and cross-device sync
-- graph/local graph visualization
 - Kanban
 - Canvas
 - PWA cold-start/offline shell
@@ -231,6 +261,6 @@ CI runs strict TypeScript, all core contracts, the 10k search benchmark, product
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.9.0-phase9**
+- Current package version: **0.10.0-phase10**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
