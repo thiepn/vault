@@ -551,6 +551,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!vault || !files.length) return;
     const noteId = insertIntoNote && selected?.kind === 'markdown' && selected.deletedAt === null ? selected.id : undefined;
     if (noteId && editorMode === 'reading') await setEditorMode('live');
+    if (noteId && saver) await saver.flush();
     const parentId = await attachmentUploadParent();
     const references: string[] = [];
 
@@ -568,8 +569,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     await refresh();
     if (noteId && selected?.id === noteId && saver && references.length) {
-      const separator = editor.getText().length === 0 || editor.getText().endsWith('\n') ? '' : '\n';
-      editor.insertText(separator + references.join('\n') + '\n');
+      const source = editor.getText();
+      const at = Math.max(0, Math.min(editorStats.position, source.length));
+      const before = at > 0 && source[at - 1] !== '\n' ? '\n' : '';
+      const after = at < source.length && source[at] !== '\n' ? '\n' : (source.length ? '\n' : '');
+      editor.insertText(before + references.join('\n') + after);
     }
     renderMedia();
   }
