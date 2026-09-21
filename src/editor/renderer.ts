@@ -20,8 +20,12 @@ export interface WikiRenderBridge {
   status(target: string, sourceEntryId?: string): 'resolved' | 'ambiguous' | 'unresolved';
   load(target: string, sourceEntryId?: string): Promise<{ entryId: string; markdown: string } | null>;
 }
+export interface QueryRenderBridge {
+  render(source: string, sourceEntryId?: string): Promise<HTMLElement>;
+}
 export interface RenderMarkdownOptions {
   wiki?: WikiRenderBridge;
+  query?: QueryRenderBridge;
   stack?: readonly string[];
   depth?: number;
   sourceEntryId?: string;
@@ -49,7 +53,13 @@ async function compileWikiAware(source: string, options: RenderMarkdownOptions):
         } else if (stack.includes(loaded.entryId)) {
           replacement = `<aside class="vault-embed vault-embed-cycle">Embed cycle: ${escapeHtml(reference.targetText)}</aside>`;
         } else {
-          const nested = await compileWikiAware(loaded.markdown, { wiki, stack: [...stack, loaded.entryId], depth: depth + 1, sourceEntryId: loaded.entryId });
+          const nested = await compileWikiAware(loaded.markdown, {
+            wiki,
+            ...(options.query ? { query: options.query } : {}),
+            stack: [...stack, loaded.entryId],
+            depth: depth + 1,
+            sourceEntryId: loaded.entryId,
+          });
           const embedLabel = reference.alias ?? (reference.note || reference.heading || (reference.block ? 'Embedded block' : reference.targetText));
           replacement = `<section class="vault-embed vault-embed-resolved"><a href="#" class="vault-embed-label" title="${escapeHtml(reference.targetText)}" data-vault-target="${escapeHtml(reference.targetText)}" data-vault-source="${escapeHtml(options.sourceEntryId ?? '')}">${escapeHtml(embedLabel)}</a><div class="vault-embed-content">${nested}</div></section>`;
         }
@@ -58,7 +68,13 @@ async function compileWikiAware(source: string, options: RenderMarkdownOptions):
     }
   }
   const compiled = markdown.parse(prepared);
-  return typeof compiled === 'string' ? compiled : await compiled;
+  const html = typeof compiled === 'string' ? compiled : await compiled;
+  if (!options.sourceEntryId) return html;
+  const querySourceEntry = escapeHtml(options.sourceEntryId);
+  return html.replaceAll(
+    '<code class="language-vault-query">',
+    `<code class="language-vault-query" data-vault-query-source="${querySourceEntry}">`,
+  );
 }
 
 const calloutTypes = new Set([
@@ -122,6 +138,24 @@ function enhanceCallouts(root: HTMLElement): void {
       while (quote.firstChild) body.append(quote.firstChild);
       wrapper.append(title, body);
       quote.replaceWith(wrapper);
+    }
+  }
+}
+
+async function enhanceQueries(root: HTMLElement, bridge: QueryRenderBridge | undefined, sourceEntryId?: string): Promise<void> {
+  if (!bridge) return;
+  const blocks = [...root.querySelectorAll<HTMLElement>('pre > code.language-vault-query')];
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    if (!pre) continue;
+    try {
+      const rendered = await bridge.render(code.textContent ?? '', code.dataset.vaultQuerySource ?? sourceEntryId);
+      pre.replaceWith(rendered);
+    } catch (error) {
+      const warning = document.createElement('aside');
+      warning.className = 'render-warning query-render-warning';
+      warning.textContent = `Vault query could not run: ${error instanceof Error ? error.message : 'invalid query'}`;
+      pre.replaceWith(warning);
     }
   }
 }
@@ -206,6 +240,7 @@ export async function renderMarkdown(markdownSource: string, options: RenderMark
 
   enhanceLinks(container);
   enhanceCallouts(container);
+  await enhanceQueries(container, options.query, options.sourceEntryId);
   enhanceCode(container);
   await enhanceMermaid(container);
   return container;

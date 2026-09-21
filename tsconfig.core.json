@@ -31,6 +31,7 @@
     "src/metadata/**/*.ts",
     "src/planning/**/*.ts",
     "src/tasks/**/*.ts",
+    "src/queries/**/*.ts",
     "src/app/workspace.ts",
     "src/editor/**/*.ts"
   ]

@@ -1,4 +1,4 @@
-import { Compartment, EditorState } from '@codemirror/state';
+import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
@@ -6,6 +6,7 @@ import { openSearchPanel } from '@codemirror/search';
 import { basicSetup } from 'codemirror';
 import { livePreviewExtension } from './live-preview.js';
 import { wikiCompletionExtension, wikiPreviewExtension, type WikiEditorBridge } from './wiki-links.js';
+import { queryPreviewExtension, type QueryEditorBridge } from './query-preview.js';
 
 export type EditMode = 'source' | 'live';
 export type MarkdownCommand =
@@ -28,6 +29,7 @@ export interface MarkdownEditorOptions {
   readOnly?: boolean;
   lineNumbers?: boolean;
   wiki?: WikiEditorBridge;
+  query?: QueryEditorBridge;
   onChange(text: string): void;
   onStats?(stats: EditorStats): void;
 }
@@ -83,6 +85,7 @@ export class MarkdownEditor {
   private suppressChange = false;
   private mode: EditMode;
   private readonly wiki: WikiEditorBridge | undefined;
+  private readonly query: QueryEditorBridge | undefined;
   private cachedCharacters = 0;
   private cachedWords = 0;
 
@@ -91,6 +94,7 @@ export class MarkdownEditor {
     this.onStats = options.onStats;
     this.mode = options.mode ?? 'live';
     this.wiki = options.wiki;
+    this.query = options.query;
     host.dataset.lineNumbers = String(options.lineNumbers ?? false);
     host.dataset.mode = this.mode;
 
@@ -111,7 +115,7 @@ export class MarkdownEditor {
         markdownKeys,
         readOnlyCompartment.of(EditorState.readOnly.of(options.readOnly ?? false)),
         editableCompartment.of(EditorView.editable.of(!(options.readOnly ?? false))),
-        previewCompartment.of(this.mode === 'live' ? [livePreviewExtension, ...(this.wiki ? [wikiPreviewExtension(this.wiki)] : [])] : []),
+        previewCompartment.of(this.mode === 'live' ? this.previewExtensions() : []),
         this.wiki ? wikiCompletionExtension(this.wiki) : [],
         EditorView.updateListener.of(update => {
           if (update.docChanged) {
@@ -168,9 +172,24 @@ export class MarkdownEditor {
     if (mode === this.mode) return;
     this.mode = mode;
     this.view.dispatch({
-      effects: previewCompartment.reconfigure(mode === 'live' ? [livePreviewExtension, ...(this.wiki ? [wikiPreviewExtension(this.wiki)] : [])] : []),
+      effects: previewCompartment.reconfigure(mode === 'live' ? this.previewExtensions() : []),
     });
     this.host.dataset.mode = mode;
+  }
+
+  refreshPreview(): void {
+    if (this.mode !== 'live') return;
+    this.view.dispatch({
+      effects: previewCompartment.reconfigure(this.previewExtensions()),
+    });
+  }
+
+  private previewExtensions(): Extension[] {
+    return [
+      livePreviewExtension,
+      ...(this.wiki ? [wikiPreviewExtension(this.wiki)] : []),
+      ...(this.query ? [queryPreviewExtension(this.query)] : []),
+    ];
   }
 
   setLineNumbers(show: boolean): void {

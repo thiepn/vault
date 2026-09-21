@@ -21,11 +21,12 @@ import type { QuickSwitchResult, SearchFacets, SearchInput, SearchResult, Search
 import { deleteFrontmatterProperty, inspectFrontmatter, rawValueForProperty, renameFrontmatterProperty, setFrontmatterProperty, valueForKind, type PropertyKind } from '../metadata/frontmatter.js';
 import { addLocalDays, dateKey, renderTemplate, safeDailyFilename } from '../planning/templates.js';
 import { buildCalendarMonth, dailyDateForEntry, dailyEntryForDate } from '../planning/calendar.js';
+import { dynamicFieldLabel, parseDynamicQuery, runDynamicQuery } from '../queries/dynamic.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 7 browser workspace: Markdown-native task management on the accepted Phase 1-6 foundation. */
+/** Phase 8 browser workspace: Markdown-native queries and dynamic views on the accepted Phase 1-7 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -108,7 +109,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 7 \u00b7 Tasks</span>
+        <span class="stage">Phase 8 \u00b7 Queries</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -176,12 +177,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 7</p><h1>Tasks that remain Markdown.</h1>
-          <p>Manage checkboxes, due dates, priorities and recurring work across the vault without moving task truth into a separate database.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 8</p><h1>Live views from ordinary Markdown.</h1>
+          <p>Turn search, properties and tasks into saved list, table and task views without creating a second content database.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -289,6 +290,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       },
       activate(target) {
         if (selected?.kind === 'markdown') perform(() => activateWikiTarget(target, selected!.id));
+      },
+    },
+    query: {
+      render(source) {
+        return renderDynamicQueryBlock(source, selected?.id);
       },
     },
     onChange(text) { saver?.update(text); updateCounts(); schedulePropertiesRender(text); },
@@ -625,6 +631,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       renderTasks();
       renderCalendar();
     }
+    editor.refreshPreview();
+    if (editorMode === 'reading') await renderReadingCurrent();
   }
 
   async function openTaskSource(entryId: EntryId, from: number): Promise<void> {
@@ -780,6 +788,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     saver.update(next);
     await saver.flush();
     await refreshKnowledgeEntry(selected.id);
+    if (editorMode === 'reading') await renderReadingCurrent();
     switchSidebarPanel('tasks');
   }
 
@@ -1776,6 +1785,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     renderKnowledgePanels();
     renderTasks();
     renderCalendar();
+    editor.refreshPreview();
   }
 
   function fragmentOffset(resolution: WikiResolution): number | null {
@@ -1873,6 +1883,169 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     renderKnowledgePanels();
   }
 
+  function renderDynamicQueryBlock(source: string, sourceEntryId?: string): HTMLElement {
+    const plan = parseDynamicQuery(source);
+    const currentEntryId = sourceEntryId && entries.some(entry => entry.id === sourceEntryId)
+      ? sourceEntryId as EntryId
+      : selected?.id;
+    const result = runDynamicQuery(plan, entries, knowledge.records(), {
+      ...(currentEntryId ? { currentEntryId } : {}),
+      pathOf,
+    });
+
+    const section = document.createElement('section');
+    section.className = 'query-view';
+    section.dataset.queryView = plan.view;
+
+    const header = document.createElement('header');
+    header.className = 'query-view-header';
+    const heading = document.createElement('strong');
+    heading.textContent = plan.title ?? (plan.view === 'table' ? 'Dynamic table' : plan.view === 'tasks' ? 'Dynamic tasks' : 'Dynamic list');
+    const meta = document.createElement('span');
+    const shown = plan.view === 'tasks' ? result.tasks.length : result.notes.length;
+    meta.textContent = result.truncated ? `${shown} of ${result.total}` : `${result.total} result${result.total === 1 ? '' : 's'}`;
+    header.append(heading, meta);
+    section.append(header);
+
+    if (plan.query) {
+      const query = document.createElement('code');
+      query.className = 'query-expression';
+      query.textContent = plan.query;
+      section.append(query);
+    }
+
+    if (result.total === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'query-empty';
+      empty.textContent = plan.view === 'tasks' ? 'No tasks match this view.' : 'No notes match this view.';
+      section.append(empty);
+      return section;
+    }
+
+    if (plan.view === 'list') {
+      const list = document.createElement('div');
+      list.className = 'query-note-list';
+      for (const row of result.notes) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'query-note-row';
+        button.dataset.queryEntry = row.entryId;
+        const title = document.createElement('span');
+        title.className = 'query-note-title';
+        title.textContent = row.title;
+        const path = document.createElement('span');
+        path.className = 'query-note-path';
+        path.textContent = row.path;
+        button.append(title, path);
+        const extras = plan.fields.filter(field => field !== 'file' && field !== 'path')
+          .map(field => row.values[field]).filter(Boolean);
+        if (extras.length) {
+          const detail = document.createElement('span');
+          detail.className = 'query-note-detail';
+          detail.textContent = extras.join(' · ');
+          button.append(detail);
+        }
+        list.append(button);
+      }
+      section.append(list);
+      return section;
+    }
+
+    if (plan.view === 'table') {
+      const wrap = document.createElement('div');
+      wrap.className = 'query-table-wrap';
+      const table = document.createElement('table');
+      table.className = 'query-table';
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      const needsOpenColumn = !plan.fields.includes('file');
+      if (needsOpenColumn) {
+        const cell = document.createElement('th');
+        cell.scope = 'col';
+        cell.textContent = 'Open';
+        headerRow.append(cell);
+      }
+      for (const field of plan.fields) {
+        const cell = document.createElement('th');
+        cell.scope = 'col';
+        cell.textContent = dynamicFieldLabel(field);
+        headerRow.append(cell);
+      }
+      thead.append(headerRow);
+      const tbody = document.createElement('tbody');
+      for (const row of result.notes) {
+        const tr = document.createElement('tr');
+        if (needsOpenColumn) {
+          const cell = document.createElement('td');
+          const open = document.createElement('button');
+          open.type = 'button';
+          open.className = 'query-table-open';
+          open.dataset.queryEntry = row.entryId;
+          open.textContent = 'Open';
+          cell.append(open);
+          tr.append(cell);
+        }
+        for (const field of plan.fields) {
+          const cell = document.createElement('td');
+          if (field === 'file') {
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'query-table-file';
+            open.dataset.queryEntry = row.entryId;
+            open.textContent = row.values[field] || row.title;
+            cell.append(open);
+          } else {
+            cell.textContent = row.values[field] ?? '';
+          }
+          tr.append(cell);
+        }
+        tbody.append(tr);
+      }
+      table.append(thead, tbody);
+      wrap.append(table);
+      section.append(wrap);
+      return section;
+    }
+
+    const taskList = document.createElement('div');
+    taskList.className = 'query-task-list';
+    for (const row of result.tasks) {
+      const entry = entries.find(item => item.id === row.entryId);
+      if (!entry) continue;
+      const holder = document.createElement('article');
+      holder.className = 'query-task-row';
+      if (row.task.completed) holder.classList.add('completed');
+      assignTaskDataset(holder, { entry, path: row.path, task: row.task });
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = row.task.completed;
+      checkbox.dataset.taskRole = 'completed';
+      checkbox.setAttribute('aria-label', `Complete task: ${row.task.text}`);
+
+      const body = document.createElement('div');
+      body.className = 'query-task-body';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'query-task-title';
+      open.dataset.taskAction = 'source';
+      open.textContent = row.task.text;
+      const detail = document.createElement('span');
+      detail.className = 'query-task-detail';
+      const details = [row.path];
+      if (row.task.scheduled) details.push(`Scheduled ${row.task.scheduled}`);
+      if (row.task.due) details.push(`Due ${row.task.due}`);
+      if (row.task.priority) details.push(`${row.task.priority} priority`);
+      if (row.task.recurrence) details.push(`Repeats ${row.task.recurrence}`);
+      detail.textContent = details.join(' · ');
+      body.append(open, detail);
+      holder.append(checkbox, body);
+      taskList.append(holder);
+    }
+    section.append(taskList);
+    return section;
+  }
+
   async function renderReadingCurrent(): Promise<void> {
     if (!selected || selected.kind !== 'markdown' || editorMode !== 'reading') return;
     const generation = ++renderGeneration;
@@ -1897,6 +2070,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
             block: resolution.block,
           });
           return markdown === null ? null : { entryId: resolution.entryId, markdown };
+        },
+      },
+      query: {
+        async render(source, sourceEntryId) {
+          return renderDynamicQueryBlock(source, sourceEntryId);
         },
       },
     });
@@ -2120,6 +2298,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
 
+    const queryEntryButton = (event.target as Element).closest<HTMLButtonElement>('[data-query-entry]');
+    if (queryEntryButton?.dataset.queryEntry) {
+      perform(() => openEntry(queryEntryButton.dataset.queryEntry as EntryId));
+      return;
+    }
+
     const searchResult = (event.target as Element).closest<HTMLButtonElement>('[data-search-entry]');
     if (searchResult?.dataset.searchEntry) {
       const fromValue = searchResult.dataset.searchFrom === undefined ? null : Number(searchResult.dataset.searchFrom);
@@ -2221,6 +2405,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (editorMode === 'reading') await setEditorMode('live');
         const rendered = await renderTemplateEntry(templateId, selected.name.replace(/\.md$/iu, ''), new Date());
         editor.insertText(rendered.text, rendered.cursorOffset);
+      });
+      return;
+    }
+    if (action === 'insert-query') {
+      perform(async () => {
+        if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null) return;
+        if (editorMode === 'reading') await setEditorMode('live');
+        editor.insertText([
+          '```vault-query',
+          'view: table',
+          'query: tag:#project',
+          'fields: file, path, tags, property:status',
+          'sort: updated desc',
+          'limit: 25',
+          'exclude-self: true',
+          '```',
+          '',
+        ].join('\n'));
       });
       return;
     }
