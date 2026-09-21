@@ -53,7 +53,13 @@ async function compileWikiAware(source: string, options: RenderMarkdownOptions):
         } else if (stack.includes(loaded.entryId)) {
           replacement = `<aside class="vault-embed vault-embed-cycle">Embed cycle: ${escapeHtml(reference.targetText)}</aside>`;
         } else {
-          const nested = await compileWikiAware(loaded.markdown, { wiki, stack: [...stack, loaded.entryId], depth: depth + 1, sourceEntryId: loaded.entryId });
+          const nested = await compileWikiAware(loaded.markdown, {
+            wiki,
+            ...(options.query ? { query: options.query } : {}),
+            stack: [...stack, loaded.entryId],
+            depth: depth + 1,
+            sourceEntryId: loaded.entryId,
+          });
           const embedLabel = reference.alias ?? (reference.note || reference.heading || (reference.block ? 'Embedded block' : reference.targetText));
           replacement = `<section class="vault-embed vault-embed-resolved"><a href="#" class="vault-embed-label" title="${escapeHtml(reference.targetText)}" data-vault-target="${escapeHtml(reference.targetText)}" data-vault-source="${escapeHtml(options.sourceEntryId ?? '')}">${escapeHtml(embedLabel)}</a><div class="vault-embed-content">${nested}</div></section>`;
         }
