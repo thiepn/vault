@@ -563,7 +563,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   async function openGraph(mode: 'full' | 'local' = graphMode): Promise<void> {
-    if (saver) await saver.flush();
+    if (saver) {
+      await saver.flush();
+      if (selected?.kind === 'markdown' && selected.deletedAt === null) await refreshKnowledgeEntry(selected.id);
+    }
     graphMode = mode;
     graphOpen = true;
     graphSurface.hidden = false;
