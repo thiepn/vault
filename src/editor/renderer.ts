@@ -70,10 +70,10 @@ async function compileWikiAware(source: string, options: RenderMarkdownOptions):
   const compiled = markdown.parse(prepared);
   const html = typeof compiled === 'string' ? compiled : await compiled;
   if (!options.sourceEntryId) return html;
-  const source = escapeHtml(options.sourceEntryId);
+  const querySourceEntry = escapeHtml(options.sourceEntryId);
   return html.replaceAll(
     '<code class="language-vault-query">',
-    `<code class="language-vault-query" data-vault-query-source="${source}">`,
+    `<code class="language-vault-query" data-vault-query-source="${querySourceEntry}">`,
   );
 }
 
