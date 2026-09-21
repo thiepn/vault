@@ -41,7 +41,10 @@ async function createNote(page: Page, name: string, text: string): Promise<void>
 }
 
 async function sourceText(page: Page): Promise<string> {
-  await page.locator('[data-editor-mode="source"]').click();
+  const sourceButton = page.locator('[data-editor-mode="source"]');
+  await sourceButton.click();
+  await expect(sourceButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#vault-editor')).toBeVisible();
   return (await page.locator('#vault-editor .cm-line').allTextContents()).join('\n');
 }
 
