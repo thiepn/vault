@@ -367,3 +367,79 @@
   .attachment-preview{min-height:220px;padding:10px}
   .attachment-meta h2{font-size:16px}
 }
+
+
+/* Phase 10 — knowledge graph */
+.graph-toggle{padding:6px 10px;font-size:10px;font-weight:650;letter-spacing:.3px;background:#f7faf8}
+.workspace[data-graph-open="true"] .main>.document-bar,
+.workspace[data-graph-open="true"] .main>.actions,
+.workspace[data-graph-open="true"] .main>.editor-toolbar,
+.workspace[data-graph-open="true"] .main>.recovery-actions,
+.workspace[data-graph-open="true"] .main>.empty-state,
+.workspace[data-graph-open="true"] .main>#vault-editor,
+.workspace[data-graph-open="true"] .main>.reading-view,
+.workspace[data-graph-open="true"] .main>.attachment-view,
+.workspace[data-graph-open="true"] .main>.folder-message,
+.workspace[data-graph-open="true"] .main>.attachment-file-input{display:none!important}
+.workspace[data-graph-open="true"] .graph-surface{display:flex!important}
+.graph-surface{flex:1;min-height:0;display:flex;flex-direction:column;background:#f7f9f7}
+.graph-header{display:flex;align-items:flex-start;gap:18px;padding:18px 22px 10px;border-bottom:1px solid var(--line);background:#fff}
+.graph-heading{min-width:0}
+.graph-heading .eyebrow{margin:0 0 3px}
+.graph-heading h1{font-size:20px;letter-spacing:-.5px;margin:0 0 4px}
+.graph-summary{margin:0;color:var(--muted);font-size:10px;line-height:1.5}
+.graph-close{margin-left:auto;flex:0 0 auto}
+.graph-controls{display:grid;grid-template-columns:repeat(7,minmax(110px,1fr));gap:7px;padding:10px 14px;border-bottom:1px solid var(--line);background:#fbfcfb}
+.graph-controls label{display:grid;gap:3px;color:var(--muted);font-size:8px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;min-width:0}
+.graph-controls input[type="search"],.graph-controls input[type="text"],.graph-controls select{width:100%;min-width:0;min-height:34px;border:1px solid var(--line);border-radius:5px;background:#fff;color:inherit;padding:6px 8px;font-size:10px;font-weight:400;letter-spacing:0;text-transform:none}
+.graph-controls .graph-check{display:flex;align-items:center;gap:6px;align-self:end;min-height:34px;padding:0 6px;text-transform:none;letter-spacing:0;font-size:10px;font-weight:500}
+.graph-controls .graph-check input{margin:0}
+.graph-toolbar{display:flex;align-items:center;gap:5px;padding:6px 12px;border-bottom:1px solid var(--line);background:#fff}
+.graph-toolbar button{padding:4px 8px;font-size:10px}
+.graph-hover{margin-left:6px;color:var(--muted);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.graph-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 248px}
+.graph-canvas-wrap{position:relative;min-width:0;min-height:0;overflow:hidden;border-right:1px solid var(--line)}
+.graph-canvas{display:block;width:100%;height:100%;min-height:320px;cursor:grab;background:#fbfcfa}
+.graph-canvas:active{cursor:grabbing}
+.graph-canvas:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.graph-browser{min-width:0;min-height:0;display:flex;flex-direction:column;background:#f9fbf9}
+.graph-browser-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 10px 7px;border-bottom:1px solid var(--line);font-size:9px;color:var(--muted)}
+.graph-browser-heading strong{font-size:10px;color:#33433e}
+.graph-browser-count{font-variant-numeric:tabular-nums}
+.graph-node-list{min-height:0;overflow:auto;padding:6px;display:grid;align-content:start;gap:3px}
+.graph-node-button{display:grid!important;gap:2px;width:100%;min-width:0;text-align:left!important;padding:7px 8px!important;border:1px solid transparent!important;background:transparent!important}
+.graph-node-button:hover,.graph-node-button:focus-visible{background:#eef4f0!important;border-color:#dbe5df!important}
+.graph-node-button.match{background:#edf6f1!important;border-color:#cfe0d6!important}
+.graph-node-button.orphan{border-left:3px solid #a7812d!important}
+.graph-node-title{font-size:10px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.graph-node-meta{font-size:8px;line-height:1.35;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.graph-node-empty{margin:8px;color:var(--muted);font-size:9px;line-height:1.5}
+.local-graph-button{margin-top:9px!important}
+@media(max-width:1050px){
+  .graph-controls{grid-template-columns:repeat(4,minmax(110px,1fr))}
+  .graph-body{grid-template-columns:minmax(0,1fr) 220px}
+}
+@media(max-width:640px){
+  .graph-toggle{padding:5px 7px;font-size:9px}
+  .workspace[data-graph-open="true"] .sidebar{display:none!important}
+  .graph-header{padding:11px 12px 8px;gap:10px}
+  .graph-heading h1{font-size:17px}
+  .graph-summary{font-size:9px}
+  .graph-close{min-height:38px;padding:6px 8px;font-size:10px}
+  .graph-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:8px}
+  .graph-controls input[type="search"],.graph-controls input[type="text"],.graph-controls select{min-height:40px;font-size:14px}
+  .graph-controls .graph-check{min-height:40px;font-size:11px}
+  .graph-toolbar{padding:5px 8px}
+  .graph-toolbar button{min-height:36px;min-width:42px}
+  .graph-hover{font-size:8px}
+  .graph-body{grid-template-columns:1fr;grid-template-rows:minmax(280px,1fr) minmax(120px,32vh)}
+  .graph-canvas-wrap{border-right:0;border-bottom:1px solid var(--line)}
+  .graph-canvas{min-height:280px}
+  .graph-browser{min-height:120px}
+  .graph-node-button{min-height:44px!important;padding:8px!important}
+  .graph-node-title{font-size:11px}
+  .graph-node-meta{font-size:9px}
+}
+@media(prefers-reduced-motion:reduce){
+  .graph-canvas{scroll-behavior:auto}
+}
