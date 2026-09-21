@@ -2,123 +2,156 @@
 
 **Vault** is a browser-first, local-first Markdown knowledge system.
 
-The goal is an original web application with linked Markdown notes, cross-device synchronization, tasks, queries, calendar, graph, Canvas, mobile/PWA support, and ordinary Markdown portability.
+Vault keeps ordinary Markdown as the source of truth while providing a serious browser application around it.
 
-The repository currently includes the browser-certified **Phase 1 file system**, **Phase 2 professional Markdown editor**, **Phase 3 linked knowledge system**, and **Phase 4 index + search engine**.
+The repository currently includes browser-certified:
+
+- **Phase 1 — Vault & File System**
+- **Phase 2 — Professional Markdown Editor**
+- **Phase 3 — Linked Knowledge System**
+- **Phase 4 — Index + Search Engine**
+- **Phase 5 — Properties & Metadata**
+- **Phase 6 — Templates, Daily Notes & Calendar**
 
 ## Current capabilities
 
-### Vault and file system
+### Vault and files
 
-- multiple local vaults and nested folders
+- multiple local vaults
+- nested folders
 - stable immutable file/folder IDs
 - create, edit, rename, move and recursively duplicate
-- drag/drop movement and collision-safe names
-- collapsible/filterable/sortable explorer
+- drag/drop movement
 - Trash and restore
-- native IndexedDB persistence
-- autosave version checks, recovery drafts and checkpoints
-- Markdown ZIP and recovery export
+- IndexedDB persistence
+- autosave version checks
+- recovery drafts and checkpoints
+- Markdown ZIP / recovery export
 - responsive desktop/mobile shell
 
 ### Markdown editor
 
 - CodeMirror 6
 - Source, Live Preview and Reading modes
-- syntax-tree-driven live formatting
-- undo/redo, find/replace and multi-cursor editing
-- word wrap, indentation and syntax highlighting
-- line numbers and document/cursor statistics
-- desktop formatting shortcuts and mobile toolbar
+- undo/redo, multi-cursor, find/replace
+- syntax highlighting and formatting controls
 - GFM tables
-- highlighted fenced code
-- KaTeX mathematics
+- fenced code highlighting
+- KaTeX math
 - callouts
-- Mermaid diagrams loaded on demand
-- sanitized reading-mode HTML
+- Mermaid
+- sanitized Reading mode
 
 ### Linked knowledge
 
-- Wiki links: `[[Note]]`
-- aliases: `[[Note|label]]`
-- heading links: `[[Note#Heading]]`
-- block links: `[[Note#^block-id]]`
-- current-note fragments
-- embedded notes/headings/blocks with `![[...]]`
-- cycle/depth-safe transclusion
-- `[[` autocomplete for notes, aliases, headings and blocks
-- duplicate-title/path disambiguation
-- cursor-aware Live Preview concealment for Wiki-link syntax
-- Ctrl/Cmd-click Wiki navigation
-- resolved / ambiguous / unresolved link states
-- create-a-note flow for unresolved links
+- Wiki links and aliases
+- heading and block links
+- embedded notes/headings/blocks
+- note/alias/heading/block autocomplete
 - backlinks
-- unlinked mentions with one-click link conversion
-- outline navigation and current-section highlighting
-- automatic parsed-link updates after note/folder rename or move
-- per-vault toggle for automatic link updates
-- mobile Knowledge drawer
+- unlinked mentions
+- outline navigation
+- automatic parsed-link maintenance on rename/move
+- unresolved-note creation
+- cycle/depth-safe transclusion
 
-### Index + search
+### Search
 
-- dedicated Web Worker search/index engine
-- vault-wide full-text search
-- phrase search
-- Boolean `AND` / `OR` / `NOT`
-- negative terms with `-`
-- filename filters: `file:`
-- path filters: `path:`
-- tag filters: `tag:`
-- nested tag-prefix matching
-- property existence/comparison filters: `property:`
-- numeric/string/boolean property comparisons
-- task filters: `task:open`, `task:done`, `task:any`
-- indexed titles, paths, aliases, headings, body text, tags, properties and tasks
-- highlighted search snippets
-- exact source offsets for opening matches
+- dedicated Web Worker index
+- full-text and phrase search
+- Boolean AND / OR / NOT
+- file/path/tag/property/task filters
+- nested tags
+- property comparisons
+- result snippets and exact source offsets
 - tag/property facets
-- Quick Switcher with title/alias/path fuzzy ranking and recency
-- incremental index updates after edits, rename, move and deletion
-- rebuild/reconciliation after concurrent changes
-- worker crash restart/rebuild handling
-- mobile Search/Tags navigation
-- 10,000-note performance certification
+- Quick Switcher
+- incremental index maintenance
+- worker recovery/rebuild
+- 10,000-note CI benchmark
 
-## Data model
+### Visual Properties
 
-Markdown remains canonical.
+- YAML frontmatter remains canonical
+- visual add/edit/rename/delete
+- text, number, boolean, date, list, tags and null
+- comment/order preservation for supported edits
+- LF/CRLF preservation
+- complex YAML read-only fallback
+- Source-mode escape hatch
+- automatic knowledge/search reindex
+
+### Templates
+
+Templates are ordinary Markdown notes stored in a configured Templates folder.
+
+Supported variables include:
+
+- `{{title}}`
+- `{{date}}`
+- `{{time}}`
+- `{{datetime}}`
+- `{{weekday}}`
+- `{{year}}`, `{{month}}`, `{{day}}`
+- `{{yesterday}}`, `{{tomorrow}}`
+- `{{date:YYYY-MM-DD}}` and other supported date patterns
+- `{{cursor}}`
+
+Templates can be:
+
+- inserted into an existing note
+- used explicitly when creating a note
+- configured as the vault default
+- configured per destination folder
+- configured specifically for Daily Notes
+
+### Daily Notes & Calendar
+
+- configurable Daily Notes folder
+- configurable Daily Note template
+- configurable filename format
+- collision-safe requirement that formats contain year/month/day
+- previous / today / next navigation
+- `Ctrl/Cmd + Shift + D` opens today's Daily Note
+- auto-open existing daily file or create it
+- default Markdown Daily Note when no template is selected
+- Monday-first 6-week calendar
+- markers for existing Daily Notes
+- markers/counts for notes carrying any `YYYY-MM-DD` YAML property
+- calendar → Daily Note navigation
+- desktop and mobile Calendar workflows
+
+## Canonical data
 
 ```text
-CodeMirror
-→ SaveCoordinator
-→ LocalRepository
-→ IndexedDB canonical Markdown
+CodeMirror / Visual Properties / Templates
+        ↓
+ordinary Markdown + YAML
+        ↓
+SaveCoordinator
+        ↓
+LocalRepository
+        ↓
+IndexedDB
 
 Markdown
-→ Knowledge parser
-→ derived knowledge records
-→ Search Worker
-→ disposable full-text/facet indexes
+   ├─→ linked-knowledge index
+   └─→ search worker index
 ```
 
-The knowledge and search indexes are acceleration layers. They can be discarded and rebuilt from canonical Markdown and stable file metadata.
+Templates and Daily Notes are files, not proprietary records. Calendar/search/knowledge structures are derived or configuration-only and can be rebuilt from canonical notes.
 
-## Rendering security
+## Not implemented yet
 
-Reading mode does not trust raw note HTML. Markdown is compiled, sanitized with DOMPurify, then enhanced through controlled callout/code/Mermaid/Wiki-link handling. Mermaid uses strict security and its SVG is sanitized.
-
-## Deliberately not implemented yet
-
-- visual YAML properties editor
-- templates/daily notes/calendar
-- advanced task management
-- cloud accounts and cross-device synchronization
-- attachment management
+- advanced task-management UI
+- Dataview-like query language/views
+- cloud accounts and cross-device sync
+- attachments
 - graph/local graph visualization
 - Kanban
 - Canvas
 - PWA cold-start/offline shell
-- external Markdown/Obsidian vault import
+- external Markdown/Obsidian import
 
 ## Development
 
@@ -132,21 +165,15 @@ npm run build
 npm run test:e2e
 ```
 
-GitHub CI uses the committed lockfile, strict TypeScript, the 10k search benchmark, the production Vite build, and real Chromium desktop/mobile acceptance against native IndexedDB.
+CI runs strict TypeScript, all core contracts, the 10k search benchmark, the production Vite build, and real Chromium desktop/mobile acceptance.
 
-See:
-
-- `docs/ARCHITECTURE.md`
-- `docs/PHASE_1_RESULTS.md`
-- `docs/PHASE_2_RESULTS.md`
-- `docs/PHASE_3_RESULTS.md`
-- `docs/PHASE_4_RESULTS.md`
-- `docs/PHASE_4_ACCEPTANCE.md`
+See `docs/ARCHITECTURE.md` and the phase result/acceptance documents under `docs/`.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
+- Current package version: **0.6.0-phase6**
 
-Vault does not use Obsidian branding, proprietary source code/assets, or the Obsidian third-party plugin runtime.
+Vault does not use Obsidian proprietary source code, assets, branding, or plugin runtime.
