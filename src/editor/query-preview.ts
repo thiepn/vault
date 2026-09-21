@@ -7,6 +7,7 @@ export interface QueryEditorBridge {
 export interface QueryFence {
   from: number;
   to: number;
+  widgetAt: number;
   source: string;
 }
 
@@ -40,6 +41,7 @@ export function parseQueryFences(text: string): QueryFence[] {
       fences.push({
         from: openRow.from,
         to: closeRow.to,
+        widgetAt: closeRow.endWithNewline,
         source: rawSource,
       });
       index = closeIndex;
@@ -103,10 +105,11 @@ function buildDecorations(view: EditorView, bridge: QueryEditorBridge, fences: r
   for (const fence of fences) {
     const active = view.state.selection.ranges.some(range => range.from <= fence.to && range.to >= fence.from);
     if (active) continue;
-    ranges.push(Decoration.replace({
+    ranges.push(Decoration.widget({
       widget: new QueryWidget(fence.source, fence.from, bridge),
       block: true,
-    }).range(fence.from, fence.to));
+      side: 1,
+    }).range(fence.widgetAt));
   }
   return Decoration.set(ranges, true);
 }
