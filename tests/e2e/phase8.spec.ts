@@ -114,8 +114,14 @@ test('Phase 8 renders live table/task queries and task actions mutate canonical 
   const liveEditor = page.locator('#vault-editor .cm-content');
   await liveEditor.click();
   await page.keyboard.press('Control+Home');
-  await expect(page.locator('#vault-editor .cm-query-widget .query-view[data-query-view="table"]')).toBeVisible();
+  const liveTable = page.locator('#vault-editor .cm-query-widget .query-view[data-query-view="table"]');
+  await expect(liveTable).toBeVisible();
   await expect(page.locator('#vault-editor .cm-query-widget .query-view[data-query-view="tasks"]')).toBeVisible();
+  await liveTable.locator('xpath=ancestor::div[contains(@class,"cm-query-widget")]').locator('.cm-query-edit').click();
+  await expect(page.locator('#vault-editor .cm-query-widget .query-view[data-query-view="table"]')).toHaveCount(0);
+  await expect(page.locator('#vault-editor .cm-content')).toContainText('view: table');
+  await page.keyboard.press('Control+Home');
+  await expect(page.locator('#vault-editor .cm-query-widget .query-view[data-query-view="table"]')).toBeVisible();
 
   await page.locator('[data-editor-mode="reading"]').click();
 
