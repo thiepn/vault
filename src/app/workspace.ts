@@ -75,6 +75,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let quickResults: QuickSwitchResult[] = [];
   let quickSelection = 0;
   let draggedEntryId: EntryId | undefined;
+  const pendingCursorOffsets = new Map<EntryId, number>();
   let editorMode: EditorMode = 'live';
   let lineNumbers = false;
   let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0 };
@@ -455,8 +456,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const title = rawName.replace(/\.md$/iu, '');
     const templateId = explicitTemplateId ?? templateForParent(parentId);
     let text = '';
-    if (templateId) text = (await renderTemplateEntry(templateId, title, date)).text;
-    return repository.createEntry(vault.id, parentId, rawName, 'markdown', text);
+    let cursorOffset: number | null = null;
+    if (templateId) {
+      const rendered = await renderTemplateEntry(templateId, title, date);
+      text = rendered.text;
+      cursorOffset = rendered.cursorOffset;
+    }
+    const created = await repository.createEntry(vault.id, parentId, rawName, 'markdown', text);
+    if (cursorOffset !== null) pendingCursorOffsets.set(created.id, cursorOffset);
+    return created;
   }
 
   async function openOrCreateDaily(date: Date): Promise<void> {
@@ -471,13 +479,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
 
     const name = safeDailyFilename(date, dailyFormat);
-    let text: string;
+    let rendered: { text: string; cursorOffset: number | null };
     if (dailyTemplateId) {
-      text = (await renderTemplateEntry(dailyTemplateId, name, date)).text;
+      rendered = await renderTemplateEntry(dailyTemplateId, name, date);
     } else {
-      text = renderTemplate('---\ndate: {{date}}\n---\n# {{date}}\n\n{{cursor}}', { title: name, date }).text;
+      rendered = renderTemplate('---\ndate: {{date}}\n---\n# {{date}}\n\n{{cursor}}', { title: name, date });
     }
-    const created = await repository.createEntry(vault.id, dailyFolderId, name, 'markdown', text);
+    const created = await repository.createEntry(vault.id, dailyFolderId, name, 'markdown', rendered.text);
+    if (rendered.cursorOffset !== null) pendingCursorOffsets.set(created.id, rendered.cursorOffset);
     calendarSelectedKey = dateKey(date);
     calendarCursor = new Date(date.getFullYear(), date.getMonth(), 1, 12, 0, 0, 0);
     await refresh();
@@ -1660,6 +1669,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
     }
     await syncEditorSurface();
+    const pendingCursor = pendingCursorOffsets.get(selected.id);
+    if (pendingCursor !== undefined && selected.kind === 'markdown' && selected.deletedAt === null) { pendingCursorOffsets.delete(selected.id); editor.revealOffset(pendingCursor); }
     renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderCalendar(); updateCounts();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
