@@ -2734,6 +2734,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
 
+    const graphEntryButton = (event.target as Element).closest<HTMLButtonElement>('[data-graph-entry]');
+    if (graphEntryButton?.dataset.graphEntry) {
+      perform(async () => {
+        closeGraph();
+        await openEntry(graphEntryButton.dataset.graphEntry as EntryId);
+      });
+      return;
+    }
+
+    const graphActionButton = (event.target as Element).closest<HTMLButtonElement>('[data-graph-action]');
+    if (graphActionButton?.dataset.graphAction) {
+      if (graphActionButton.dataset.graphAction === 'zoom-in') graphCanvasView.zoomBy(1.18);
+      else if (graphActionButton.dataset.graphAction === 'zoom-out') graphCanvasView.zoomBy(0.84);
+      else if (graphActionButton.dataset.graphAction === 'fit') graphCanvasView.fit();
+      return;
+    }
+
     const calendarDateButton = (event.target as Element).closest<HTMLButtonElement>('[data-calendar-date]');
     if (calendarDateButton?.dataset.calendarDate) {
       const parts = calendarDateButton.dataset.calendarDate.split('-').map(Number);
@@ -2863,6 +2880,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if (action === 'quick-switcher') { void openQuickSwitcher().catch(showError); return; }
+    if (action === 'graph-open') { perform(() => openGraph('full')); return; }
+    if (action === 'graph-local') { perform(() => openGraph('local')); return; }
+    if (action === 'graph-close') { closeGraph(); return; }
     if (action === 'attachment-upload') { attachmentFileInput.click(); return; }
     if (action === 'attachment-download') {
       if (selected?.kind !== 'attachment') return;
@@ -2974,6 +2994,45 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (action === 'restore') { await repository.restore(selected.id); const id = selected.id; showingTrash = false; await refresh(); await openEntry(id); }
     });
   }, { signal: abort.signal });
+  graphModeSelect.addEventListener('change', () => {
+    graphMode = graphModeSelect.value === 'local' ? 'local' : 'full';
+    renderGraph();
+  }, { signal: abort.signal });
+  graphDepthSelect.addEventListener('change', () => {
+    const value = Number(graphDepthSelect.value);
+    graphDepth = Number.isInteger(value) ? Math.max(1, Math.min(4, value)) : 2;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphGroupSelect.addEventListener('change', () => {
+    const value = graphGroupSelect.value;
+    graphGroupMode = value === 'folder' || value === 'tag' || value === 'kind' || value === 'property' ? value : 'none';
+    renderGraph();
+  }, { signal: abort.signal });
+  graphGroupPropertyInput.addEventListener('input', () => {
+    graphGroupProperty = graphGroupPropertyInput.value;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphSearchInput.addEventListener('input', () => {
+    graphSearchText = graphSearchInput.value;
+    renderGraph(true);
+  }, { signal: abort.signal });
+  graphTagInput.addEventListener('input', () => {
+    graphTagText = graphTagInput.value;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphPropertyInput.addEventListener('input', () => {
+    graphPropertyText = graphPropertyInput.value;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphAttachmentsToggle.addEventListener('change', () => {
+    graphIncludeAttachments = graphAttachmentsToggle.checked;
+    renderGraph();
+  }, { signal: abort.signal });
+  graphOrphansToggle.addEventListener('change', () => {
+    graphOrphanOnly = graphOrphansToggle.checked;
+    renderGraph();
+  }, { signal: abort.signal });
+
   globalSearch.addEventListener('input', () => { void runGlobalSearch(); }, { signal: abort.signal });
   tagFilter.addEventListener('input', renderFacets, { signal: abort.signal });
   quickInput.addEventListener('input', () => { void runQuickSwitcher().catch(showError); }, { signal: abort.signal });
@@ -3264,6 +3323,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     searchIndex.close();
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
+    graphCanvasView.destroy();
     for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
     attachmentObjectUrls.clear();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
