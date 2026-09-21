@@ -120,7 +120,7 @@ Task query rows preserve the same source identity used by the Phase 7 Tasks pane
 
 ### Rendering boundary
 
-In Live Preview, Vault parses only explicit `vault-query` fences and replaces inactive fences with CodeMirror block widgets. Moving the selection into a query fence removes the widget and exposes the canonical Markdown source for editing.
+In Live Preview, Vault parses only explicit `vault-query` fences. The Markdown definition remains directly editable, while an inactive fence gets a CodeMirror block widget immediately after it with the live result. Moving the selection into the fence temporarily removes that widget so editing is not visually obstructed.
 
 In Reading mode, query fences are first compiled as ordinary fenced code by the Markdown renderer. After DOM sanitization, Vault recognizes only `language-vault-query` blocks and replaces them with controlled DOM created through `document.createElement` / `textContent`. Query source never becomes executable HTML or JavaScript.
 
