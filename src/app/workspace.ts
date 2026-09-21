@@ -1105,7 +1105,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
   }
 
-  function switchSidebarPanel(panel: 'files' | 'search' | 'tags' | 'tasks' | 'calendar'): void {
+  function switchSidebarPanel(panel: 'files' | 'search' | 'tags' | 'tasks' | 'media' | 'calendar'): void {
     sidebarPanel = panel;
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-sidebar-panel]')) {
       const active = button.dataset.sidebarPanel === panel;
@@ -1118,6 +1118,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (panel === 'search') globalSearch.focus();
     if (panel === 'tags') tagFilter.focus();
     if (panel === 'tasks') { renderTasks(); taskFilter.focus(); }
+    if (panel === 'media') renderMedia();
     if (panel === 'calendar') renderCalendar();
   }
 
@@ -1493,6 +1494,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const rawDailyTemplate = await setting(`dailyTemplate:${vault.id}`);
     const rawDailyFormat = await setting(`dailyFormat:${vault.id}`);
     const rawFolderTemplates = await setting(`folderTemplates:${vault.id}`);
+    const rawAttachmentPolicy = await setting(`attachmentPolicy:${vault.id}`);
+    const rawAttachmentFolder = await setting(`attachmentFolder:${vault.id}`);
     sortMode = isFileSort(rawSort) ? rawSort : 'name-asc';
     foldersFirst = typeof rawFoldersFirst === 'boolean' ? rawFoldersFirst : true;
     autoUpdateLinks = typeof rawAutoUpdateLinks === 'boolean' ? rawAutoUpdateLinks : true;
@@ -1507,6 +1510,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     folderTemplates = rawFolderTemplates && typeof rawFolderTemplates === 'object' && !Array.isArray(rawFolderTemplates)
       ? Object.fromEntries(Object.entries(rawFolderTemplates as Record<string, unknown>).filter((item): item is [string, string] => typeof item[1] === 'string'))
       : {};
+    attachmentPolicy = rawAttachmentPolicy === 'note-folder' ? 'note-folder' : 'folder';
+    attachmentFolderId = typeof rawAttachmentFolder === 'string' && rawAttachmentFolder ? rawAttachmentFolder as EntryId : null;
     preferencesVaultId = vault.id;
     fileSort.value = sortMode;
     foldersFirstToggle.checked = foldersFirst;
@@ -1561,13 +1566,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchStatus.textContent = 'No vault open.';
       fileFilter.value = '';
     }
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"]')) button.disabled = !vault;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderCalendar(); updateVaultCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts();
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
-    element<HTMLElement>('.vault-counts').textContent = vault ? `${active.filter(entry => entry.kind === 'markdown').length} notes \u00b7 ${active.filter(entry => entry.kind === 'directory').length} folders` : '';
+    element<HTMLElement>('.vault-counts').textContent = vault ? `${active.filter(entry => entry.kind === 'markdown').length} notes · ${active.filter(entry => entry.kind === 'attachment').length} media · ${active.filter(entry => entry.kind === 'directory').length} folders` : '';
   }
   function persistCollapsed(): void {
     if (!vault) return;
@@ -1618,8 +1623,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         row.type = 'button';
         row.draggable = !showingTrash;
         row.title = item.path;
-        row.setAttribute('aria-label', `${entry.kind === 'directory' ? 'Folder' : 'Note'} ${entry.name}`);
-        const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = entry.kind === 'directory' ? '\u25b1' : '\u00b7';
+        row.setAttribute('aria-label', `${entry.kind === 'directory' ? 'Folder' : entry.kind === 'attachment' ? 'Attachment' : 'Note'} ${entry.name}`);
+        const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = entry.kind === 'directory' ? '\u25b1' : entry.kind === 'attachment' ? '\u25c7' : '\u00b7';
         const label = document.createElement('span'); label.className = 'file-name'; label.textContent = showingTrash ? item.path : entry.name;
         row.append(icon, label);
         if (dirtyIds.has(entry.id) && !showingTrash) {
