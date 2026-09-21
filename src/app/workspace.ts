@@ -18,11 +18,13 @@ import type { WikiResolution } from '../knowledge/types.js';
 import { SearchIndexClient } from '../search/client.js';
 import type { QuickSwitchResult, SearchFacets, SearchInput, SearchResult, SearchStats } from '../search/types.js';
 import { deleteFrontmatterProperty, inspectFrontmatter, rawValueForProperty, renameFrontmatterProperty, setFrontmatterProperty, valueForKind, type PropertyKind } from '../metadata/frontmatter.js';
+import { addLocalDays, dateKey, renderTemplate, safeDailyFilename } from '../planning/templates.js';
+import { buildCalendarMonth, dailyDateForEntry, dailyEntryForDate } from '../planning/calendar.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 5 browser workspace: visual Markdown properties on the accepted Phase 1-4 foundation. */
+/** Phase 6 browser workspace: templates, Daily Notes and calendar on the accepted Phase 1-5 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -66,7 +68,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let searchIndexedVersions = new Map<EntryId, number>();
   let searchMetadata = new Map<EntryId, string>();
   let recentEntries: EntryId[] = [];
-  let sidebarPanel: 'files' | 'search' | 'tags' = 'files';
+  let sidebarPanel: 'files' | 'search' | 'tags' | 'calendar' = 'files';
   let searchResults: SearchResult[] = [];
   let searchFacets: SearchFacets = { tags: [], properties: [] };
   let searchStats: SearchStats = { documents: 0, tokens: 0, tags: 0, properties: 0 };
@@ -78,6 +80,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0 };
   let renderGeneration = 0;
   let propertyRenderTimer: number | undefined;
+  let templatesFolderId: EntryId | null = null;
+  let defaultTemplateId: EntryId | null = null;
+  let dailyFolderId: EntryId | null = null;
+  let dailyTemplateId: EntryId | null = null;
+  let dailyFormat = 'YYYY-MM-DD';
+  let folderTemplates: Record<string, string> = {};
+  let calendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1, 12, 0, 0, 0);
+  let calendarSelectedKey = dateKey(new Date());
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
   let searchBuildChain: Promise<void> = Promise.resolve();
@@ -91,16 +101,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 5 \u00b7 Properties</span>
+        <span class="stage">Phase 6 \u00b7 Daily Notes</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
         <div class="vault-picker"><select id="vault-vault" aria-label="Active vault"></select><button data-action="vault-rename" aria-label="Rename active vault" title="Rename vault">\u270e</button></div>
         <button data-command="vault.create" class="quiet">+ New vault</button>
-        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button></div>
+        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button><button type="button" role="tab" data-sidebar-panel="calendar" aria-selected="false">Calendar</button></div>
         <section class="sidebar-panel files-panel" data-panel="files">
           <div class="section-heading"><span>EXPLORER</span><button data-action="reload" aria-label="Reload file list">\u21bb</button></div>
-          <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button></div>
+          <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button></div><button type="button" class="quiet create-template-note" data-action="create-from-template">+ Note from template</button>
           <input class="file-filter" type="search" placeholder="Filter files\u2026" aria-label="Filter files" />
           <div class="explorer-options"><select class="file-sort" aria-label="Sort files"><option value="name-asc">Name A\u2013Z</option><option value="name-desc">Name Z\u2013A</option><option value="modified-desc">Modified newest</option><option value="modified-asc">Modified oldest</option><option value="created-desc">Created newest</option><option value="created-asc">Created oldest</option></select><label><input class="folders-first" type="checkbox" checked /> Folders first</label></div>
           <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
@@ -121,21 +131,37 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="facet-heading">TAGS</div><div class="tag-list"></div>
           <div class="facet-heading">PROPERTIES</div><div class="property-list"></div>
         </section>
+        <section class="sidebar-panel calendar-panel" data-panel="calendar" hidden>
+          <div class="calendar-heading"><button type="button" data-calendar-action="prev-month" aria-label="Previous month">‹</button><strong class="calendar-label"></strong><button type="button" data-calendar-action="next-month" aria-label="Next month">›</button></div>
+          <div class="calendar-weekdays" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+          <div class="calendar-grid" role="grid" aria-label="Daily notes calendar"></div>
+          <div class="daily-nav"><button type="button" data-daily-nav="-1">Previous</button><button type="button" data-daily-nav="0">Today</button><button type="button" data-daily-nav="1">Next</button></div>
+          <div class="calendar-day-notes"></div>
+          <details class="calendar-settings"><summary>Daily Notes & Templates</summary>
+            <label>Templates folder<select class="templates-folder-select"></select></label>
+            <label>Default note template<select class="default-template-select"></select></label>
+            <label>Daily notes folder<select class="daily-folder-select"></select></label>
+            <label>Daily note template<select class="daily-template-select"></select></label>
+            <label>Daily filename format<input class="daily-format-input" type="text" value="YYYY-MM-DD" /></label>
+            <div class="folder-template-settings"><p>Folder-specific template</p><select class="folder-template-folder"></select><select class="folder-template-template"></select></div>
+            <p class="calendar-help">Template variables: {{title}}, {{date}}, {{time}}, {{weekday}}, {{yesterday}}, {{tomorrow}}, {{date:YYYY-MM-DD}}, {{cursor}}.</p>
+          </details>
+        </section>
         <div class="sidebar-bottom"><span class="local-dot"></span><span>Stored in this browser</span></div>
       </aside>
       <main class="main" aria-label="Markdown workspace">
-        <div class="document-bar"><div class="breadcrumb">No file selected</div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-editor-mode="source" aria-pressed="false">Source</button><button type="button" data-editor-mode="live" aria-pressed="true">Live Preview</button><button type="button" data-editor-mode="reading" aria-pressed="false">Reading</button></div></div>
+        <div class="document-bar"><div class="breadcrumb">No file selected</div><div class="daily-document-nav" hidden><button type="button" data-daily-nav="-1" aria-label="Previous daily note">‹</button><button type="button" data-daily-nav="0">Today</button><button type="button" data-daily-nav="1" aria-label="Next daily note">›</button></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-editor-mode="source" aria-pressed="false">Source</button><button type="button" data-editor-mode="live" aria-pressed="true">Live Preview</button><button type="button" data-editor-mode="reading" aria-pressed="false">Reading</button></div></div>
         <div class="actions" aria-label="File actions">
           <button data-action="rename" disabled>Rename</button><button data-action="move" disabled>Move</button><button data-action="duplicate" disabled>Duplicate</button>
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 5</p><h1>Structured metadata, still ordinary Markdown.</h1>
-          <p>Edit YAML properties visually without giving up source control. Tags, aliases, dates, booleans, numbers and lists remain frontmatter in the Markdown file.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 6</p><h1>Your notes, on a rhythm.</h1>
+          <p>Create notes from Markdown templates, open today's note instantly, and move through a calendar derived from ordinary files and date properties.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -163,6 +189,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       <input id="vault-dialog-input" required autocomplete="off" /><select class="dialog-select" hidden aria-label="Destination folder"></select>
       <p class="dialog-help fineprint"></p><div class="dialog-buttons"><button value="cancel" formnovalidate>Cancel</button><button value="confirm" class="primary">Confirm</button></div></form>
     </dialog>
+    <dialog class="template-dialog" aria-labelledby="template-dialog-title"><form method="dialog"><h2 id="template-dialog-title">Choose template</h2><select class="template-dialog-select" aria-label="Template"></select><p class="template-dialog-help fineprint"></p><div class="dialog-buttons"><button value="cancel">Cancel</button><button value="confirm" class="primary">Use template</button></div></form></dialog>
     <dialog class="quick-switcher-dialog" aria-labelledby="quick-switcher-title">
       <div class="quick-switcher-shell"><h2 id="quick-switcher-title">Quick Switcher</h2><input class="quick-switcher-input" type="search" placeholder="Open a note\u2026" aria-label="Quick switcher" autocomplete="off" /><div class="quick-switcher-results" role="listbox" aria-label="Matching notes"></div><p class="quick-switcher-help">\u2191\u2193 navigate \u00b7 Enter open \u00b7 Esc close</p></div>
     </dialog>
@@ -190,6 +217,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const dialogInput = element<HTMLInputElement>('#vault-dialog-input');
   const dialogSelect = element<HTMLSelectElement>('.dialog-select');
   const recoveryDialog = element<HTMLDialogElement>('.recovery-dialog');
+  const templateDialog = element<HTMLDialogElement>('.template-dialog');
+  const templateDialogSelect = element<HTMLSelectElement>('.template-dialog-select');
   const recoverySelect = element<HTMLSelectElement>('#recovery-select');
   const recoveryText = element<HTMLTextAreaElement>('#recovery-text');
   const fileFilter = element<HTMLInputElement>('.file-filter');
@@ -207,6 +236,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const quickDialog = element<HTMLDialogElement>('.quick-switcher-dialog');
   const quickInput = element<HTMLInputElement>('.quick-switcher-input');
   const quickResultsElement = element<HTMLElement>('.quick-switcher-results');
+  const calendarGrid = element<HTMLElement>('.calendar-grid');
+  const calendarLabel = element<HTMLElement>('.calendar-label');
+  const calendarDayNotes = element<HTMLElement>('.calendar-day-notes');
+  const templatesFolderSelect = element<HTMLSelectElement>('.templates-folder-select');
+  const defaultTemplateSelect = element<HTMLSelectElement>('.default-template-select');
+  const dailyFolderSelect = element<HTMLSelectElement>('.daily-folder-select');
+  const dailyTemplateSelect = element<HTMLSelectElement>('.daily-template-select');
+  const dailyFormatInput = element<HTMLInputElement>('.daily-format-input');
+  const folderTemplateFolder = element<HTMLSelectElement>('.folder-template-folder');
+  const folderTemplateTemplate = element<HTMLSelectElement>('.folder-template-template');
   const pathOf = (id: EntryId): string => new VaultTree(entries).path(id);
   const editor = new MarkdownEditor(editorHost, {
     text: '', mode: 'live', readOnly: true, lineNumbers: false,
@@ -309,7 +348,231 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     };
   }
 
-  function switchSidebarPanel(panel: 'files' | 'search' | 'tags'): void {
+  function isInsideFolder(entryId: EntryId, folderId: EntryId | null): boolean {
+    if (!folderId) return false;
+    let current = entries.find(entry => entry.id === entryId);
+    while (current) {
+      if (current.parentId === folderId) return true;
+      current = current.parentId ? entries.find(entry => entry.id === current!.parentId) : undefined;
+    }
+    return false;
+  }
+
+  function activeFolders(): Entry[] {
+    return entries.filter(entry => entry.kind === 'directory' && entry.deletedAt === null);
+  }
+
+  function templateEntries(): Entry[] {
+    if (!templatesFolderId) return [];
+    return activeMarkdownEntries()
+      .filter(entry => entry.parentId === templatesFolderId || isInsideFolder(entry.id, templatesFolderId))
+      .sort((a, b) => pathOf(a.id).localeCompare(pathOf(b.id), undefined, { numeric: true, sensitivity: 'base' }));
+  }
+
+  function fillFolderSelect(select: HTMLSelectElement, includeRoot: boolean): void {
+    const current = select.value;
+    select.replaceChildren();
+    if (includeRoot) select.add(new Option('Vault root', ''));
+    for (const folder of activeFolders().sort((a, b) => pathOf(a.id).localeCompare(pathOf(b.id)))) {
+      select.add(new Option(pathOf(folder.id), folder.id));
+    }
+    if ([...select.options].some(option => option.value === current)) select.value = current;
+  }
+
+  function fillTemplateSelect(select: HTMLSelectElement, selectedId: EntryId | null, emptyLabel = 'None'): void {
+    select.replaceChildren(new Option(emptyLabel, ''));
+    for (const template of templateEntries()) select.add(new Option(pathOf(template.id), template.id));
+    select.value = selectedId && [...select.options].some(option => option.value === selectedId) ? selectedId : '';
+  }
+
+  function renderPlanningSettings(): void {
+    const folderIds = new Set(activeFolders().map(entry => entry.id));
+    if (templatesFolderId && !folderIds.has(templatesFolderId)) templatesFolderId = null;
+    if (dailyFolderId && !folderIds.has(dailyFolderId)) dailyFolderId = null;
+    const availableTemplateIds = new Set(templateEntries().map(entry => entry.id));
+    if (defaultTemplateId && !availableTemplateIds.has(defaultTemplateId)) defaultTemplateId = null;
+    if (dailyTemplateId && !availableTemplateIds.has(dailyTemplateId)) dailyTemplateId = null;
+    for (const [folderId, templateId] of Object.entries(folderTemplates)) {
+      if (!folderIds.has(folderId as EntryId) || !availableTemplateIds.has(templateId as EntryId)) delete folderTemplates[folderId];
+    }
+
+    fillFolderSelect(templatesFolderSelect, true);
+    if (templatesFolderSelect.options[0]) templatesFolderSelect.options[0].textContent = 'None';
+    templatesFolderSelect.value = templatesFolderId && [...templatesFolderSelect.options].some(option => option.value === templatesFolderId) ? templatesFolderId : '';
+    fillFolderSelect(dailyFolderSelect, true);
+    dailyFolderSelect.value = dailyFolderId && [...dailyFolderSelect.options].some(option => option.value === dailyFolderId) ? dailyFolderId : '';
+    fillTemplateSelect(defaultTemplateSelect, defaultTemplateId);
+    fillTemplateSelect(dailyTemplateSelect, dailyTemplateId);
+
+    const currentFolder = folderTemplateFolder.value;
+    fillFolderSelect(folderTemplateFolder, false);
+    if (currentFolder && [...folderTemplateFolder.options].some(option => option.value === currentFolder)) folderTemplateFolder.value = currentFolder;
+    const folderId = folderTemplateFolder.value;
+    fillTemplateSelect(folderTemplateTemplate, folderId && folderTemplates[folderId] ? folderTemplates[folderId] as EntryId : null);
+
+    dailyFormatInput.value = dailyFormat;
+    const enabled = !!vault;
+    for (const control of [templatesFolderSelect, defaultTemplateSelect, dailyFolderSelect, dailyTemplateSelect, dailyFormatInput, folderTemplateFolder, folderTemplateTemplate]) control.disabled = !enabled;
+  }
+
+  async function readTemplate(templateId: EntryId): Promise<string> {
+    const file = await repository.read(templateId);
+    if (file.entry.kind !== 'markdown' || file.entry.deletedAt !== null || !file.content) {
+      throw new VaultError('NOT_FOUND', 'The selected template is unavailable.');
+    }
+    return file.content.text;
+  }
+
+  async function chooseTemplate(title: string): Promise<EntryId | null> {
+    const templates = templateEntries();
+    templateDialogSelect.replaceChildren();
+    for (const template of templates) templateDialogSelect.add(new Option(pathOf(template.id), template.id));
+    element<HTMLElement>('#template-dialog-title').textContent = title;
+    element<HTMLElement>('.template-dialog-help').textContent = templates.length
+      ? 'Templates are ordinary Markdown files. Variables are expanded when inserted.'
+      : 'Choose a Templates folder containing Markdown template files in Calendar settings.';
+    element<HTMLButtonElement>('.template-dialog button[value="confirm"]').disabled = templates.length === 0;
+    templateDialog.returnValue = 'cancel';
+    templateDialog.showModal();
+    if (templates.length) templateDialogSelect.focus();
+    return new Promise(resolve => templateDialog.addEventListener('close', () => {
+      resolve(templateDialog.returnValue === 'confirm' && templateDialogSelect.value ? templateDialogSelect.value as EntryId : null);
+    }, { once: true }));
+  }
+
+  async function renderTemplateEntry(templateId: EntryId, title: string, date: Date): Promise<{ text: string; cursorOffset: number | null }> {
+    return renderTemplate(await readTemplate(templateId), { title, date });
+  }
+
+  function templateForParent(parentId: EntryId | null): EntryId | null {
+    if (templatesFolderId && (parentId === templatesFolderId || (parentId && isInsideFolder(parentId, templatesFolderId)))) return null;
+    if (parentId && folderTemplates[parentId]) return folderTemplates[parentId] as EntryId;
+    return defaultTemplateId;
+  }
+
+  async function createMarkdownNote(parentId: EntryId | null, rawName: string, explicitTemplateId: EntryId | null = null, date = new Date()): Promise<Entry> {
+    if (!vault) throw new VaultError('NOT_FOUND', 'No vault is open.');
+    const title = rawName.replace(/\.md$/iu, '');
+    const templateId = explicitTemplateId ?? templateForParent(parentId);
+    let text = '';
+    if (templateId) text = (await renderTemplateEntry(templateId, title, date)).text;
+    return repository.createEntry(vault.id, parentId, rawName, 'markdown', text);
+  }
+
+  async function openOrCreateDaily(date: Date): Promise<void> {
+    if (!vault) return;
+    const existing = dailyEntryForDate(date, entries, dailyFolderId, dailyFormat);
+    if (existing) {
+      calendarSelectedKey = dateKey(date);
+      calendarCursor = new Date(date.getFullYear(), date.getMonth(), 1, 12, 0, 0, 0);
+      await openEntry(existing.id);
+      renderCalendar();
+      return;
+    }
+
+    const name = safeDailyFilename(date, dailyFormat);
+    let text: string;
+    if (dailyTemplateId) {
+      text = (await renderTemplateEntry(dailyTemplateId, name, date)).text;
+    } else {
+      text = renderTemplate('---\ndate: {{date}}\n---\n# {{date}}\n\n{{cursor}}', { title: name, date }).text;
+    }
+    const created = await repository.createEntry(vault.id, dailyFolderId, name, 'markdown', text);
+    calendarSelectedKey = dateKey(date);
+    calendarCursor = new Date(date.getFullYear(), date.getMonth(), 1, 12, 0, 0, 0);
+    await refresh();
+    await openEntry(created.id);
+    renderCalendar();
+  }
+
+  function currentDailyDate(): Date | null {
+    return selected ? dailyDateForEntry(selected, dailyFolderId, dailyFormat) : null;
+  }
+
+  async function navigateDaily(delta: number): Promise<void> {
+    const base = delta === 0 ? new Date() : currentDailyDate() ?? new Date();
+    await openOrCreateDaily(delta === 0 ? base : addLocalDays(base, delta));
+  }
+
+  function updateDailyDocumentNav(): void {
+    const nav = element<HTMLElement>('.daily-document-nav');
+    const date = selected ? dailyDateForEntry(selected, dailyFolderId, dailyFormat) : null;
+    nav.hidden = date === null;
+    if (date) {
+      calendarSelectedKey = dateKey(date);
+      calendarCursor = new Date(date.getFullYear(), date.getMonth(), 1, 12, 0, 0, 0);
+    }
+  }
+
+  function renderCalendar(): void {
+    calendarGrid.replaceChildren();
+    calendarDayNotes.replaceChildren();
+    if (!vault) {
+      calendarLabel.textContent = 'Calendar';
+      return;
+    }
+    const month = buildCalendarMonth(calendarCursor.getFullYear(), calendarCursor.getMonth(), entries, knowledge.records(), {
+      dailyFolderId,
+      dailyFormat,
+    });
+    calendarLabel.textContent = month.label;
+    for (const day of month.days) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'calendar-day';
+      if (!day.inMonth) button.classList.add('outside');
+      if (day.isToday) button.classList.add('today');
+      if (day.dailyEntryId) button.classList.add('has-daily');
+      if (day.associatedEntryIds.length) button.classList.add('has-associated');
+      if (day.key === calendarSelectedKey) button.classList.add('selected');
+      button.dataset.calendarDate = day.key;
+      button.setAttribute('aria-label', `${day.key}${day.dailyEntryId ? ', daily note exists' : ', create daily note'}${day.associatedEntryIds.length ? `, ${day.associatedEntryIds.length} associated notes` : ''}`);
+      const number = document.createElement('span');
+      number.className = 'calendar-day-number';
+      number.textContent = String(day.date.getDate());
+      const marks = document.createElement('span');
+      marks.className = 'calendar-day-marks';
+      if (day.dailyEntryId) {
+        const daily = document.createElement('i');
+        daily.className = 'calendar-daily-mark';
+        marks.append(daily);
+      }
+      if (day.associatedEntryIds.length) {
+        const count = document.createElement('small');
+        count.textContent = String(day.associatedEntryIds.length);
+        marks.append(count);
+      }
+      button.append(number, marks);
+      calendarGrid.append(button);
+    }
+
+    const chosen = month.days.find(day => day.key === calendarSelectedKey);
+    if (chosen) {
+      const title = document.createElement('p');
+      title.className = 'calendar-selected-title';
+      title.textContent = chosen.key;
+      calendarDayNotes.append(title);
+      const ids = [...new Set([...(chosen.dailyEntryId ? [chosen.dailyEntryId] : []), ...chosen.associatedEntryIds])];
+      for (const entryId of ids) {
+        const entry = entries.find(item => item.id === entryId);
+        if (!entry) continue;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'calendar-note';
+        button.dataset.calendarEntry = entry.id;
+        button.textContent = entry.name.replace(/\.md$/iu, '');
+        calendarDayNotes.append(button);
+      }
+      if (!ids.length) {
+        const empty = document.createElement('p');
+        empty.className = 'panel-empty';
+        empty.textContent = 'No dated notes yet. Click the day to create its Daily Note.';
+        calendarDayNotes.append(empty);
+      }
+    }
+  }
+
+  function switchSidebarPanel(panel: 'files' | 'search' | 'tags' | 'calendar'): void {
     sidebarPanel = panel;
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-sidebar-panel]')) {
       const active = button.dataset.sidebarPanel === panel;
@@ -321,6 +584,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     if (panel === 'search') globalSearch.focus();
     if (panel === 'tags') tagFilter.focus();
+    if (panel === 'calendar') renderCalendar();
   }
 
   function appendHighlightedText(target: HTMLElement, text: string, needles: readonly string[]): void {
@@ -689,17 +953,32 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const rawAutoUpdateLinks = await setting(`autoUpdateLinks:${vault.id}`);
     const rawFilter = await setting(`treeFilter:${vault.id}`);
     const rawRecent = await setting(`recentEntries:${vault.id}`);
+    const rawTemplatesFolder = await setting(`templatesFolder:${vault.id}`);
+    const rawDefaultTemplate = await setting(`defaultTemplate:${vault.id}`);
+    const rawDailyFolder = await setting(`dailyFolder:${vault.id}`);
+    const rawDailyTemplate = await setting(`dailyTemplate:${vault.id}`);
+    const rawDailyFormat = await setting(`dailyFormat:${vault.id}`);
+    const rawFolderTemplates = await setting(`folderTemplates:${vault.id}`);
     sortMode = isFileSort(rawSort) ? rawSort : 'name-asc';
     foldersFirst = typeof rawFoldersFirst === 'boolean' ? rawFoldersFirst : true;
     autoUpdateLinks = typeof rawAutoUpdateLinks === 'boolean' ? rawAutoUpdateLinks : true;
     collapsed = new Set(Array.isArray(rawCollapsed) ? rawCollapsed.filter((id): id is EntryId => typeof id === 'string') : []);
     filterText = typeof rawFilter === 'string' ? rawFilter : '';
     recentEntries = Array.isArray(rawRecent) ? rawRecent.filter((id): id is EntryId => typeof id === 'string').slice(0, 40) : [];
+    templatesFolderId = typeof rawTemplatesFolder === 'string' && rawTemplatesFolder ? rawTemplatesFolder as EntryId : null;
+    defaultTemplateId = typeof rawDefaultTemplate === 'string' && rawDefaultTemplate ? rawDefaultTemplate as EntryId : null;
+    dailyFolderId = typeof rawDailyFolder === 'string' && rawDailyFolder ? rawDailyFolder as EntryId : null;
+    dailyTemplateId = typeof rawDailyTemplate === 'string' && rawDailyTemplate ? rawDailyTemplate as EntryId : null;
+    dailyFormat = typeof rawDailyFormat === 'string' && rawDailyFormat.trim() ? rawDailyFormat : 'YYYY-MM-DD';
+    folderTemplates = rawFolderTemplates && typeof rawFolderTemplates === 'object' && !Array.isArray(rawFolderTemplates)
+      ? Object.fromEntries(Object.entries(rawFolderTemplates as Record<string, unknown>).filter((item): item is [string, string] => typeof item[1] === 'string'))
+      : {};
     preferencesVaultId = vault.id;
     fileSort.value = sortMode;
     foldersFirstToggle.checked = foldersFirst;
     autoUpdateLinksToggle.checked = autoUpdateLinks;
     fileFilter.value = filterText;
+    dailyFormatInput.value = dailyFormat;
   }
   async function refresh(): Promise<void> {
     vaults = await repository.listVaults();
@@ -750,7 +1029,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); updateVaultCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderCalendar(); updateVaultCounts();
   }
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
@@ -1177,6 +1456,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await refreshSearchEntry(entryId);
     }
     renderKnowledgePanels();
+    renderCalendar();
   }
 
   function fragmentOffset(resolution: WikiResolution): number | null {
@@ -1380,7 +1660,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
     }
     await syncEditorSurface();
-    renderTree(); renderInfo(); renderKnowledgePanels(); updateCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderCalendar(); updateCounts();
     await setting('lastVault', vault?.id);
     await setting('lastEntry', selected.id);
     if (selected.kind === 'markdown' && selected.deletedAt === null) await rememberRecent(selected.id);
@@ -1406,7 +1686,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const action of ['rename', 'move', 'duplicate', 'delete', 'export-draft', 'checkpoint']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = true;
     element<HTMLElement>('[data-action="restore"]').hidden = true;
     await syncEditorSurface();
-    updateCounts();
+    updateDailyDocumentNav(); renderCalendar(); updateCounts();
   }
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
@@ -1417,7 +1697,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!vault) return;
     const name = await ask(kind === 'markdown' ? 'Create a Markdown note' : 'Create a folder', 'Name'); if (name === null) return;
     if (saver) await saver.flush();
-    const entry = await repository.createEntry(vault.id, parentForNew(), name, kind);
+    const parentId = parentForNew();
+    const entry = kind === 'markdown'
+      ? await createMarkdownNote(parentId, name)
+      : await repository.createEntry(vault.id, parentId, name, kind);
     showingTrash = false; await refresh(); await openEntry(entry.id);
     if (kind === 'markdown') editor.focus();
   } });
@@ -1470,7 +1753,37 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const panelButton = (event.target as Element).closest<HTMLButtonElement>('[data-sidebar-panel]');
     if (panelButton?.dataset.sidebarPanel) {
       const panel = panelButton.dataset.sidebarPanel;
-      if (panel === 'files' || panel === 'search' || panel === 'tags') switchSidebarPanel(panel);
+      if (panel === 'files' || panel === 'search' || panel === 'tags' || panel === 'calendar') switchSidebarPanel(panel);
+      return;
+    }
+
+    const calendarDateButton = (event.target as Element).closest<HTMLButtonElement>('[data-calendar-date]');
+    if (calendarDateButton?.dataset.calendarDate) {
+      const parts = calendarDateButton.dataset.calendarDate.split('-').map(Number);
+      const date = new Date(parts[0]!, parts[1]! - 1, parts[2]!, 12, 0, 0, 0);
+      calendarSelectedKey = calendarDateButton.dataset.calendarDate;
+      perform(() => openOrCreateDaily(date));
+      return;
+    }
+
+    const calendarEntryButton = (event.target as Element).closest<HTMLButtonElement>('[data-calendar-entry]');
+    if (calendarEntryButton?.dataset.calendarEntry) {
+      perform(() => openEntry(calendarEntryButton.dataset.calendarEntry as EntryId));
+      return;
+    }
+
+    const dailyNavButton = (event.target as Element).closest<HTMLButtonElement>('[data-daily-nav]');
+    if (dailyNavButton?.dataset.dailyNav !== undefined) {
+      const delta = Number(dailyNavButton.dataset.dailyNav);
+      if (Number.isInteger(delta)) perform(() => navigateDaily(delta));
+      return;
+    }
+
+    const calendarActionButton = (event.target as Element).closest<HTMLButtonElement>('[data-calendar-action]');
+    if (calendarActionButton?.dataset.calendarAction) {
+      if (calendarActionButton.dataset.calendarAction === 'prev-month') calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() - 1, 1, 12, 0, 0, 0);
+      else if (calendarActionButton.dataset.calendarAction === 'next-month') calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + 1, 1, 12, 0, 0, 0);
+      renderCalendar();
       return;
     }
 
@@ -1567,6 +1880,33 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if (action === 'quick-switcher') { void openQuickSwitcher().catch(showError); return; }
+    if (action === 'insert-template') {
+      perform(async () => {
+        if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null) return;
+        const templateId = await chooseTemplate('Insert template');
+        if (!templateId) return;
+        if (editorMode === 'reading') await setEditorMode('live');
+        const rendered = await renderTemplateEntry(templateId, selected.name.replace(/\.md$/iu, ''), new Date());
+        editor.insertText(rendered.text, rendered.cursorOffset);
+      });
+      return;
+    }
+    if (action === 'create-from-template') {
+      perform(async () => {
+        if (!vault) return;
+        const templateId = await chooseTemplate('Create note from template');
+        if (!templateId) return;
+        const name = await ask('Create from template', 'Name');
+        if (name === null) return;
+        if (saver) await saver.flush();
+        const entry = await createMarkdownNote(parentForNew(), name, templateId);
+        showingTrash = false;
+        await refresh();
+        await openEntry(entry.id);
+        editor.focus();
+      });
+      return;
+    }
     if (action === 'knowledge-panel') { workspace.dataset.knowledgeOpen = String(workspace.dataset.knowledgeOpen !== 'true'); return; }
     if (action === 'export-draft') { downloadDraft(); return; }
     perform(async () => {
@@ -1636,6 +1976,52 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       perform(() => openEntry(result.entryId));
     }
   }, { signal: abort.signal });
+  for (const control of [templatesFolderSelect, defaultTemplateSelect, dailyFolderSelect, dailyTemplateSelect, dailyFormatInput, folderTemplateFolder, folderTemplateTemplate]) {
+    control.addEventListener('change', () => {
+      perform(async () => {
+        if (!vault) return;
+        if (control === templatesFolderSelect) {
+          templatesFolderId = templatesFolderSelect.value ? templatesFolderSelect.value as EntryId : null;
+          await setting(`templatesFolder:${vault.id}`, templatesFolderId ?? '');
+          if (defaultTemplateId && !templateEntries().some(entry => entry.id === defaultTemplateId)) defaultTemplateId = null;
+          if (dailyTemplateId && !templateEntries().some(entry => entry.id === dailyTemplateId)) dailyTemplateId = null;
+          await setting(`defaultTemplate:${vault.id}`, defaultTemplateId ?? '');
+          await setting(`dailyTemplate:${vault.id}`, dailyTemplateId ?? '');
+        } else if (control === defaultTemplateSelect) {
+          defaultTemplateId = defaultTemplateSelect.value ? defaultTemplateSelect.value as EntryId : null;
+          await setting(`defaultTemplate:${vault.id}`, defaultTemplateId ?? '');
+        } else if (control === dailyFolderSelect) {
+          dailyFolderId = dailyFolderSelect.value ? dailyFolderSelect.value as EntryId : null;
+          await setting(`dailyFolder:${vault.id}`, dailyFolderId ?? '');
+        } else if (control === dailyTemplateSelect) {
+          dailyTemplateId = dailyTemplateSelect.value ? dailyTemplateSelect.value as EntryId : null;
+          await setting(`dailyTemplate:${vault.id}`, dailyTemplateId ?? '');
+        } else if (control === dailyFormatInput) {
+          try {
+            safeDailyFilename(new Date(), dailyFormatInput.value);
+            dailyFormat = dailyFormatInput.value.trim() || 'YYYY-MM-DD';
+            await setting(`dailyFormat:${vault.id}`, dailyFormat);
+          } catch (error) {
+            dailyFormatInput.value = dailyFormat;
+            throw error;
+          }
+        } else if (control === folderTemplateFolder) {
+          const template = folderTemplates[folderTemplateFolder.value] as EntryId | undefined;
+          fillTemplateSelect(folderTemplateTemplate, template ?? null);
+        } else if (control === folderTemplateTemplate) {
+          const folderId = folderTemplateFolder.value;
+          if (!folderId) return;
+          if (folderTemplateTemplate.value) folderTemplates[folderId] = folderTemplateTemplate.value;
+          else delete folderTemplates[folderId];
+          await setting(`folderTemplates:${vault.id}`, folderTemplates);
+        }
+        renderPlanningSettings();
+        renderCalendar();
+        updateDailyDocumentNav();
+      });
+    }, { signal: abort.signal });
+  }
+
   root.addEventListener('change', event => {
     const control = (event.target as Element).closest<HTMLInputElement | HTMLSelectElement>('[data-property-role]');
     if (!control) return;
@@ -1734,6 +2120,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       switchSidebarPanel('search');
       return;
     }
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
+      event.preventDefault();
+      perform(() => navigateDaily(0));
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); perform(async () => registry.execute('file.create')); return; }
     if (event.key === 'F2' && selected && selected.deletedAt === null) { event.preventDefault(); element<HTMLButtonElement>('[data-action="rename"]').click(); return; }
     if ((event.key === 'Delete' || event.key === 'Backspace') && selected && selected.deletedAt === null && !editor.hasFocus() && document.activeElement !== fileFilter) {
@@ -1759,6 +2150,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (dialog.open) dialog.close('cancel');
     if (recoveryDialog.open) recoveryDialog.close();
     if (quickDialog.open) quickDialog.close();
+    if (templateDialog.open) templateDialog.close('cancel');
     searchIndex.close();
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();

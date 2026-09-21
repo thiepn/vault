@@ -217,6 +217,17 @@ export class MarkdownEditor {
     }
   }
 
+  insertText(text: string, cursorOffset: number | null = null): void {
+    const selection = this.view.state.selection.main;
+    const anchor = selection.from + Math.max(0, Math.min(cursorOffset ?? text.length, text.length));
+    this.view.dispatch({
+      changes: { from: selection.from, to: selection.to, insert: text },
+      selection: { anchor },
+      scrollIntoView: true,
+    });
+    this.view.focus();
+  }
+
   revealOffset(offset: number): void {
     const position = Math.max(0, Math.min(offset, this.view.state.doc.length));
     this.view.dispatch({ selection: { anchor: position }, scrollIntoView: true });
