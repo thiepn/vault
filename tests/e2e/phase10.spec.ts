@@ -93,18 +93,18 @@ test('Phase 10 full/local graph, filters, grouping and navigation work on deskto
 
   await page.locator('.graph-search').fill('');
   await page.locator('.graph-orphans').check();
-  await expect(summary).toContainText('1 nodes');
+  await expect(summary).toContainText('1 node');
   await expect(summary).toContainText('0 edges');
   await expect(page.locator('.graph-node-title')).toHaveText('Orphan');
 
   await page.locator('.graph-orphans').uncheck();
   await page.locator('.graph-tag').fill('#project');
-  await expect(summary).toContainText('1 nodes');
+  await expect(summary).toContainText('1 node');
   await expect(page.locator('.graph-node-title')).toHaveText('Hub');
 
   await page.locator('.graph-tag').fill('');
   await page.locator('.graph-property').fill('status=active');
-  await expect(summary).toContainText('1 nodes');
+  await expect(summary).toContainText('1 node');
   await expect(page.locator('.graph-node-title')).toHaveText('Hub');
 
   await page.locator('.graph-property').fill('');
