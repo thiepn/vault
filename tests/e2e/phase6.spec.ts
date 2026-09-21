@@ -104,6 +104,8 @@ test('Phase 6 templates, folder defaults, Daily Notes and calendar work end to e
   await createFolder(page, 'Projects');
 
   await openCalendar(page);
+  await page.locator('.calendar-settings summary').click();
+  await expect(page.locator('.templates-folder-select')).toBeVisible();
   await page.locator('.templates-folder-select').selectOption({ label: 'Templates' });
   await expect(page.locator('.default-template-select')).toContainText('Templates/Project Template.md');
   await expect(page.locator('.default-template-select')).toContainText('Templates/Daily Template.md');

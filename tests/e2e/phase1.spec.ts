@@ -89,6 +89,7 @@ test('desktop Phase 1 vault lifecycle persists through reload', async ({ page },
   const source = page.getByRole('button', { name: 'Note Analysis.md' });
   const archiveShell = page.getByRole('treeitem').filter({ has: page.getByRole('button', { name: 'Folder Archive' }) });
   await source.dragTo(archiveShell);
+  await expect(source).toHaveAttribute('title', 'University/Archive/Analysis.md');
   await source.click();
   await expect(page.locator('.breadcrumb')).toHaveText('University/Archive/Analysis.md');
 
