@@ -220,7 +220,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 2</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 3</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
@@ -2396,6 +2396,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null;
     element<HTMLButtonElement>('[data-action="export-draft"]').disabled = selected.kind !== 'markdown';
     element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null;
+    if (selected.kind !== 'markdown') renderPropertiesPanel(null);
     if (selected.kind === 'markdown' && item.content) {
       editor.setText(item.content.text);
       renderPropertiesPanel(item.content.text);
@@ -2762,7 +2763,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         selected = moved;
         await openEntry(moved.id);
       }
-      if (action === 'delete') { await repository.trash(selected.id, selected.localVersion); if (saver) await saver.close(); saver = undefined; await clearSelection(); await refresh(); }
+      if (action === 'delete') {
+        const deletedId = selected.id;
+        await repository.trash(selected.id, selected.localVersion);
+        revokeAttachmentUrl(deletedId);
+        if (saver) await saver.close();
+        saver = undefined;
+        await clearSelection();
+        await refresh();
+      }
       if (action === 'restore') { await repository.restore(selected.id); const id = selected.id; showingTrash = false; await refresh(); await openEntry(id); }
     });
   }, { signal: abort.signal });
