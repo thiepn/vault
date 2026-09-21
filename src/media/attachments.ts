@@ -1,5 +1,6 @@
 import { VaultError } from '../domain/errors.js';
 import type { Entry, EntryId } from '../domain/model.js';
+import { validateName } from '../domain/paths.js';
 import { VaultTree } from '../domain/tree.js';
 import type { KnowledgeRecord, WikiSuggestion } from '../knowledge/types.js';
 
@@ -52,6 +53,15 @@ export function attachmentMediaKind(mimeType: string): AttachmentMediaKind {
   if (mime.startsWith('video/')) return 'video';
   if (mime === 'application/pdf') return 'pdf';
   return 'file';
+}
+
+export function validateAttachmentName(raw: string): string {
+  const name = validateName(raw);
+  if (/\.md$/iu.test(name)) throw new VaultError('INVALID_NAME', 'Markdown files are notes, not attachments.');
+  if (/[#\[\]]/u.test(name)) {
+    throw new VaultError('INVALID_NAME', 'Attachment filenames cannot contain #, [ or ] because those characters are reserved by Wiki-link syntax.');
+  }
+  return name;
 }
 
 export function validateAttachmentBytes(bytes: Uint8Array): void {
