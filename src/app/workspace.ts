@@ -270,6 +270,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const tagFilter = element<HTMLInputElement>('.tag-filter');
   const tagList = element<HTMLElement>('.tag-list');
   const propertyList = element<HTMLElement>('.property-list');
+  const mediaList = element<HTMLElement>('.media-list');
+  const mediaSummary = element<HTMLElement>('.media-summary');
+  const attachmentPolicySelect = element<HTMLSelectElement>('.attachment-policy-select');
+  const attachmentFolderSelect = element<HTMLSelectElement>('.attachment-folder-select');
+  const attachmentView = element<HTMLElement>('.attachment-view');
+  const attachmentPreview = element<HTMLElement>('.attachment-preview');
+  const attachmentTitle = element<HTMLElement>('.attachment-title');
+  const attachmentDetail = element<HTMLElement>('.attachment-detail');
+  const attachmentFileInput = element<HTMLInputElement>('.attachment-file-input');
   const taskList = element<HTMLElement>('.task-list');
   const taskFilter = element<HTMLInputElement>('.task-filter');
   const taskStatusSelect = element<HTMLSelectElement>('.task-status-filter');
@@ -296,14 +305,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     text: '', mode: 'live', readOnly: true, lineNumbers: false,
     wiki: {
       suggest(query) {
-        return selected?.kind === 'markdown'
-          ? knowledge.suggestions(query, selected.id, entries)
-          : [];
+        if (selected?.kind !== 'markdown') return [];
+        return [...knowledge.suggestions(query, selected.id, entries), ...attachmentSuggestions(query, entries)]
+          .sort((a, b) => b.boost - a.boost || a.label.localeCompare(b.label))
+          .slice(0, 60);
       },
       resolve(target) {
-        return selected?.kind === 'markdown'
-          ? knowledge.resolveRaw(target, selected.id, entries).status
-          : 'unresolved';
+        if (selected?.kind !== 'markdown') return 'unresolved';
+        const attachment = resolveAttachmentTarget(target.split('#', 1)[0] ?? target, selected.id, entries);
+        if (attachment.status !== 'unresolved') return attachment.status;
+        return knowledge.resolveRaw(target, selected.id, entries).status;
       },
       activate(target) {
         if (selected?.kind === 'markdown') perform(() => activateWikiTarget(target, selected!.id));
@@ -341,6 +352,38 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function downloadDraft(): void {
     if (!selected || selected.kind !== 'markdown') return;
     download(selected.name, saver?.draft ?? editor.getText(), 'text/markdown;charset=utf-8');
+  }
+
+  async function attachmentObjectUrl(entryId: EntryId): Promise<string> {
+    const cached = attachmentObjectUrls.get(entryId);
+    if (cached) return cached;
+    const attachment = await repository.readAttachment(entryId);
+    const url = URL.createObjectURL(new Blob([attachment.bytes], { type: attachment.mimeType }));
+    attachmentObjectUrls.set(entryId, url);
+    return url;
+  }
+
+  function revokeAttachmentUrl(entryId: EntryId): void {
+    const url = attachmentObjectUrls.get(entryId);
+    if (!url) return;
+    URL.revokeObjectURL(url);
+    attachmentObjectUrls.delete(entryId);
+  }
+
+  async function attachmentRenderPayload(target: string, sourceEntryId?: string): Promise<{ entryId: string; name: string; mimeType: string; size: number; url: string } | null> {
+    const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : selected?.id;
+    const resolution = resolveAttachmentTarget(target, source, entries);
+    if (resolution.status !== 'resolved') return null;
+    const entry = entries.find(item => item.id === resolution.entryId && item.kind === 'attachment' && item.deletedAt === null);
+    if (!entry) return null;
+    const attachment = await repository.readAttachment(entry.id);
+    return {
+      entryId: entry.id,
+      name: entry.name,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      url: await attachmentObjectUrl(entry.id),
+    };
   }
   async function setting(key: string, value?: unknown): Promise<unknown> {
     return transact(db, ['settings'], value === undefined ? 'readonly' : 'readwrite', async tx => {
