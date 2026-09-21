@@ -143,7 +143,9 @@ Query definitions support:
 - current-note exclusion
 - task status/date/priority row filters
 - source-note navigation
-- task completion directly from Reading mode
+- Live Preview widgets that reveal their Markdown source while actively edited
+- Reading-mode rendering
+- task completion directly from dynamic task views
 - responsive desktop/mobile rendering
 
 Dynamic views do not persist result rows. They are recomputed from Markdown-derived knowledge records.
