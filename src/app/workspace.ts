@@ -1989,41 +1989,43 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }, { signal: abort.signal });
   for (const control of [templatesFolderSelect, defaultTemplateSelect, dailyFolderSelect, dailyTemplateSelect, dailyFormatInput, folderTemplateFolder, folderTemplateTemplate]) {
     control.addEventListener('change', () => {
+      const chosenValue = control.value;
+      const chosenFolderId = folderTemplateFolder.value;
       perform(async () => {
         if (!vault) return;
         if (control === templatesFolderSelect) {
-          templatesFolderId = templatesFolderSelect.value ? templatesFolderSelect.value as EntryId : null;
+          templatesFolderId = chosenValue ? chosenValue as EntryId : null;
           await setting(`templatesFolder:${vault.id}`, templatesFolderId ?? '');
           if (defaultTemplateId && !templateEntries().some(entry => entry.id === defaultTemplateId)) defaultTemplateId = null;
           if (dailyTemplateId && !templateEntries().some(entry => entry.id === dailyTemplateId)) dailyTemplateId = null;
           await setting(`defaultTemplate:${vault.id}`, defaultTemplateId ?? '');
           await setting(`dailyTemplate:${vault.id}`, dailyTemplateId ?? '');
         } else if (control === defaultTemplateSelect) {
-          defaultTemplateId = defaultTemplateSelect.value ? defaultTemplateSelect.value as EntryId : null;
+          defaultTemplateId = chosenValue ? chosenValue as EntryId : null;
           await setting(`defaultTemplate:${vault.id}`, defaultTemplateId ?? '');
         } else if (control === dailyFolderSelect) {
-          dailyFolderId = dailyFolderSelect.value ? dailyFolderSelect.value as EntryId : null;
+          dailyFolderId = chosenValue ? chosenValue as EntryId : null;
           await setting(`dailyFolder:${vault.id}`, dailyFolderId ?? '');
         } else if (control === dailyTemplateSelect) {
-          dailyTemplateId = dailyTemplateSelect.value ? dailyTemplateSelect.value as EntryId : null;
+          dailyTemplateId = chosenValue ? chosenValue as EntryId : null;
           await setting(`dailyTemplate:${vault.id}`, dailyTemplateId ?? '');
         } else if (control === dailyFormatInput) {
           try {
-            safeDailyFilename(new Date(), dailyFormatInput.value);
-            dailyFormat = dailyFormatInput.value.trim() || 'YYYY-MM-DD';
+            safeDailyFilename(new Date(), chosenValue);
+            dailyFormat = chosenValue.trim() || 'YYYY-MM-DD';
             await setting(`dailyFormat:${vault.id}`, dailyFormat);
           } catch (error) {
             dailyFormatInput.value = dailyFormat;
             throw error;
           }
         } else if (control === folderTemplateFolder) {
-          const template = folderTemplates[folderTemplateFolder.value] as EntryId | undefined;
+          const template = folderTemplates[chosenValue] as EntryId | undefined;
           fillTemplateSelect(folderTemplateTemplate, template ?? null);
+          return;
         } else if (control === folderTemplateTemplate) {
-          const folderId = folderTemplateFolder.value;
-          if (!folderId) return;
-          if (folderTemplateTemplate.value) folderTemplates[folderId] = folderTemplateTemplate.value;
-          else delete folderTemplates[folderId];
+          if (!chosenFolderId) return;
+          if (chosenValue) folderTemplates[chosenFolderId] = chosenValue;
+          else delete folderTemplates[chosenFolderId];
           await setting(`folderTemplates:${vault.id}`, folderTemplates);
         }
         renderPlanningSettings();
