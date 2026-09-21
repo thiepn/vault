@@ -5,7 +5,7 @@ import { openDatabase } from '../storage/database.js';
 import { LocalRepository } from '../storage/local-repository.js';
 import { request, transact } from '../storage/idb.js';
 import { SaveCoordinator } from '../services/save-coordinator.js';
-import { markdownFiles, zipStore } from '../services/export.js';
+import { vaultFiles, zipStore } from '../services/export.js';
 import { CommandRegistry } from '../commands/registry.js';
 import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file-tree.js';
 import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
@@ -22,11 +22,13 @@ import { deleteFrontmatterProperty, inspectFrontmatter, rawValueForProperty, ren
 import { addLocalDays, dateKey, renderTemplate, safeDailyFilename } from '../planning/templates.js';
 import { buildCalendarMonth, dailyDateForEntry, dailyEntryForDate } from '../planning/calendar.js';
 import { dynamicFieldLabel, parseDynamicQuery, runDynamicQuery } from '../queries/dynamic.js';
+import { attachmentMediaKind, attachmentReferenceCounts, attachmentSuggestions, canonicalAttachmentTarget, formatAttachmentSize, resolveAttachmentTarget, type AttachmentMediaKind } from '../media/attachments.js';
+import { updateAttachmentLinksAfterMove } from '../media/link-updater.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 8 browser workspace: Markdown-native queries and dynamic views on the accepted Phase 1-7 foundation. */
+/** Phase 9 browser workspace: local attachments and media on the accepted Phase 1-8 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -70,7 +72,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let searchIndexedVersions = new Map<EntryId, number>();
   let searchMetadata = new Map<EntryId, string>();
   let recentEntries: EntryId[] = [];
-  let sidebarPanel: 'files' | 'search' | 'tags' | 'tasks' | 'calendar' = 'files';
+  let sidebarPanel: 'files' | 'search' | 'tags' | 'tasks' | 'media' | 'calendar' = 'files';
   let searchResults: SearchResult[] = [];
   let searchFacets: SearchFacets = { tags: [], properties: [] };
   let searchStats: SearchStats = { documents: 0, tokens: 0, tags: 0, properties: 0 };
@@ -96,6 +98,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let taskPriorityFilter: 'all' | TaskPriority | 'none' = 'all';
   let taskGroup: 'date' | 'note' | 'priority' | 'none' = 'date';
   let taskFilterText = '';
+  let attachmentPolicy: 'folder' | 'note-folder' = 'folder';
+  let attachmentFolderId: EntryId | null = null;
+  const attachmentObjectUrls = new Map<EntryId, string>();
   let disposed = false;
   let chain: Promise<unknown> = Promise.resolve();
   let searchBuildChain: Promise<void> = Promise.resolve();
@@ -109,16 +114,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 8 \u00b7 Queries</span>
+        <span class="stage">Phase 9 \u00b7 Media</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
         <div class="vault-picker"><select id="vault-vault" aria-label="Active vault"></select><button data-action="vault-rename" aria-label="Rename active vault" title="Rename vault">\u270e</button></div>
         <button data-command="vault.create" class="quiet">+ New vault</button>
-        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button><button type="button" role="tab" data-sidebar-panel="tasks" aria-selected="false">Tasks</button><button type="button" role="tab" data-sidebar-panel="calendar" aria-selected="false">Calendar</button></div>
+        <div class="sidebar-tabs" role="tablist" aria-label="Vault navigation"><button type="button" role="tab" data-sidebar-panel="files" aria-selected="true">Files</button><button type="button" role="tab" data-sidebar-panel="search" aria-selected="false">Search</button><button type="button" role="tab" data-sidebar-panel="tags" aria-selected="false">Tags</button><button type="button" role="tab" data-sidebar-panel="tasks" aria-selected="false">Tasks</button><button type="button" role="tab" data-sidebar-panel="media" aria-selected="false">Media</button><button type="button" role="tab" data-sidebar-panel="calendar" aria-selected="false">Calendar</button></div>
         <section class="sidebar-panel files-panel" data-panel="files">
           <div class="section-heading"><span>EXPLORER</span><button data-action="reload" aria-label="Reload file list">\u21bb</button></div>
-          <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button></div><button type="button" class="quiet create-template-note" data-action="create-from-template">+ Note from template</button>
+          <div class="button-row"><button data-command="file.create">+ Note</button><button data-command="folder.create">+ Folder</button><button type="button" data-action="attachment-upload">+ Media</button></div><button type="button" class="quiet create-template-note" data-action="create-from-template">+ Note from template</button>
           <input class="file-filter" type="search" placeholder="Filter files\u2026" aria-label="Filter files" />
           <div class="explorer-options"><select class="file-sort" aria-label="Sort files"><option value="name-asc">Name A\u2013Z</option><option value="name-desc">Name Z\u2013A</option><option value="modified-desc">Modified newest</option><option value="modified-asc">Modified oldest</option><option value="created-desc">Created newest</option><option value="created-asc">Created oldest</option></select><label><input class="folders-first" type="checkbox" checked /> Folders first</label></div>
           <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
@@ -152,6 +157,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="task-list" aria-label="Vault tasks"></div>
           <p class="task-syntax-help">Metadata stays in Markdown: @due(YYYY-MM-DD) · @scheduled(YYYY-MM-DD) · @priority(high) · @repeat(weekly)</p>
         </section>
+        <section class="sidebar-panel media-panel" data-panel="media" hidden>
+          <div class="section-heading"><span>ATTACHMENTS</span><button type="button" data-action="attachment-upload">+ Add</button></div>
+          <p class="media-summary" role="status"></p>
+          <div class="media-list" aria-label="Vault attachments"></div>
+          <details class="media-settings"><summary>Attachment location</summary>
+            <label>Save new attachments<select class="attachment-policy-select"><option value="folder">In attachment folder</option><option value="note-folder">Beside current note</option></select></label>
+            <label class="attachment-folder-setting">Attachment folder<select class="attachment-folder-select"></select></label>
+            <p class="media-help">Paste or drop files into the editor. Images, audio and video use embedded <code>![[...]]</code> references; other files use <code>[[...]]</code>.</p>
+          </details>
+        </section>
         <section class="sidebar-panel calendar-panel" data-panel="calendar" hidden>
           <div class="calendar-heading"><button type="button" data-calendar-action="prev-month" aria-label="Previous month">‹</button><strong class="calendar-label"></strong><button type="button" data-calendar-action="next-month" aria-label="Next month">›</button></div>
           <div class="calendar-weekdays" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
@@ -177,18 +192,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 8</p><h1>Live views from ordinary Markdown.</h1>
-          <p>Turn search, properties and tasks into saved list, table and task views without creating a second content database.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 9</p><h1>Notes and media in one local vault.</h1>
+          <p>Paste, drop and organize images, audio, video and files while keeping readable Markdown references and local binary ownership.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
         <div id="vault-editor" class="editor-host" hidden aria-label="Markdown source editor"></div>
         <article class="reading-view" hidden aria-label="Rendered Markdown"></article>
+        <section class="attachment-view" hidden aria-label="Attachment preview"><div class="attachment-preview"></div><div class="attachment-meta"><h2 class="attachment-title"></h2><p class="attachment-detail"></p><button type="button" data-action="attachment-download">Download</button></div></section>
         <div class="folder-message" hidden></div>
+        <input class="attachment-file-input" type="file" multiple hidden />
       </main>
       <aside class="inspector" aria-label="Knowledge and storage information"><button type="button" class="inspector-close" data-action="knowledge-panel" aria-label="Close knowledge panel">\u00d7</button>
         <p class="label">FILE INFORMATION</p><dl class="file-info"></dl>
