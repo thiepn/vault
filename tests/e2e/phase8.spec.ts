@@ -140,9 +140,10 @@ test('Phase 8 renders live table/task queries and task actions mutate canonical 
   await expect(page.locator('.breadcrumb')).toContainText('Alpha.md');
 
   await quickOpen(page, 'Dashboard');
-  await expect(page.locator('.query-view[data-query-view="tasks"] .query-task-title')).toHaveText('Ship Alpha');
-  await page.locator('.query-view[data-query-view="tasks"] .query-task-row > input').check();
-  await expect(page.locator('.query-view[data-query-view="tasks"] .query-empty')).toContainText('No tasks match');
+  const reopenedTaskView = page.locator('.reading-view .query-view[data-query-view="tasks"]');
+  await expect(reopenedTaskView.locator('.query-task-title')).toHaveText('Ship Alpha');
+  await reopenedTaskView.locator('.query-task-row > input').check();
+  await expect(reopenedTaskView.locator('.query-empty')).toContainText('No tasks match');
 
   await quickOpen(page, 'Alpha');
   const source = await sourceText(page);
