@@ -207,7 +207,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 15 · Remote sync</span>
+        <span class="stage">Phase 19 · Presence</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -367,7 +367,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 18 adds shared Vault ownership, editor/viewer roles and revocable one-time invitations. Canonical Markdown and attachments still synchronize through the existing pull/merge/push protocol; this is not live co-editing or presence.</p>
+          <p class="cloud-phase-note">Phase 19 adds private member presence and snapshot-safe collaborator cursors. Presence and cursor metadata are ephemeral; canonical Markdown and attachments still use the existing sync/conflict protocol. Live text co-editing is not enabled.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
           <div class="cloud-section-heading">SHARING</div>
