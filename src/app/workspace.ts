@@ -3570,15 +3570,46 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           return;
         }
         if (action === 'adopt') {
-          if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud foundation.');
+          if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud sync.');
           if (saver) await saver.flush();
           vault = await cloud.adoptVault(vault);
           vaults = await repository.listVaults();
           cloudStatus = await cloud.status();
           awaitableDevicesCache = await cloud.listDevices();
-          renderCloudDialog('Cloud foundation enabled. Phase 14 has not uploaded note or attachment contents.');
+          lastSyncSummary = null;
+          await refreshCloudSyncDetail();
+          renderCloudDialog('Cloud sync enabled. Nothing is uploaded until you press Sync now.');
           renderCloudIndicator();
           renderInfo();
+          return;
+        }
+        if (action === 'sync') {
+          await runCurrentCloudSync();
+          return;
+        }
+        if (action === 'add-remote-vault') {
+          const remoteId = cloudAction.dataset.remoteVaultId as VaultId | undefined;
+          if (!remoteId) return;
+          const remote = cloudStatus.remoteVaults.find(item => item.id === remoteId);
+          if (!remote) throw new VaultError('NOT_FOUND', 'That cloud Vault is no longer available.');
+          if (saver) await saver.flush();
+          await clearSelection();
+          vault = await cloud.addRemoteVault(remote);
+          vaults = await repository.listVaults();
+          preferencesVaultId = undefined;
+          knowledgeVaultId = undefined;
+          searchVaultId = undefined;
+          showingTrash = false;
+          filterText = '';
+          lastSyncSummary = null;
+          await setting('lastVault', vault.id);
+          await refresh();
+          cloudStatus = await cloud.status();
+          awaitableDevicesCache = await cloud.listDevices();
+          await refreshCloudSyncDetail();
+          renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
+          renderCloudIndicator();
+          await runCurrentCloudSync();
           return;
         }
         if (action === 'sign-out') {
@@ -3586,6 +3617,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await cloud.signOut();
           cloudStatus = cloudEmptyStatus();
           awaitableDevicesCache = [];
+          lastSyncSummary = null;
+          cachedSyncDetail = '';
           renderCloudDialog('Signed out on this device. Local Vault data was kept.');
           renderCloudIndicator();
           return;
