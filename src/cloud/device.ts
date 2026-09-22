@@ -20,7 +20,7 @@ export function defaultDeviceLabel(userAgent = '', platform = ''): string {
   const haystack = `${platform} ${userAgent}`.toLocaleLowerCase();
   if (haystack.includes('android')) return 'Android browser';
   if (haystack.includes('iphone') || haystack.includes('ipad') || haystack.includes('ios')) return 'iOS browser';
-  if (haystack.includes('windows')) return 'Windows browser';
+  if (haystack.includes('windows') || haystack.includes('win32') || haystack.includes('win64')) return 'Windows browser';
   if (haystack.includes('mac')) return 'Mac browser';
   if (haystack.includes('linux')) return 'Linux browser';
   return 'Web browser';
