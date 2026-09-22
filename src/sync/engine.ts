@@ -180,7 +180,7 @@ export class SyncEngine {
     const base=baseRecord.snapshot;
     if(local.entry.parentId!==base.parentId || local.entry.name!==base.name) return false;
 
-    const merged=compareVersions(base.text,local.text,snapshot.text);
+    const merged=compareVersions(base.text!,local.text,snapshot.text);
     if(merged.kind==='conflict') return false;
 
     await this.state.dropEntryOperations(vault.id,ownerId,snapshot.entryId);
