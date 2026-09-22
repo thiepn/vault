@@ -754,6 +754,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const crossTab = new VaultBroadcast('vault:storage', message => {
     if (disposed || message.kind === 'migration-started') return;
     syncCoordinator?.request('peer', 750);
+    if (crdtDocument && selected?.kind==='markdown') return;
     if (saver?.hasUnsavedChanges) {
       errorBox.textContent = 'Another Vault tab changed local data while this editor has unsaved work. Your draft is preserved; save/reopen to reconcile instead of overwriting it.';
       errorBox.hidden = false;
@@ -775,7 +776,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   function downloadDraft(): void {
     if (!selected || selected.kind !== 'markdown') return;
-    download(selected.name, saver?.draft ?? editor.getText(), 'text/markdown;charset=utf-8');
+    download(selected.name, currentMarkdownText(), 'text/markdown;charset=utf-8');
   }
 
   function cloudEmptyStatus(): CloudFoundationStatus {
@@ -796,6 +797,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if(!currentId || wasWritable===isWritable || selected?.vaultId!==currentId) return;
 
     if(!isWritable){
+      await finalizeCrdtBeforeDetach();
       if(saver){
         await saver.closeToRecovery();
         saver=undefined;
@@ -1191,6 +1193,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     crdtLocalDirty=false;
     crdtLeaderSession=message.sessionId;
     renderCollaborationState();
+  }
+
+  async function finalizeCrdtBeforeDetach(): Promise<void> {
+    if(!crdtDocument || !crdtBase || !selected || selected.kind!=='markdown') return;
+    const reconciled=ensureTaskIdentityMarkers(currentMarkdownText(),{usedIds:reservedTaskIds(selected.id)});
+    if(reconciled.changed) crdtDocument.applyLocalText(reconciled.text);
+    if(currentCrdtFollower(selected.id)){
+      crdtRecoveryText=crdtDocument.value;
+      await persistCrdtRecoveryNow();
+    }else{
+      await saver?.flush();
+      await clearCrdtRecoveryDraft(selected.id);
+    }
+    stopCrdtSession();
   }
 
   function renderCloudIndicator(): void {
@@ -3275,7 +3291,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-recovery-action]')) button.disabled = !draft;
   }
   function propertySourceText(): string | null {
-    return selected?.kind === 'markdown' ? (saver?.draft ?? editor.getText()) : null;
+    return selected?.kind === 'markdown' ? currentMarkdownText() : null;
   }
 
   function schedulePropertiesRender(text: string): void {
@@ -4111,11 +4127,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   async function setEditorMode(mode: EditorMode): Promise<void> {
     if (!selected || selected.kind !== 'markdown') return;
-    if (mode === 'reading' && saver) await saver.flush();
+    if (mode === 'reading') {
+      await finalizeCrdtBeforeDetach();
+      if (saver) await saver.flush();
+    }
     editorMode = mode;
     await setting('editorMode', mode);
     await syncEditorSurface();
     await refreshCollaborationSubscription();
+    await refreshCrdtSession();
     renderRemoteCollaborationCursors();
     if (mode !== 'reading') editor.focus();
   }
@@ -4123,6 +4143,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     // Validate the destination before closing a functioning editor. Failed navigation
     // must not leave the previous editor attached to a closed save coordinator.
     const previousEntryId = selected?.kind === 'markdown' ? selected.id : undefined;
+    await finalizeCrdtBeforeDetach();
     if (saver) { try { await saver.flush(); } catch (error) { if (!preserveCurrent) throw error; } }
     const item = await repository.read(id);
     const targetPath = pathOf(id);
@@ -4177,6 +4198,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     await syncEditorSurface();
     clearCollaborationCursors();
     await refreshCollaborationSubscription();
+    await refreshCrdtSession();
     const pendingCursor = pendingCursorOffsets.get(selected.id);
     if (pendingCursor !== undefined && selected.kind === 'markdown' && selected.deletedAt === null) { pendingCursorOffsets.delete(selected.id); editor.revealOffset(pendingCursor); }
     renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
@@ -4193,6 +4215,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   async function clearSelection(): Promise<void> {
     const previousEntryId = selected?.kind === 'markdown' ? selected.id : undefined;
+    await finalizeCrdtBeforeDetach();
     if (saver && selected?.kind === 'markdown') {
       const reconciled = ensureTaskIdentityMarkers(editor.getText(), { usedIds: reservedTaskIds(selected?.id) });
       if (reconciled.changed) {
@@ -4217,6 +4240,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     await syncEditorSurface();
     clearCollaborationCursors();
     await refreshCollaborationSubscription();
+    await refreshCrdtSession();
     updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
     if (graphOpen) renderGraph();
   }
