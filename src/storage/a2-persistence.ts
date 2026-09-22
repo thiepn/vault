@@ -525,6 +525,12 @@ export class A2LocalRepository extends LocalRepository {
     }
   }
 
+  override async createCloudReplica(raw: string, binding: CloudVaultBinding): Promise<Vault> {
+    const vault = await super.createCloudReplica(raw, binding);
+    await this.mirror(() => this.a2.syncVault(vault.id));
+    return vault;
+  }
+
   override async readAttachment(entryId: EntryId): Promise<AttachmentContent> {
     const canonical = await this.a2.readAttachmentBlob(entryId);
     return canonical ?? super.readAttachment(entryId);
