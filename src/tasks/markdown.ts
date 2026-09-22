@@ -96,7 +96,8 @@ export function ensureTaskIdentityMarkers(
           taskIds.push(identity.toLowerCase());
           if (rekey || !existing) {
             const trailing = /[ \t]*$/u.exec(existing ? line.replace(taskIdentityPattern, '') : line)?.[0] ?? '';
-            const base = (existing ? line.replace(taskIdentityPattern, '') : line).slice(0, trailing.length ? -trailing.length : undefined);
+            const stripped = existing ? line.replace(taskIdentityPattern, '') : line;
+            const base = trailing.length ? stripped.slice(0, -trailing.length) : stripped;
             nextLine = `${base} <!-- vault:task=${identity.toLowerCase()} -->${trailing}`;
           }
         }
