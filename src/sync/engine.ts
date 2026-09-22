@@ -8,6 +8,7 @@ import type { SyncReplicaStore } from './replica-store.js';
 import type { SupabaseSyncTransport } from './transport.js';
 import { synthesizeEntryOperation } from './synthesize.js';
 import { compareVersions } from './merge.js';
+import { cloudBindingCanWrite, cloudOwnerAuthUserId, effectiveCloudRole } from '../cloud/access.js';
 
 export interface SyncRunSummary {
   pulledEvents: number;
@@ -78,7 +79,8 @@ export class SyncEngine {
 
   private async runSync(vault:Vault,ownerId:string):Promise<SyncRunSummary>{
     const binding=requireBinding(vault,ownerId);
-    await this.state.assertPendingOwners(vault.id,ownerId);
+    const role=effectiveCloudRole(binding);
+    if(role==='revoked') throw new VaultError('PERMISSION','Access to this shared Vault has been revoked.');
     let cursor=await this.state.initializeCursor(vault.id,ownerId,binding.epoch);
     const summary:SyncRunSummary={
       pulledEvents:0,
@@ -91,6 +93,19 @@ export class SyncEngine {
       cursor:cursor.cursor,
     };
 
+    if(!cloudBindingCanWrite(binding)){
+      const dirty=await this.replica.listDirty(vault.id);
+      const queued=await this.state.count(vault.id);
+      if(dirty.length || queued>0){
+        throw new VaultError('PERMISSION','This Vault is now read-only but still has local unsynchronized changes. Preserve or export those changes before pulling shared updates.');
+      }
+      cursor=await this.pullUntilCaughtUp(vault,ownerId,cursor.cursor,summary);
+      summary.cursor=cursor.cursor;
+      summary.outboxRemaining=0;
+      return summary;
+    }
+
+    await this.state.assertPendingOwners(vault.id,ownerId);
     cursor=await this.pullUntilCaughtUp(vault,ownerId,cursor.cursor,summary);
     await this.synthesizeDirty(vault,ownerId,binding.deviceId);
     await this.pushPending(vault,ownerId,summary);
@@ -233,7 +248,7 @@ export class SyncEngine {
     let bytes:Uint8Array|undefined;
     if(await this.replica.needsAttachmentBytes(snapshot,previous)){
       if(snapshot.attachmentSha256===null) throw new VaultError('PROTOCOL','Remote attachment has no blob identity.');
-      bytes=await this.transport.downloadBlob(ownerId,vault.id,snapshot.attachmentSha256);
+      bytes=await this.transport.downloadBlob(cloudOwnerAuthUserId(binding),vault.id,snapshot.attachmentSha256);
       summary.downloadedBlobs++;
     }
     await this.replica.apply(ownerId,binding.epoch,snapshot,bytes);
@@ -277,7 +292,7 @@ export class SyncEngine {
       if(local.sha256!==mutation.attachment.sha256 || local.size!==mutation.attachment.size) {
         throw new VaultError('STALE_WRITE','Queued attachment bytes no longer match the sealed operation.');
       }
-      await this.transport.uploadBlob(ownerId,vault.id,local.sha256,local.mimeType,local.bytes);
+      await this.transport.uploadBlob(cloudOwnerAuthUserId(requireBinding(vault,ownerId)),vault.id,local.sha256,local.mimeType,local.bytes);
       summary.uploadedBlobs++;
     }
   }
