@@ -652,7 +652,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudAdopt.disabled = false;
       cloudAdopt.textContent = 'Enable cloud sync for this Vault';
     } else if (syncEligible) {
-      cloudVaultState.append(cloudRow(vault.name, `Cloud sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
+      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
       cloudAdopt.disabled = true;
       cloudAdopt.textContent = 'Cloud sync enabled';
     } else {
