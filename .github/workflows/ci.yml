@@ -36,6 +36,8 @@ jobs:
         run: npm run benchmark:canvas
       - name: 10k Obsidian migration benchmark
         run: npm run benchmark:interop
+      - name: Sync foundation benchmark
+        run: npm run benchmark:sync-foundation
       - name: Production build
         run: npm run build
       - name: Install Chromium
