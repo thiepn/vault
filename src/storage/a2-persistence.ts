@@ -234,7 +234,7 @@ export class A2Persistence {
         const entries = await this.driver.transaction(['entries'], 'readonly', tx => tx.store('entries').getAll<Entry>());
         const usedTaskIds = new Set<string>();
         for (const original of entries.sort((a, b) => a.id.localeCompare(b.id))) {
-          if (original.kind === 'markdown' && original.deletedAt === null) {
+          if (original.kind === 'markdown') {
             await this.adoptTaskIdentities(original.id, false, usedTaskIds);
           }
           await this.syncEntry(original.id);
@@ -430,7 +430,7 @@ export class A2Persistence {
           vaultId: updated.vaultId,
           localVersion: updated.localVersion,
           changedAt: updated.updatedAt,
-          intent: 'upsert',
+          intent: updated.deletedAt ? 'trash' : 'upsert',
         } satisfies DirtyEntry);
         return updated;
       },
