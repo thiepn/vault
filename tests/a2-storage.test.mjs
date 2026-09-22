@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SCHEMA_VERSION, STORES } from '../build/core/storage/database.js';
 import { sha256Hex } from '../build/core/storage/blob-store.js';
+import { readZipStore, zipStore } from '../build/core/services/export.js';
 import {
   ensureTaskIdentityMarkers,
   parseTaskLine,
@@ -10,6 +11,7 @@ import {
 } from '../build/core/tasks/markdown.js';
 import {
   fullVaultArchiveFiles,
+  parseFullVaultArchiveFiles,
   validateFullVaultArchiveFiles,
 } from '../build/core/services/a2-archive.js';
 
@@ -143,4 +145,50 @@ test('A2 cross-note task identity collisions are rekeyed instead of aliasing one
   assert.equal(taskIdentityFromRaw(reconciled.text.trimEnd()), replacement);
   assert.equal(used.has(shared), true);
   assert.equal(used.has(replacement), true);
+});
+
+
+test('A2 archive v2 round-trips deleted attachment payloads through its verified ZIP subset', async () => {
+  const vaultId = '11111111-1111-4111-8111-111111111111';
+  const attachmentId = '33333333-3333-4333-8333-333333333333';
+  const now = '2026-09-22T02:00:00.000Z';
+  const bytes = Uint8Array.from([7, 8, 9, 255]);
+  const dataBase64 = Buffer.from(bytes).toString('base64');
+  const checksumSha256 = await sha256Hex(bytes);
+
+  const snapshot = {
+    format: 'vault-local-backup',
+    version: 2,
+    exportedAt: now,
+    vault: { id:vaultId, name:'Deleted media', createdAt:now, updatedAt:now, mode:'local' },
+    entries: [{
+      id:attachmentId, vaultId, parentId:null, name:'old.bin', kind:'attachment',
+      createdAt:now, updatedAt:now, localVersion:2, deletedAt:now,
+      deletionBatch:'batch', 
+    }],
+    contents: [],
+    attachments: [{ entryId:attachmentId, mimeType:'application/octet-stream', size:bytes.length, dataBase64 }],
+    recoveryDrafts: [],
+    revisions: [],
+  };
+  const entities = [{
+    id:vaultId, entityType:'vault', name:'Deleted media', schemaVersion:1, revision:1,
+    createdAt:now, updatedAt:now, deletedAt:null, properties:{},
+  }, {
+    id:attachmentId, entityType:'attachment', vaultId, filename:'old.bin',
+    mediaType:'application/octet-stream', size:bytes.length, checksumSha256,
+    originalFilename:null, width:null, height:null, durationSeconds:null,
+    schemaVersion:1, revision:2, createdAt:now, updatedAt:now, deletedAt:now, properties:{},
+  }];
+  const files = await fullVaultArchiveFiles(snapshot, entities, []);
+  assert.ok(files.some(file => file.path === '.vault/state.json'));
+  assert.ok(files.some(file => file.path === '.vault/deleted-attachments/' + attachmentId + '.bin'));
+
+  const zip = zipStore(files);
+  const unpacked = readZipStore(zip);
+  const parsed = await parseFullVaultArchiveFiles(unpacked);
+  assert.equal(parsed.manifest.version, 2);
+  assert.equal(parsed.attachments.length, 1);
+  assert.deepEqual([...parsed.attachments[0].bytes], [...bytes]);
+  assert.equal(parsed.state.entries[0].deletedAt, now);
 });
