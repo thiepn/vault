@@ -21,13 +21,25 @@ The repository currently includes browser-certified:
 
 ## Permanent architecture program
 
-The existing Phase 1–11 product remains operational. In parallel, **Architecture Phase A1 — Canonical Domain & Data Model** is now implemented as a storage-independent contract.
+The Phase 1–12 product now runs on the **A1/A2 permanent local foundation**.
 
-A1 adds stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs; existing valid Entry UUIDs are preserved during future migration.
+**A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
-A1 does **not** migrate current Markdown/IndexedDB persistence. Phase A2 will decide serialization and offline-storage architecture.
+**A2 — Local Storage, Serialization & Offline Persistence** is implemented with:
 
-See \`docs/A1_DOMAIN_MODEL.md\` and \`docs/adr/001-canonical-domain-model.md\`.
+- IndexedDB schema v4 as the transactional local persistence layer
+- canonical `entities` and split `noteBodies` stores alongside compatibility stores
+- stable hidden IDs for Markdown-embedded tasks
+- content-addressed SHA-256 attachment blobs
+- OPFS-preferred blob persistence with IndexedDB fallback
+- migration/repair state and Web Locks coordination
+- BroadcastChannel invalidation
+- persistent-storage requests and quota/health support
+- full-fidelity Vault archives with checksums
+- service-worker application-shell caching and cold offline PWA startup
+- compatibility mirroring so Phase 1–12 behavior remains available during the canonical-storage transition
+
+See `docs/A1_DOMAIN_MODEL.md`, `docs/A2_STORAGE_ARCHITECTURE.md`, and the ADRs under `docs/adr/`.
 
 ## Current capabilities
 
@@ -340,13 +352,11 @@ Markdown
    └─→ Kanban board projection
 ```
 
-Tasks, Daily Notes, templates and query definitions remain file/text concepts. Attachment bytes are stored as separate local binary records keyed by stable vault entry IDs; Markdown contains readable attachment paths. Query results remain disposable projections.
+Daily Notes, templates, query definitions, boards and canvases remain Markdown-authored concepts. Embedded tasks remain readable Markdown checkboxes but now carry stable hidden A2 task IDs and are mirrored as first-class Task entities. Attachment metadata is canonical structured state while binary payloads are content-addressed and prefer OPFS with IndexedDB fallback. Query, graph, board and canvas render state remains disposable projection state.
 
 ## Not implemented yet
 
 - cloud accounts and cross-device sync
-- Canvas
-- PWA cold-start/offline shell
 - external Markdown/Obsidian import
 
 ## Development
