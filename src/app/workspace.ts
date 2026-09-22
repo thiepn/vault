@@ -2339,6 +2339,201 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     renderKnowledgePanels();
   }
 
+  async function moveBoardCard(entryId: EntryId, plan: BoardPlan, columnValue: string | null): Promise<void> {
+    const entry = entries.find(item => item.id === entryId && item.kind === 'markdown' && item.deletedAt === null);
+    if (!entry) throw new VaultError('NOT_FOUND', 'This board card is no longer available.');
+
+    if (selected?.id === entryId && saver) {
+      await saver.flush();
+      const source = saver.draft;
+      const next = columnValue === null
+        ? deleteFrontmatterProperty(source, plan.groupProperty)
+        : setFrontmatterProperty(source, plan.groupProperty, columnValue);
+      if (next === source) return;
+      editor.setText(next);
+      saver.update(next);
+      await saver.flush();
+      await refreshKnowledgeEntry(entryId);
+    } else {
+      const file = await repository.read(entryId);
+      if (!file.content || file.entry.kind !== 'markdown' || file.entry.deletedAt !== null) {
+        throw new VaultError('NOT_FOUND', 'This board card is no longer available.');
+      }
+      const next = columnValue === null
+        ? deleteFrontmatterProperty(file.content.text, plan.groupProperty)
+        : setFrontmatterProperty(file.content.text, plan.groupProperty, columnValue);
+      if (next === file.content.text) return;
+      const saved = await repository.saveMarkdown(entryId, next, file.entry.localVersion);
+      await knowledge.upsert(saved, next);
+      const at = entries.findIndex(item => item.id === saved.id);
+      if (at >= 0) entries[at] = saved;
+      dirtyIds.add(saved.id);
+      await refreshSearchEntry(saved.id);
+      invalidateGraphModel();
+      renderTree();
+      renderKnowledgePanels();
+      renderTasks();
+      renderMedia();
+      renderCalendar();
+      if (graphOpen) renderGraph();
+      editor.refreshPreview();
+    }
+
+    if (editorMode === 'reading' && selected?.kind === 'markdown') await renderReadingCurrent();
+  }
+
+  function boardCardDetails(card: BoardCard, plan: BoardPlan): string[] {
+    const details: string[] = [];
+    for (const field of plan.cardFields) {
+      if (field === 'file' || field === 'path') continue;
+      const value = card.values[field];
+      if (value) details.push(`${boardFieldLabel(field)}: ${value}`);
+    }
+    return details;
+  }
+
+  function renderBoardBlock(source: string, sourceEntryId?: string): HTMLElement {
+    const plan = parseBoard(source);
+    const currentEntryId = sourceEntryId && entries.some(entry => entry.id === sourceEntryId)
+      ? sourceEntryId as EntryId
+      : selected?.id;
+    const result = runBoard(plan, entries, knowledge.records(), {
+      ...(currentEntryId ? { currentEntryId } : {}),
+      pathOf,
+    });
+
+    const section = document.createElement('section');
+    section.className = `board-view board-layout-${plan.layout}`;
+    section.dataset.boardProperty = plan.groupProperty;
+
+    const header = document.createElement('header');
+    header.className = 'board-view-header';
+    const heading = document.createElement('strong');
+    heading.textContent = plan.title ?? `Board by ${plan.groupProperty}`;
+    const meta = document.createElement('span');
+    meta.textContent = result.truncated
+      ? `${result.shown} of ${result.total} cards`
+      : `${result.total} card${result.total === 1 ? '' : 's'} · ${result.columns.length} lane${result.columns.length === 1 ? '' : 's'}`;
+    header.append(heading, meta);
+    section.append(header);
+
+    if (plan.query) {
+      const query = document.createElement('code');
+      query.className = 'board-query-expression';
+      query.textContent = plan.query;
+      section.append(query);
+    }
+
+    const lanes = document.createElement('div');
+    lanes.className = 'board-columns';
+    lanes.setAttribute('role', 'list');
+
+    for (const column of result.columns) {
+      const lane = document.createElement('section');
+      lane.className = 'board-column';
+      lane.dataset.boardColumn = column.value ?? '';
+      lane.setAttribute('role', 'listitem');
+
+      const laneHeader = document.createElement('header');
+      laneHeader.className = 'board-column-header';
+      const laneTitle = document.createElement('strong');
+      laneTitle.textContent = column.label;
+      const count = document.createElement('span');
+      count.textContent = String(column.cards.length);
+      laneHeader.append(laneTitle, count);
+      lane.append(laneHeader);
+
+      const cards = document.createElement('div');
+      cards.className = 'board-card-list';
+      cards.dataset.boardDrop = column.value ?? '';
+      cards.addEventListener('dragover', event => {
+        if (!event.dataTransfer?.types.includes('application/x-vault-board-entry')) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        cards.classList.add('drop-target');
+      });
+      cards.addEventListener('dragleave', event => {
+        if (!cards.contains(event.relatedTarget as Node | null)) cards.classList.remove('drop-target');
+      });
+      cards.addEventListener('drop', event => {
+        const raw = event.dataTransfer?.getData('application/x-vault-board-entry');
+        cards.classList.remove('drop-target');
+        if (!raw) return;
+        event.preventDefault();
+        perform(() => moveBoardCard(raw as EntryId, plan, column.value));
+      });
+
+      for (const card of column.cards) {
+        const article = document.createElement('article');
+        article.className = 'board-card';
+        article.dataset.boardCard = card.entryId;
+        article.draggable = true;
+        article.addEventListener('dragstart', event => {
+          event.dataTransfer?.setData('application/x-vault-board-entry', card.entryId);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+          article.classList.add('dragging');
+        });
+        article.addEventListener('dragend', () => article.classList.remove('dragging'));
+
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'board-card-title';
+        open.dataset.boardEntry = card.entryId;
+        open.textContent = card.title;
+
+        const path = document.createElement('span');
+        path.className = 'board-card-path';
+        path.textContent = card.path;
+        article.append(open, path);
+
+        const detailValues = boardCardDetails(card, plan);
+        if (detailValues.length) {
+          const details = document.createElement('div');
+          details.className = 'board-card-details';
+          for (const value of detailValues) {
+            const item = document.createElement('span');
+            item.textContent = value;
+            details.append(item);
+          }
+          article.append(details);
+        }
+
+        const moveLabel = document.createElement('label');
+        moveLabel.className = 'board-card-move-label';
+        const sr = document.createElement('span');
+        sr.className = 'sr-only';
+        sr.textContent = `Move ${card.title} to lane`;
+        const select = document.createElement('select');
+        select.className = 'board-card-move';
+        select.setAttribute('aria-label', `Move ${card.title} to lane`);
+        for (const target of result.columns) {
+          const option = new Option(target.label, target.value ?? '');
+          if ((card.columnValue ?? '') === (target.value ?? '')) option.selected = true;
+          select.add(option);
+        }
+        select.addEventListener('change', () => {
+          const target = result.columns.find(item => (item.value ?? '') === select.value);
+          if (target) perform(() => moveBoardCard(card.entryId, plan, target.value));
+        });
+        moveLabel.append(sr, select);
+        article.append(moveLabel);
+        cards.append(article);
+      }
+
+      if (!column.cards.length) {
+        const empty = document.createElement('p');
+        empty.className = 'board-column-empty';
+        empty.textContent = 'Drop cards here';
+        cards.append(empty);
+      }
+      lane.append(cards);
+      lanes.append(lane);
+    }
+
+    section.append(lanes);
+    return section;
+  }
+
   function renderDynamicQueryBlock(source: string, sourceEntryId?: string): HTMLElement {
     const plan = parseDynamicQuery(source);
     const currentEntryId = sourceEntryId && entries.some(entry => entry.id === sourceEntryId)
