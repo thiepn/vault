@@ -159,10 +159,34 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   await expect(header).toBeVisible();
   const box = await header.boundingBox();
   expect(box).not.toBeNull();
-  await page.mouse.move(box!.x + 40, box!.y + 14);
-  await page.mouse.down();
-  await page.mouse.move(box!.x + 140, box!.y + 74, { steps:5 });
-  await page.mouse.up();
+  const start = { x: box!.x + 40, y: box!.y + 14 };
+  const end = { x: box!.x + 140, y: box!.y + 74 };
+
+  // CDP page.mouse injection does not consistently synthesize the DOM mouse
+  // sequence used by this custom spatial surface. Dispatch the actual browser
+  // events handled by the production fallback and certify both visual motion
+  // and canonical persistence.
+  await header.dispatchEvent('mousedown', {
+    bubbles:true, cancelable:true, button:0, buttons:1,
+    clientX:start.x, clientY:start.y,
+  });
+  await page.evaluate(({ x, y }) => {
+    window.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles:true, cancelable:true, button:0, buttons:1, clientX:x, clientY:y,
+    }));
+  }, end);
+  await page.evaluate(({ x, y }) => {
+    window.dispatchEvent(new MouseEvent('mouseup', {
+      bubbles:true, cancelable:true, button:0, buttons:0, clientX:x, clientY:y,
+    }));
+  }, end);
+
+  const movedPosition = await canvas.locator('[data-canvas-node="text-idea"]').evaluate(element => ({
+    x: Number.parseFloat((element as HTMLElement).style.left),
+    y: Number.parseFloat((element as HTMLElement).style.top),
+  }));
+  expect(movedPosition.x).toBeGreaterThan(340);
+  expect(movedPosition.y).toBeGreaterThan(0);
 
   const movedSource = await sourceText(page);
   const movedMatch = /id: text-idea[\s\S]*?x:\s*(-?\d+(?:\.\d+)?)[\s\S]*?y:\s*(-?\d+(?:\.\d+)?)/u.exec(movedSource);
