@@ -3471,7 +3471,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (cloudAction?.dataset.cloudAction) {
       const action = cloudAction.dataset.cloudAction;
       perform(async () => {
-        if (!cloud) throw new VaultError('CONFIGURATION', cloudBootstrapError || 'Cloud foundation is unavailable.');
+        try {
+          if (!cloud) throw new VaultError('CONFIGURATION', cloudBootstrapError || 'Cloud foundation is unavailable.');
         if (action === 'sign-in') {
           cloudMessage.textContent = 'Signing in…';
           cloudStatus = await cloud.signIn(cloudEmail.value, cloudPassword.value);
@@ -3522,6 +3523,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await cloud.revokeDevice(raw as DeviceId);
           await refreshCloudStatus('Device revoked. Revocation cannot be silently reversed.');
           return;
+        }
+        } catch (error) {
+          renderCloudDialog(error instanceof Error ? error.message : 'Cloud action failed.');
         }
       });
       return;
