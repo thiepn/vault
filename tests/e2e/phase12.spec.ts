@@ -215,11 +215,8 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   await expect(canvas.locator('.canvas-group')).toHaveCount(2);
 
   const liveZoom = async (): Promise<number> => {
-    return await canvas.locator('.canvas-world').evaluate(element => {
-      const transform = getComputedStyle(element).transform;
-      if (!transform || transform === 'none') return 1;
-      return new DOMMatrix(transform).a;
-    });
+    const value = await canvas.getAttribute('data-zoom');
+    return Number(value);
   };
   const beforeZoom = await liveZoom();
   expect(Number.isFinite(beforeZoom)).toBe(true);
