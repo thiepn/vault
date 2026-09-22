@@ -2342,13 +2342,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function moveBoardCard(entryId: EntryId, plan: BoardPlan, columnValue: string | null): Promise<void> {
     const entry = entries.find(item => item.id === entryId && item.kind === 'markdown' && item.deletedAt === null);
     if (!entry) throw new VaultError('NOT_FOUND', 'This board card is no longer available.');
+    const record = knowledge.get(entryId);
+    const groupProperty = Object.keys(record?.properties ?? {}).find(name =>
+      name.normalize('NFC').toLocaleLowerCase() === plan.groupProperty.normalize('NFC').toLocaleLowerCase()
+    ) ?? plan.groupProperty;
 
     if (selected?.id === entryId && saver) {
       await saver.flush();
       const source = saver.draft;
       const next = columnValue === null
-        ? deleteFrontmatterProperty(source, plan.groupProperty)
-        : setFrontmatterProperty(source, plan.groupProperty, columnValue);
+        ? deleteFrontmatterProperty(source, groupProperty)
+        : setFrontmatterProperty(source, groupProperty, columnValue);
       if (next === source) return;
       editor.setText(next);
       saver.update(next);
@@ -2360,8 +2364,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         throw new VaultError('NOT_FOUND', 'This board card is no longer available.');
       }
       const next = columnValue === null
-        ? deleteFrontmatterProperty(file.content.text, plan.groupProperty)
-        : setFrontmatterProperty(file.content.text, plan.groupProperty, columnValue);
+        ? deleteFrontmatterProperty(file.content.text, groupProperty)
+        : setFrontmatterProperty(file.content.text, groupProperty, columnValue);
       if (next === file.content.text) return;
       const saved = await repository.saveMarkdown(entryId, next, file.entry.localVersion);
       await knowledge.upsert(saved, next);
