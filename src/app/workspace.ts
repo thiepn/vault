@@ -479,6 +479,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         },
         onPresence(participants) {
           collaborationParticipants = [...participants];
+          updateCrdtLeader();
           const activeSessions = new Set(participants.map(participant => participant.sessionId));
           for (const sessionId of collaborationCursors.keys()) {
             if (!activeSessions.has(sessionId)) collaborationCursors.delete(sessionId);
@@ -840,7 +841,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     collaborationStatusElement.hidden = false;
     const connectedOthers = new Set(others.map(participant => participant.userId)).size;
-    collaborationStatusElement.textContent = `${collaborationStatusLabel()}${connectedOthers ? ` · ${connectedOthers} other${connectedOthers === 1 ? '' : 's'} online` : ''}`;
+    const liveEdit = crdtDocument ? ` · ${crdtStatusLabel()}${crdtLeaderSession===storageSessionId ? ' · canonical writer' : crdtLeaderSession ? ' · collaborating' : ''}` : '';
+    collaborationStatusElement.textContent = `${collaborationStatusLabel()}${connectedOthers ? ` · ${connectedOthers} other${connectedOthers === 1 ? '' : 's'} online` : ''}${liveEdit}`;
   }
 
   function clearCollaborationCursors(): void {
@@ -973,8 +975,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function updateCrdtLeader(): void {
     const next=crdtLeaderForCurrentEntry();
     if(next===crdtLeaderSession) return;
+    const previous=crdtLeaderSession;
     crdtLeaderSession=next;
-    if(crdtDocument && crdtStatus==='connected' && next && next!==storageSessionId) requestCrdtSync();
+    if(!crdtDocument) return;
+
+    if(next===storageSessionId){
+      const text=crdtDocument.value;
+      if(currentVaultWritable() && saver){
+        saver.update(text);
+        void saver.flush()
+          .then(()=>crdtBase ? clearCrdtRecoveryDraft(crdtBase.entryId) : undefined)
+          .catch(showError);
+      }
+    }else if(next){
+      queueCrdtRecovery(crdtDocument.value);
+      if(previous===storageSessionId) void saver?.flush().catch(showError);
+      if(crdtStatus==='connected') requestCrdtSync();
+    }
+    renderCollaborationState();
   }
 
   function crdtStatusLabel(): string {
@@ -1006,7 +1024,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       onText(text) {
         if(disposed || crdtDocument!==document || selected?.id!==base.entryId) return;
         if(editor.getText()!==text) editor.reconcileText(text);
-        if(currentVaultWritable()) saver?.update(text);
+        if(currentVaultWritable() && crdtLeaderSession===storageSessionId) saver?.update(text);
+        else queueCrdtRecovery(text);
         schedulePropertiesRender(text);
         renderRemoteCollaborationCursors();
       },
@@ -1057,6 +1076,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     stopCrdtSession();
     const base=await verifiedCrdtBase();
     if(!base) return;
+    await clearCrdtRecoveryIfCanonical(base.entryId,base.text);
     installCrdtDocument(base,true);
     updateCrdtLeader();
     if(!crdtRealtime) return;
@@ -1109,6 +1129,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if(crdtLocalDirty){
+      queueCrdtRecovery(crdtDocument.value);
+      void persistCrdtRecoveryNow().catch(showError);
       stopCrdtSession();
       errorBox.textContent='Live co-editing paused because another editor is based on a different canonical revision. Your local draft is preserved; synchronize it before rejoining live editing.';
       errorBox.hidden=false;
