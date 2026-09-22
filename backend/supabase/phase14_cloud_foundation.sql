@@ -157,3 +157,10 @@ drop trigger if exists vault_cloud_vaults_guard on public.vault_cloud_vaults;
 create trigger vault_cloud_vaults_guard
 before update on public.vault_cloud_vaults
 for each row execute function vault_private.guard_vault_update();
+
+-- Exact covering indexes for composite account foreign keys.
+create index if not exists vault_cloud_devices_account_identity_idx
+  on public.vault_cloud_devices(account_id, auth_user_id);
+
+create index if not exists vault_cloud_vaults_account_identity_idx
+  on public.vault_cloud_vaults(account_id, auth_user_id);
