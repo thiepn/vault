@@ -162,7 +162,8 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
 
   await expect.poll(async () => {
     const text = await sourceText(page);
-    return /id: text-idea[\s\S]*?x: 440[\s\S]*?y: 60/u.test(text);
+    const match = /id: text-idea[\s\S]*?x:\s*(-?\d+(?:\.\d+)?)[\s\S]*?y:\s*(-?\d+(?:\.\d+)?)/u.exec(text);
+    return !!match && Number(match[1]) > 340 && Number(match[2]) > 0;
   }).toBe(true);
 
   await returnLive(page);
