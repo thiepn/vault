@@ -3,9 +3,13 @@ import { activeKey, validateName } from '../domain/paths.js';
 import { newId, type AttachmentContent, type DirtyEntry, type Entry, type EntryId, type MarkdownContent, type Vault, type VaultId } from '../domain/model.js';
 import { ensureTaskIdentityMarkers } from '../tasks/markdown.js';
 import { normalizeAttachmentMimeType, validateAttachmentBytes, validateAttachmentName } from '../media/attachments.js';
-import { storageDriver } from '../storage/driver.js';
-import type { A2Persistence } from '../storage/a2-persistence.js';
+import { storageDriver, type LocalStorageDriver } from '../storage/driver.js';
 import type { ObsidianMigrationPlan } from './obsidian.js';
+
+export interface MigrationCanonicalMirror {
+  syncVaultTree(vaultId: VaultId): Promise<void>;
+  markRepairNeeded(error: unknown): Promise<void>;
+}
 
 export interface ObsidianMigrationCommitResult {
   vaultId: VaultId;
@@ -34,8 +38,8 @@ function nameOf(path: string): string {
 }
 
 export async function commitObsidianMigration(
-  database: IDBDatabase,
-  a2: A2Persistence,
+  database: IDBDatabase | LocalStorageDriver,
+  a2: MigrationCanonicalMirror,
   plan: ObsidianMigrationPlan,
   rawVaultName: string,
 ): Promise<ObsidianMigrationCommitResult> {
