@@ -4,7 +4,7 @@ Status: **implemented architecture baseline**
 
 Phase A1 defines the semantic model that future storage, backend, account and sync work must preserve.
 
-It does **not** migrate the Phase 1–11 runtime away from its working Markdown-first persistence model. That belongs to A2. The A1 contracts are intentionally introduced above the existing runtime so future migration can happen without re-identifying existing data.
+A1 was introduced above the working Markdown-first runtime so storage could evolve without re-identifying existing data. Phase A2 has since implemented that storage bridge additively; A1 remains the semantic contract that A2 and later phases must preserve.
 
 ## Implementation
 
@@ -13,7 +13,7 @@ Executable contracts live in:
 - \`src/domain/canonical.ts\`
 - \`tests/a1-domain.test.mjs\`
 
-The existing Phase 1–11 domain/storage implementation remains active.
+The Phase 1–12 product remains compatible with the original Entry/Markdown stores while A2 mirrors canonical state into its schema-v4 persistence layer.
 
 ## Identity rule
 
@@ -204,7 +204,7 @@ status = completed
 completedAt = timestamp
 ~~~
 
-The current Phase 7 runtime still treats Markdown checkboxes as canonical task truth. A2 must define how those readable Markdown tasks project to/from stable Task IDs without breaking the current UX.
+A2 now gives embedded Markdown tasks stable hidden UUID identities and reconciles them with first-class Task entities while preserving readable checkbox Markdown and the Phase 7 task UX.
 
 ## Events
 
@@ -254,7 +254,7 @@ Canonical attachment metadata includes:
 - optional media dimensions/duration
 - optional original filename
 
-A2 decides where bytes live and when checksums are computed.
+A2 now stores Attachment metadata as structured canonical state and content-addresses binary payloads by SHA-256 through an OPFS-preferred, IndexedDB-fallback BlobStore.
 
 Existing Phase 9 attachment Entry IDs must be preserved.
 
@@ -372,7 +372,7 @@ canonicalIdFromEntry(...)
 A1 Note / Folder / Attachment identity
 ~~~
 
-A2 will decide how canonical domain entities serialize into Markdown, IndexedDB/OPFS and structured records.
+A2 has implemented the local serialization/persistence bridge. See `docs/A2_STORAGE_ARCHITECTURE.md`.
 
 ## Runtime invariants now executable
 
@@ -398,21 +398,19 @@ Additional helpers enforce:
 - indirect Project cycle rejection
 - deterministic tag normalization
 
-## Deferred to A2
+## A2 resolution of previously deferred storage questions
 
-A1 deliberately does not decide:
+A2 has now resolved the local persistence questions that A1 intentionally left open:
 
-- SQLite vs IndexedDB
-- OPFS layout
-- canonical local serialization
-- whether/when Markdown files are materialized
-- Task ID serialization inside Markdown
-- attachment byte layout
-- transactions
-- autosave mechanics
-- storage quota strategy
-- local migration execution
-- corruption recovery strategy
+- IndexedDB remains the transactional local database.
+- OPFS is preferred for content-addressed binary blobs with IndexedDB fallback.
+- exact Markdown remains authored Note content.
+- embedded Task identity uses hidden stable Markdown markers plus structured Task entities.
+- attachment payloads are SHA-256 addressed.
+- autosave remains version-checked with durable recovery drafts.
+- storage persistence/quota handling, migration state, offline PWA startup, full archive export and lossless restore are implemented.
+
+See `docs/A2_STORAGE_ARCHITECTURE.md` and `docs/adr/002-local-storage-and-offline-persistence.md`.
 
 ## A1 frozen decisions
 
