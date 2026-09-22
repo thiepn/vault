@@ -139,10 +139,12 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       const existing = await tx.store('vaults').get<Vault>(vault.id);
       if (existing) {
         if (existing.mode === 'cloud' && existing.cloud
-          && existing.cloud.accountId === binding.accountId
-          && existing.cloud.authUserId === binding.authUserId
           && existing.cloud.epoch === binding.epoch
-          && existing.cloud.remoteVaultId === binding.remoteVaultId) return existing;
+          && existing.cloud.remoteVaultId === binding.remoteVaultId) {
+          const rebound:Vault={...existing,name,cloud:binding,updatedAt:now()};
+          await tx.store('vaults').put(rebound);
+          return rebound;
+        }
         throw new VaultError('COLLISION', 'A different local Vault already uses this cloud Vault UUID.');
       }
       await tx.store('vaults').add(vault);
