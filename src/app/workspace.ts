@@ -4436,8 +4436,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   if (previous) await openEntry(previous.id);
   if (vault) void requestPersistentStorage();
   syncCoordinator?.start();
-  await refreshCloudStatus();
-  syncCoordinator?.wake('startup');
+  void refreshCloudStatus();
 
   return () => {
     disposed = true;
