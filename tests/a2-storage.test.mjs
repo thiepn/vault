@@ -128,3 +128,19 @@ test('A2 full archive includes stable metadata and validates checksums', async (
   note.bytes = new TextEncoder().encode('# Tampered\n');
   await assert.rejects(() => validateFullVaultArchiveFiles(files), /checksum mismatch/u);
 });
+
+
+test('A2 cross-note task identity collisions are rekeyed instead of aliasing one TaskEntity', () => {
+  const shared = ids[0];
+  const replacement = ids[1];
+  const used = new Set([shared]);
+  const source = '- [ ] Pasted task <!-- vault:task=' + shared + ' -->\n';
+  const reconciled = ensureTaskIdentityMarkers(source, {
+    usedIds: used,
+    idFactory: () => replacement,
+  });
+  assert.equal(reconciled.changed, true);
+  assert.equal(taskIdentityFromRaw(reconciled.text.trimEnd()), replacement);
+  assert.equal(used.has(shared), true);
+  assert.equal(used.has(replacement), true);
+});
