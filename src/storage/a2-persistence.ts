@@ -84,13 +84,13 @@ function base(entry: Entry) {
   };
 }
 
-function storedVault(vault: Vault): VaultEntity {
+function storedVault(vault: Vault, revision: number): VaultEntity {
   return {
     id: asCanonicalId('vault', vault.id),
     entityType: 'vault',
     name: vault.name,
     schemaVersion: 1,
-    revision: 1,
+    revision,
     createdAt: vault.createdAt,
     updatedAt: vault.updatedAt,
     deletedAt: null,
@@ -275,7 +275,14 @@ export class A2Persistence {
   }
 
   private async syncVaultRecord(vault: Vault): Promise<void> {
-    await this.driver.transaction(['entities'], 'readwrite', tx => tx.store('entities').put(storedVault(vault)));
+    await this.driver.transaction(['entities'], 'readwrite', async tx => {
+      const existing = await tx.store('entities').get<VaultEntity>(vault.id);
+      const unchanged = existing?.entityType === 'vault'
+        && existing.name === vault.name
+        && existing.updatedAt === vault.updatedAt;
+      const revision = unchanged ? existing.revision : (existing?.revision ?? 0) + 1;
+      await tx.store('entities').put(storedVault(vault, revision));
+    });
   }
 
   async syncEntry(entryId: EntryId): Promise<void> {
