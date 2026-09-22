@@ -13,11 +13,12 @@ import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file
 import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
 import { renderMarkdown } from '../editor/renderer.js';
 import { KnowledgeIndexService } from '../knowledge/index-service.js';
+import { parseKnowledge } from '../knowledge/parser.js';
 import { extractFragment } from '../knowledge/fragments.js';
 import { updateInboundLinksAfterMove } from '../knowledge/link-updater.js';
 import { canonicalWikiNote } from '../knowledge/resolver.js';
 import type { KnowledgeTask, WikiResolution } from '../knowledge/types.js';
-import { ensureTaskIdentityMarkers, taskDateState, taskEffectiveDate, updateTaskMarkdown, type TaskPatch, type TaskPriority } from '../tasks/markdown.js';
+import { ensureTaskIdentityMarkers, taskDateState, taskEffectiveDate, taskIdentityFromRaw, updateTaskMarkdown, type TaskPatch, type TaskPriority } from '../tasks/markdown.js';
 import { SearchIndexClient } from '../search/client.js';
 import type { QuickSwitchResult, SearchFacets, SearchInput, SearchResult, SearchStats } from '../search/types.js';
 import { deleteFrontmatterProperty, inspectFrontmatter, rawValueForProperty, renameFrontmatterProperty, setFrontmatterProperty, valueForKind, type PropertyKind } from '../metadata/frontmatter.js';
@@ -1198,7 +1199,22 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (file.entry.kind !== 'markdown' || file.entry.deletedAt !== null || !file.content) {
       throw new VaultError('NOT_FOUND', 'The task source note is unavailable.');
     }
-    const mutation = updateTaskMarkdown(file.content.text, task, patch);
+    const stableTaskId = taskIdentityFromRaw(task.raw);
+    let currentTask: Pick<KnowledgeTask, 'from' | 'to' | 'raw'> = task;
+    if (stableTaskId) {
+      const currentRecord = parseKnowledge({
+        entryId,
+        vaultId: file.entry.vaultId,
+        localVersion: file.entry.localVersion,
+        text: file.content.text,
+      });
+      const matches = currentRecord.tasks.filter(candidate => taskIdentityFromRaw(candidate.raw) === stableTaskId);
+      if (matches.length !== 1) {
+        throw new VaultError('STALE_WRITE', 'The task identity is missing or duplicated. Refresh the Tasks view before editing it.');
+      }
+      currentTask = matches[0]!;
+    }
+    const mutation = updateTaskMarkdown(file.content.text, currentTask, patch);
 
     if (selected?.id === entryId && saver) {
       editor.setText(mutation.text);
