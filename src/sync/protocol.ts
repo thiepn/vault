@@ -4,8 +4,14 @@ import type { DeviceId, EntryId, OperationId, VaultId } from '../domain/model.js
 
 export const PROTOCOL_VERSION = 1 as const;
 export type Cursor = string; // PostgreSQL bigint must never pass through a JS Number.
+export interface RemoteAttachmentRef {
+  sha256: string;
+  mimeType: string;
+  size: number;
+}
+
 export type Mutation =
-  | { kind: 'create'; entryId: EntryId; parentId: EntryId | null; name: string; entryKind: 'directory' | 'markdown'; text: string }
+  | { kind: 'create'; entryId: EntryId; parentId: EntryId | null; name: string; entryKind: 'directory' | 'markdown' | 'attachment'; text: string; attachment?: RemoteAttachmentRef }
   | { kind: 'write'; entryId: EntryId; baseRevision: number; text: string }
   | { kind: 'move'; entryId: EntryId; baseRevision: number; parentId: EntryId | null; name: string }
   | { kind: 'trash' | 'restore'; entryId: EntryId; baseRevision: number };
@@ -99,9 +105,23 @@ export function validateOperation(operation: unknown): asserts operation is Oper
       if (typeof mutation.text !== 'string') throw new VaultError('PROTOCOL', 'Markdown content must be a string.');
     }
     if (mutation.kind === 'create') {
-      if (!['directory', 'markdown'].includes(String(mutation.entryKind))) throw new VaultError('PROTOCOL', 'Invalid entry kind.');
-      if (mutation.entryKind === 'directory' && mutation.text !== '') throw new VaultError('PROTOCOL', 'Directories cannot have Markdown content.');
-      if (mutation.entryKind === 'markdown' && !/\.md$/i.test(String(mutation.name))) throw new VaultError('PROTOCOL', 'Markdown files require the .md extension.');
+      if (!['directory', 'markdown', 'attachment'].includes(String(mutation.entryKind))) throw new VaultError('PROTOCOL', 'Invalid entry kind.');
+      if (mutation.entryKind === 'directory' && (mutation.text !== '' || mutation.attachment !== undefined)) {
+        throw new VaultError('PROTOCOL', 'Directories cannot have Markdown or attachment content.');
+      }
+      if (mutation.entryKind === 'markdown') {
+        if (!/\.md$/i.test(String(mutation.name))) throw new VaultError('PROTOCOL', 'Markdown files require the .md extension.');
+        if (mutation.attachment !== undefined) throw new VaultError('PROTOCOL', 'Markdown creates cannot include attachment metadata.');
+      }
+      if (mutation.entryKind === 'attachment') {
+        if (mutation.text !== '') throw new VaultError('PROTOCOL', 'Attachments cannot include Markdown text.');
+        const attachment=mutation.attachment;
+        if (!record(attachment) || typeof attachment.sha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(attachment.sha256)
+          || typeof attachment.mimeType !== 'string' || attachment.mimeType.length < 1 || attachment.mimeType.length > 200
+          || typeof attachment.size !== 'number' || !Number.isSafeInteger(attachment.size) || attachment.size < 0 || attachment.size > 134217728) {
+          throw new VaultError('PROTOCOL', 'Invalid attachment metadata.');
+        }
+      }
     }
   }
 }
