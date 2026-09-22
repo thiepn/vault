@@ -56,7 +56,7 @@ const elapsed = performance.now() - start;
 assert.equal(result.total, COUNT);
 assert.equal(result.shown, 500);
 assert.equal(result.truncated, true);
-assert.deepEqual(result.columns.map(column => column.cards.length), [125,125,125,125]);
+assert.deepEqual(result.columns.map(column => column.cards.length), [125,125,125,125,0]);
 assert.ok(elapsed < 750, `10k board projection took ${elapsed.toFixed(1)} ms (limit 750 ms)`);
 
 console.log(JSON.stringify({
