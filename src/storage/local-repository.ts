@@ -302,6 +302,10 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
   async listRecoveryDrafts(vaultId: VaultId): Promise<RecoveryDraft[]> {
     return this.driver.transaction(['drafts'], 'readonly', tx => tx.store('drafts').allFromIndex<RecoveryDraft>('vaultId', vaultId));
   }
+  async discardRecoveryDraft(draftId: string): Promise<void> {
+    if (!draftId || draftId.length > 200) throw new VaultError('CORRUPT', 'Invalid recovery draft identity.');
+    await this.driver.transaction(['drafts'], 'readwrite', tx => tx.store('drafts').delete(draftId));
+  }
   async recoverDraft(draftId: string, rawName: string): Promise<Entry> {
     return this.driver.transaction(WRITE_STORES, 'readwrite', async tx => {
       const draft = await tx.store('drafts').get<RecoveryDraft>(draftId);
