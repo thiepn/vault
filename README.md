@@ -25,10 +25,11 @@ The repository currently includes browser-certified:
 - **Phase 17 — Realtime Sync Wakeups & Connection Resilience**
 - **Phase 18 — Shared Vaults, Membership & Permission Architecture**
 - **Phase 19 — Live Presence & Collaborative Session Foundation**
+- **Phase 20 — Live CRDT Text Co-Editing & Shared Undo Foundation**
 
 ## Permanent architecture program
 
-The Phase 1–19 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–20 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
@@ -550,6 +551,28 @@ Phase 19 does **not** implement CRDT/OT text merging, simultaneous character-lev
 
 See `docs/PHASE19_COLLABORATION_PRESENCE.md` and `docs/PHASE_19_ACCEPTANCE.md`.
 
+### Live CRDT Text Co-Editing & Shared Undo Foundation
+
+Phase 20 adds simultaneous Markdown co-editing for active **owner/editor** members while preserving Vault's existing canonical local-first architecture.
+
+- each active Markdown note uses an isolated private `vault-edit:<vault>:<epoch>:<entry>` Broadcast room
+- Yjs `Y.Text` provides conflict-free character-level convergence between active editors
+- a live room starts only from an exact verified remote-shadow base with no local dirty/outbox state
+- independently opened editors apply an identical isolated canonical seed update while retaining unique live Yjs client IDs
+- late joiners synchronize missing Yjs state using state vectors and an elected active room leader
+- one deterministic session is the **canonical writer**; it alone feeds converged text into SaveCoordinator and the protocol-v1 sync outbox
+- followers keep local recovery drafts instead of generating competing canonical dirty writes
+- tasks, properties, Kanban moves, Canvas fence persistence and current-note link conversion use the same active CRDT document as normal typing
+- Ctrl/Cmd+Z uses an origin-scoped Yjs UndoManager during live editing, so remote collaborators' operations are not undone by local undo
+- a canonical sync push rebases the live room on the new remote revision
+- incompatible-base replacement is accepted only when the receiving CRDT session has not generated local edits; otherwise Vault preserves recovery data and stops live editing
+
+Yjs Broadcast frames can encode actual Markdown text/deltas and are treated as private note content. Supabase Realtime RLS therefore permits the CRDT room only to active `owner`/`editor` memberships. Viewers remain read-only and do not receive live-text updates.
+
+Yjs is an **ephemeral collaboration layer**, not a second durable note database. Canonical Markdown remains in LocalRepository/IndexedDB, and durable cloud history remains in Vault's existing ordered sync event log.
+
+See `docs/PHASE20_CRDT_EDITING.md` and `docs/PHASE_20_ACCEPTANCE.md`.
+
 ## Canonical data
 
 ```text
@@ -579,7 +602,7 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 ## Not implemented yet
 
-- live CRDT/OT text co-editing and shared undo/operation history
+- durable/replayable CRDT operation history and a global cross-user undo timeline
 - guaranteed closed-app service-worker replication
 - semantic/block-aware interactive conflict resolution
 
@@ -597,17 +620,18 @@ npm run benchmark:replication
 npm run benchmark:sync-hardening
 npm run benchmark:realtime-wakeup
 npm run benchmark:collaboration
+npm run benchmark:crdt
 npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration/sync/realtime/collaboration performance gates, production Vite build and real Chromium desktop/mobile acceptance.
+CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration/sync/realtime/presence/CRDT performance gates, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.19.0-phase19**
+- Current package version: **0.20.0-phase20**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
