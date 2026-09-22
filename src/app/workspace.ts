@@ -637,9 +637,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       const reconciled = ensureTaskIdentityMarkers(text, { completeLinesOnly: true, usedIds: reservedTaskIds(selected?.id) });
       const canonicalText = reconciled.text;
       if (reconciled.changed) editor.reconcileText(canonicalText);
-      saver?.update(canonicalText);
+      if (crdtDocument && crdtBase?.entryId === selected?.id && editorMode !== 'reading') {
+        crdtDocument.applyLocalText(canonicalText);
+      } else {
+        saver?.update(canonicalText);
+        schedulePropertiesRender(canonicalText);
+      }
       updateCounts();
-      schedulePropertiesRender(canonicalText);
     },
     onStats(stats) {
       const fingerprintChanged = editorStats.documentFingerprint !== stats.documentFingerprint;
@@ -660,6 +664,31 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
     },
   });
+
+  if (cloudAuth) {
+    crdtRealtime = new SupabaseCrdtRealtime(
+      cloudConfig,
+      () => cloudAuth!.accessToken(),
+      {
+        onStatus(status) {
+          crdtStatus = status;
+          if (!disposed) renderCollaborationState();
+        },
+        onConnected() {
+          if (!disposed) requestCrdtSync();
+        },
+        onUpdate(message) {
+          if (!disposed) handleCrdtRemoteUpdate(message);
+        },
+        onSyncRequest(message) {
+          if (!disposed) handleCrdtSyncRequest(message);
+        },
+        onSyncResponse(message) {
+          if (!disposed) handleCrdtSyncResponse(message);
+        },
+      },
+    );
+  }
 
   function showError(error: unknown): void {
     if (disposed) return;
