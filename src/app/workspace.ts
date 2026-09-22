@@ -3,7 +3,7 @@ import type { Entry, EntryId, RecoveryDraft, Vault, VaultId } from '../domain/mo
 import { VaultTree } from '../domain/tree.js';
 import { openDatabase } from '../storage/database.js';
 import { A2LocalRepository, A2Persistence } from '../storage/a2-persistence.js';
-import { requestPersistentStorage } from '../storage/storage-health.js';
+import { requestPersistentStorage, storageHealth } from '../storage/storage-health.js';
 import { VaultBroadcast } from '../storage/coordination.js';
 import { request, transact } from '../storage/idb.js';
 import { SaveCoordinator } from '../services/save-coordinator.js';
@@ -47,7 +47,6 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     await a2.markRepairNeeded(error).catch(() => undefined);
   });
   const repository = new A2LocalRepository(db, a2);
-  void requestPersistentStorage();
   const knowledge = new KnowledgeIndexService(db);
   const searchIndex = new SearchIndexClient({
     onWorkerRestart() {
@@ -3052,7 +3051,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
     const name = await ask('Create a vault', 'Vault name'); if (name === null) return;
-    await clearSelection(); vault = await repository.createVault(name); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh(); await setting('lastVault', vault.id);
+    await clearSelection(); vault = await repository.createVault(name); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh(); await setting('lastVault', vault.id); void requestPersistentStorage();
   } });
   for (const kind of ['markdown', 'directory'] as const) registry.register({ id: kind === 'markdown' ? 'file.create' : 'folder.create', label: kind === 'markdown' ? 'Create Markdown note' : 'Create folder', enabled: () => !!vault, run: async () => {
     if (!vault) return;
@@ -3411,8 +3410,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (action === 'rebuild-search') { queueSearchRebuild(true); return; }
       if (action === 'trash-view') { await clearSelection(); showingTrash = !showingTrash; await refresh(); return; }
       if (action === 'persist') {
-        const persistent = navigator.storage?.persist ? await navigator.storage.persist() : false;
-        element<HTMLElement>('.storage-message').textContent = persistent ? 'Persistent storage granted. Export backups are still recommended.' : 'Persistent storage was not granted. Export backups regularly.'; return;
+        const persistent = await requestPersistentStorage();
+        const health = await storageHealth();
+        const usage = health.usage === null ? 'unknown use' : formatAttachmentSize(health.usage);
+        const quota = health.quota === null ? 'unknown quota' : formatAttachmentSize(health.quota);
+        const ratio = health.usageRatio === null ? '' : ' · ' + Math.round(health.usageRatio * 100) + '% used';
+        const persistence = persistent === true ? 'Persistent storage granted.' : persistent === false ? 'Persistent storage was not granted.' : 'Persistent-storage API unavailable.';
+        element<HTMLElement>('.storage-message').textContent = persistence + ' Local storage: ' + usage + ' / ' + quota + ratio + ' Export backups remain recommended.';
+        return;
       }
       if (!selected) return;
       if (action === 'reopen') { await openEntry(selected.id, true); return; }
@@ -3639,6 +3644,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       filterText = '';
       await refresh();
       await setting('lastVault', vault.id);
+      void requestPersistentStorage();
     });
   }, { signal: abort.signal });
 
@@ -3810,6 +3816,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const lastEntry = await setting('lastEntry');
   const previous = entries.find(entry => entry.id === lastEntry && entry.deletedAt === null);
   if (previous) await openEntry(previous.id);
+  if (vault) void requestPersistentStorage();
 
   return () => {
     disposed = true;
