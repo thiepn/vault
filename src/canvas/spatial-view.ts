@@ -123,7 +123,7 @@ export class SpatialCanvasView {
     this.expandButton.addEventListener('click', () => this.toggleExpanded(), { signal: this.abort.signal });
 
     this.stage.addEventListener('wheel', event => this.onWheel(event), { passive: false, signal: this.abort.signal });
-    this.stage.addEventListener('pointerdown', event => this.onStagePointerDown(event), { signal: this.abort.signal });
+    window.addEventListener('pointerdown', this.onGlobalPointerDown, { capture: true, signal: this.abort.signal });
     this.stage.addEventListener('keydown', event => this.onKeyDown(event), { signal: this.abort.signal });
 
     this.render();
@@ -179,11 +179,9 @@ export class SpatialCanvasView {
         this.renderNodes();
         this.renderInspector();
       }, { signal: this.abort.signal });
-      this.attachMoveGesture(header, group, 'group');
 
       const resize = documentElement('span', 'canvas-resize-handle');
       resize.setAttribute('aria-hidden', 'true');
-      this.attachResizeGesture(resize, group, 'group');
       element.append(header, resize);
       this.groupLayer.append(element);
     }
@@ -204,7 +202,6 @@ export class SpatialCanvasView {
       const dragHint = documentElement('span', 'canvas-node-drag');
       dragHint.textContent = '⋮⋮';
       header.append(badge, dragHint);
-      this.attachMoveGesture(header, node, 'node');
 
       const content = documentElement('div', 'canvas-node-content');
       if (node.type === 'note') this.renderNoteContent(content, node);
@@ -213,7 +210,6 @@ export class SpatialCanvasView {
 
       const resize = documentElement('span', 'canvas-resize-handle');
       resize.setAttribute('aria-hidden', 'true');
-      this.attachResizeGesture(resize, node, 'node');
 
       element.addEventListener('click', event => {
         event.stopPropagation();
@@ -567,59 +563,6 @@ export class SpatialCanvasView {
     this.renderEdges();
   }
 
-  private attachMoveGesture(handle: HTMLElement, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
-    let activePointerId: number | null = null;
-    const beginMouse = (event: MouseEvent): void => {
-      if (activePointerId !== null || event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const rect = this.stage.getBoundingClientRect();
-      const start = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
-      const origin = { x: item.x, y: item.y };
-
-      const move = (moveEvent: MouseEvent): void => {
-        this.updateMovedItem(item, kind, origin, start, moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
-      };
-      const finish = (): void => {
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', finish);
-        void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
-      };
-      window.addEventListener('mousemove', move, { signal: this.abort.signal });
-      window.addEventListener('mouseup', finish, { signal: this.abort.signal });
-    };
-
-    const beginPointer = (event: PointerEvent): void => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const pointerId = event.pointerId;
-      activePointerId = pointerId;
-      const rect = this.stage.getBoundingClientRect();
-      const start = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
-      const origin = { x: item.x, y: item.y };
-
-      const move = (moveEvent: PointerEvent): void => {
-        if (moveEvent.pointerId !== pointerId) return;
-        this.updateMovedItem(item, kind, origin, start, moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
-      };
-      const finish = (upEvent: PointerEvent): void => {
-        if (upEvent.pointerId !== pointerId) return;
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', finish);
-        window.removeEventListener('pointercancel', finish);
-        activePointerId = null;
-        void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
-      };
-      window.addEventListener('pointermove', move, { signal: this.abort.signal });
-      window.addEventListener('pointerup', finish, { signal: this.abort.signal });
-      window.addEventListener('pointercancel', finish, { signal: this.abort.signal });
-    };
-
-    handle.addEventListener('mousedown', beginMouse, { signal: this.abort.signal });
-    handle.addEventListener('pointerdown', beginPointer, { signal: this.abort.signal });
-  }
-
   private updateResizedItem(
     item: CanvasNode | CanvasGroup,
     kind: 'node' | 'group',
@@ -639,73 +582,127 @@ export class SpatialCanvasView {
     this.renderEdges();
   }
 
-  private attachResizeGesture(handle: HTMLElement, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
-    let activePointerId: number | null = null;
-    const beginMouse = (event: MouseEvent): void => {
-      if (activePointerId !== null || event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
-      const move = (moveEvent: MouseEvent): void => this.updateResizedItem(item, kind, start, moveEvent.clientX, moveEvent.clientY);
-      const finish = (): void => {
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', finish);
-        void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
-      };
-      window.addEventListener('mousemove', move, { signal: this.abort.signal });
-      window.addEventListener('mouseup', finish, { signal: this.abort.signal });
-    };
+  private beginCapturedMove(event: PointerEvent, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const pointerId = event.pointerId;
+    const rect = this.stage.getBoundingClientRect();
+    const start = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+    const origin = { x: item.x, y: item.y };
 
-    const beginPointer = (event: PointerEvent): void => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const pointerId = event.pointerId;
-      activePointerId = pointerId;
-      const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
-      const move = (moveEvent: PointerEvent): void => {
-        if (moveEvent.pointerId !== pointerId) return;
-        this.updateResizedItem(item, kind, start, moveEvent.clientX, moveEvent.clientY);
-      };
-      const finish = (upEvent: PointerEvent): void => {
-        if (upEvent.pointerId !== pointerId) return;
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', finish);
-        window.removeEventListener('pointercancel', finish);
-        activePointerId = null;
-        void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
-      };
-      window.addEventListener('pointermove', move, { signal: this.abort.signal });
-      window.addEventListener('pointerup', finish, { signal: this.abort.signal });
-      window.addEventListener('pointercancel', finish, { signal: this.abort.signal });
+    const move = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+      this.updateMovedItem(item, kind, origin, start, moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
     };
-
-    handle.addEventListener('mousedown', beginMouse, { signal: this.abort.signal });
-    handle.addEventListener('pointerdown', beginPointer, { signal: this.abort.signal });
+    const finish = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== pointerId) return;
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', finish, true);
+      window.removeEventListener('pointercancel', finish, true);
+      void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
+    };
+    window.addEventListener('pointermove', move, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointerup', finish, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointercancel', finish, { capture: true, signal: this.abort.signal });
   }
 
-  private onStagePointerDown(event: PointerEvent): void {
-    if (event.button !== 0 || (event.target as Element).closest('.canvas-node,.canvas-group,.canvas-inspector,.canvas-toolbar')) return;
+  private beginCapturedResize(event: PointerEvent, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
     event.preventDefault();
+    event.stopPropagation();
+    const pointerId = event.pointerId;
+    const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
+
+    const move = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+      this.updateResizedItem(item, kind, start, moveEvent.clientX, moveEvent.clientY);
+    };
+    const finish = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== pointerId) return;
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', finish, true);
+      window.removeEventListener('pointercancel', finish, true);
+      void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
+    };
+    window.addEventListener('pointermove', move, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointerup', finish, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointercancel', finish, { capture: true, signal: this.abort.signal });
+  }
+
+  private beginCapturedPan(event: PointerEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
     const pointerId = event.pointerId;
     const start = { x: event.clientX, y: event.clientY, panX: this.document.viewport.x, panY: this.document.viewport.y };
     const move = (moveEvent: PointerEvent): void => {
       if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
       this.document.viewport.x = start.panX + moveEvent.clientX - start.x;
       this.document.viewport.y = start.panY + moveEvent.clientY - start.y;
       this.applyViewport();
     };
     const finish = (upEvent: PointerEvent): void => {
       if (upEvent.pointerId !== pointerId) return;
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', finish, true);
+      window.removeEventListener('pointercancel', finish, true);
       void this.persistViewport();
     };
-    window.addEventListener('pointermove', move, { signal: this.abort.signal });
-    window.addEventListener('pointerup', finish, { signal: this.abort.signal });
-    window.addEventListener('pointercancel', finish, { signal: this.abort.signal });
+    window.addEventListener('pointermove', move, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointerup', finish, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointercancel', finish, { capture: true, signal: this.abort.signal });
   }
+
+  private readonly onGlobalPointerDown = (event: PointerEvent): void => {
+    if (this.destroyed || event.button !== 0) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !this.root.contains(target)) return;
+
+    const resizeHandle = target.closest<HTMLElement>('.canvas-resize-handle');
+    if (resizeHandle) {
+      const nodeElement = resizeHandle.closest<HTMLElement>('[data-canvas-node]');
+      if (nodeElement?.dataset.canvasNode) {
+        const node = this.document.nodes.find(item => item.id === nodeElement.dataset.canvasNode);
+        if (node) this.beginCapturedResize(event, node, 'node');
+        return;
+      }
+      const groupElement = resizeHandle.closest<HTMLElement>('[data-canvas-group]');
+      if (groupElement?.dataset.canvasGroup) {
+        const group = this.document.groups.find(item => item.id === groupElement.dataset.canvasGroup);
+        if (group) this.beginCapturedResize(event, group, 'group');
+        return;
+      }
+    }
+
+    const nodeHeader = target.closest<HTMLElement>('.canvas-node-header');
+    const nodeElement = nodeHeader?.closest<HTMLElement>('[data-canvas-node]');
+    if (nodeHeader && nodeElement?.dataset.canvasNode) {
+      const node = this.document.nodes.find(item => item.id === nodeElement.dataset.canvasNode);
+      if (node) {
+        this.selection = { kind: 'node', id: node.id };
+        this.renderInspector();
+        this.beginCapturedMove(event, node, 'node');
+      }
+      return;
+    }
+
+    const groupHeader = target.closest<HTMLElement>('.canvas-group-title');
+    const groupElement = groupHeader?.closest<HTMLElement>('[data-canvas-group]');
+    if (groupHeader && groupElement?.dataset.canvasGroup) {
+      const group = this.document.groups.find(item => item.id === groupElement.dataset.canvasGroup);
+      if (group) {
+        this.selection = { kind: 'group', id: group.id };
+        this.renderInspector();
+        this.beginCapturedMove(event, group, 'group');
+      }
+      return;
+    }
+
+    if (this.stage.contains(target) && !target.closest('.canvas-node,.canvas-group,.canvas-inspector,.canvas-toolbar')) {
+      this.beginCapturedPan(event);
+    }
+  };
 
   private onWheel(event: WheelEvent): void {
     event.preventDefault();
