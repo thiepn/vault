@@ -547,87 +547,158 @@ export class SpatialCanvasView {
     await this.commit(next, 'Connection deleted');
   }
 
+  private updateMovedItem(
+    item: CanvasNode | CanvasGroup,
+    kind: 'node' | 'group',
+    origin: Point,
+    start: Point,
+    clientX: number,
+    clientY: number,
+    altKey: boolean,
+  ): void {
+    const rect = this.stage.getBoundingClientRect();
+    const point = this.screenToWorld(clientX - rect.left, clientY - rect.top);
+    item.x = snap(origin.x + point.x - start.x, !altKey);
+    item.y = snap(origin.y + point.y - start.y, !altKey);
+    const element = kind === 'node'
+      ? this.nodeLayer.querySelector<HTMLElement>(`[data-canvas-node="${item.id}"]`)
+      : this.groupLayer.querySelector<HTMLElement>(`[data-canvas-group="${item.id}"]`);
+    if (element) setRect(element, item);
+    this.renderEdges();
+  }
+
   private attachMoveGesture(handle: HTMLElement, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
-    handle.addEventListener('pointerdown', event => {
+    const beginMouse = (event: MouseEvent): void => {
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
-      const start = this.screenToWorld(event.clientX - this.stage.getBoundingClientRect().left, event.clientY - this.stage.getBoundingClientRect().top);
+      const rect = this.stage.getBoundingClientRect();
+      const start = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
       const origin = { x: item.x, y: item.y };
-      handle.setPointerCapture(event.pointerId);
 
-      const move = (moveEvent: PointerEvent): void => {
-        const rect = this.stage.getBoundingClientRect();
-        const point = this.screenToWorld(moveEvent.clientX - rect.left, moveEvent.clientY - rect.top);
-        item.x = snap(origin.x + point.x - start.x, !moveEvent.altKey);
-        item.y = snap(origin.y + point.y - start.y, !moveEvent.altKey);
-        const element = kind === 'node'
-          ? this.nodeLayer.querySelector<HTMLElement>(`[data-canvas-node="${item.id}"]`)
-          : this.groupLayer.querySelector<HTMLElement>(`[data-canvas-group="${item.id}"]`);
-        if (element) setRect(element, item);
-        this.renderEdges();
+      const move = (moveEvent: MouseEvent): void => {
+        this.updateMovedItem(item, kind, origin, start, moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
       };
-      const up = (): void => {
-        handle.removeEventListener('pointermove', move);
-        handle.removeEventListener('pointerup', up);
-        handle.removeEventListener('pointercancel', up);
+      const finish = (): void => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', finish);
         void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
       };
-      handle.addEventListener('pointermove', move);
-      handle.addEventListener('pointerup', up);
-      handle.addEventListener('pointercancel', up);
-    }, { signal: this.abort.signal });
+      window.addEventListener('mousemove', move, { signal: this.abort.signal });
+      window.addEventListener('mouseup', finish, { signal: this.abort.signal });
+    };
+
+    const beginPointer = (event: PointerEvent): void => {
+      if (event.pointerType === 'mouse' || event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const pointerId = event.pointerId;
+      const rect = this.stage.getBoundingClientRect();
+      const start = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+      const origin = { x: item.x, y: item.y };
+
+      const move = (moveEvent: PointerEvent): void => {
+        if (moveEvent.pointerId !== pointerId) return;
+        this.updateMovedItem(item, kind, origin, start, moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
+      };
+      const finish = (upEvent: PointerEvent): void => {
+        if (upEvent.pointerId !== pointerId) return;
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', finish);
+        window.removeEventListener('pointercancel', finish);
+        void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
+      };
+      window.addEventListener('pointermove', move, { signal: this.abort.signal });
+      window.addEventListener('pointerup', finish, { signal: this.abort.signal });
+      window.addEventListener('pointercancel', finish, { signal: this.abort.signal });
+    };
+
+    handle.addEventListener('mousedown', beginMouse, { signal: this.abort.signal });
+    handle.addEventListener('pointerdown', beginPointer, { signal: this.abort.signal });
+  }
+
+  private updateResizedItem(
+    item: CanvasNode | CanvasGroup,
+    kind: 'node' | 'group',
+    start: { x: number; y: number; width: number; height: number },
+    clientX: number,
+    clientY: number,
+  ): void {
+    const scale = this.document.viewport.zoom;
+    const minWidth = kind === 'group' ? 180 : 120;
+    const minHeight = kind === 'group' ? 120 : 80;
+    item.width = clamp(start.width + (clientX - start.x) / scale, minWidth, 4000);
+    item.height = clamp(start.height + (clientY - start.y) / scale, minHeight, 4000);
+    const element = kind === 'node'
+      ? this.nodeLayer.querySelector<HTMLElement>(`[data-canvas-node="${item.id}"]`)
+      : this.groupLayer.querySelector<HTMLElement>(`[data-canvas-group="${item.id}"]`);
+    if (element) setRect(element, item);
+    this.renderEdges();
   }
 
   private attachResizeGesture(handle: HTMLElement, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
-    handle.addEventListener('pointerdown', event => {
+    const beginMouse = (event: MouseEvent): void => {
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
       const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
-      handle.setPointerCapture(event.pointerId);
-      const move = (moveEvent: PointerEvent): void => {
-        const scale = this.document.viewport.zoom;
-        const minWidth = kind === 'group' ? 180 : 120;
-        const minHeight = kind === 'group' ? 120 : 80;
-        item.width = clamp(start.width + (moveEvent.clientX - start.x) / scale, minWidth, 4000);
-        item.height = clamp(start.height + (moveEvent.clientY - start.y) / scale, minHeight, 4000);
-        const element = kind === 'node'
-          ? this.nodeLayer.querySelector<HTMLElement>(`[data-canvas-node="${item.id}"]`)
-          : this.groupLayer.querySelector<HTMLElement>(`[data-canvas-group="${item.id}"]`);
-        if (element) setRect(element, item);
-        this.renderEdges();
-      };
-      const up = (): void => {
-        handle.removeEventListener('pointermove', move);
-        handle.removeEventListener('pointerup', up);
-        handle.removeEventListener('pointercancel', up);
+      const move = (moveEvent: MouseEvent): void => this.updateResizedItem(item, kind, start, moveEvent.clientX, moveEvent.clientY);
+      const finish = (): void => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', finish);
         void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
       };
-      handle.addEventListener('pointermove', move);
-      handle.addEventListener('pointerup', up);
-      handle.addEventListener('pointercancel', up);
-    }, { signal: this.abort.signal });
+      window.addEventListener('mousemove', move, { signal: this.abort.signal });
+      window.addEventListener('mouseup', finish, { signal: this.abort.signal });
+    };
+
+    const beginPointer = (event: PointerEvent): void => {
+      if (event.pointerType === 'mouse' || event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const pointerId = event.pointerId;
+      const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
+      const move = (moveEvent: PointerEvent): void => {
+        if (moveEvent.pointerId !== pointerId) return;
+        this.updateResizedItem(item, kind, start, moveEvent.clientX, moveEvent.clientY);
+      };
+      const finish = (upEvent: PointerEvent): void => {
+        if (upEvent.pointerId !== pointerId) return;
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', finish);
+        window.removeEventListener('pointercancel', finish);
+        void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
+      };
+      window.addEventListener('pointermove', move, { signal: this.abort.signal });
+      window.addEventListener('pointerup', finish, { signal: this.abort.signal });
+      window.addEventListener('pointercancel', finish, { signal: this.abort.signal });
+    };
+
+    handle.addEventListener('mousedown', beginMouse, { signal: this.abort.signal });
+    handle.addEventListener('pointerdown', beginPointer, { signal: this.abort.signal });
   }
 
   private onStagePointerDown(event: PointerEvent): void {
     if (event.button !== 0 || (event.target as Element).closest('.canvas-node,.canvas-group,.canvas-inspector,.canvas-toolbar')) return;
+    event.preventDefault();
+    const pointerId = event.pointerId;
     const start = { x: event.clientX, y: event.clientY, panX: this.document.viewport.x, panY: this.document.viewport.y };
-    this.stage.setPointerCapture(event.pointerId);
     const move = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== pointerId) return;
       this.document.viewport.x = start.panX + moveEvent.clientX - start.x;
       this.document.viewport.y = start.panY + moveEvent.clientY - start.y;
       this.applyViewport();
     };
-    const up = (): void => {
-      this.stage.removeEventListener('pointermove', move);
-      this.stage.removeEventListener('pointerup', up);
-      this.stage.removeEventListener('pointercancel', up);
+    const finish = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== pointerId) return;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
       void this.persistViewport();
     };
-    this.stage.addEventListener('pointermove', move);
-    this.stage.addEventListener('pointerup', up);
-    this.stage.addEventListener('pointercancel', up);
+    window.addEventListener('pointermove', move, { signal: this.abort.signal });
+    window.addEventListener('pointerup', finish, { signal: this.abort.signal });
+    window.addEventListener('pointercancel', finish, { signal: this.abort.signal });
   }
 
   private onWheel(event: WheelEvent): void {
