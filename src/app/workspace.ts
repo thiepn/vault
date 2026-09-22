@@ -113,6 +113,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let taskPriorityFilter: 'all' | TaskPriority | 'none' = 'all';
   let taskGroup: 'date' | 'note' | 'priority' | 'none' = 'date';
   let taskFilterText = '';
+  let reservedExternalTaskIds = new Set<string>();
   let attachmentPolicy: 'folder' | 'note-folder' = 'folder';
   let attachmentFolderId: EntryId | null = null;
   const attachmentObjectUrls = new Map<EntryId, string>();
@@ -385,7 +386,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   });
 
   function reservedTaskIds(excludeEntryId?: EntryId): Set<string> {
-    const ids = new Set<string>();
+    const ids = new Set<string>(reservedExternalTaskIds);
     for (const record of knowledge.records()) {
       if (record.entryId === excludeEntryId) continue;
       for (const task of record.tasks) {
@@ -2972,6 +2973,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await refreshKnowledgeEntry(previousEntryId);
     }
     selected = item.entry;
+    reservedExternalTaskIds = selected.kind === 'markdown'
+      ? await a2.taskIdsOutsideNote(selected.id)
+      : new Set<string>();
     errorBox.hidden = true;
     element<HTMLElement>('[data-action="reopen"]').hidden = true;
     element<HTMLElement>('[data-action="retry-save"]').hidden = true;
@@ -3035,7 +3039,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     saver = undefined;
     if (previousEntryId && entries.some(entry => entry.id === previousEntryId && entry.deletedAt === null)) await refreshKnowledgeEntry(previousEntryId);
-    selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); attachmentView.hidden = true; attachmentPreview.replaceChildren(); editor.setReadOnly(true); editor.setText(''); renderPropertiesPanel(null);
+    selected = undefined; reservedExternalTaskIds = new Set<string>(); renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); attachmentView.hidden = true; attachmentPreview.replaceChildren(); editor.setReadOnly(true); editor.setText(''); renderPropertiesPanel(null);
     element<HTMLElement>('.empty-state').hidden = false;
     element<HTMLElement>('.folder-message').hidden = true;
     element<HTMLElement>('.breadcrumb').textContent = 'No file selected';
