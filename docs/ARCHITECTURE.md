@@ -2,40 +2,63 @@
 
 ## Canonical-data rule
 
-- Markdown + YAML frontmatter = authored content/metadata truth
-- Markdown checkbox lines = task truth
-- IndexedDB repository = local identity/durability truth
-- CodeMirror = active editing state
-- template configuration = stable IDs/settings only
+- exact Markdown + YAML frontmatter = authored Note content/metadata truth
+- stable `Entry`/A1 entity UUIDs = identity truth; paths and titles are mutable
+- embedded Markdown tasks carry hidden stable Task IDs and are reconciled with first-class `TaskEntity` records
+- IndexedDB schema v4 = transactional structured local durability
+- `noteBodies` = split canonical Markdown-body mirror keyed by stable Note ID
+- OPFS-preferred / IndexedDB-fallback BlobStore = content-addressed binary payload durability
+- CodeMirror = active editing state only
+- revisions/recovery drafts = recoverability state
 - knowledge/search indexes = rebuildable acceleration
-- calendar/tasks/query/graph/board views = derived projections
-- Canvas geometry = authored Markdown content, not a derived projection
-- attachment store = local binary payload truth keyed by stable entry ID
-- future cloud database = synchronization/remote identity truth
+- calendar/query/graph/board views = derived projections
+- Canvas geometry = authored Markdown content, not a separate Canvas database
+- Cache Storage = application shell only, never canonical user data
+- future cloud database = synchronization/remote replication, not local ownership truth
 
-No UI projection is a proprietary note/task/query-result store. Binary files are intentionally not encoded into Markdown; Markdown stores readable attachment references while IndexedDB owns the local bytes.
+No visual projection is a proprietary knowledge store. Derived indexes may be deleted and rebuilt. Browser storage is durable local state but is never treated as the only backup.
 
-## A-series permanent domain architecture
+## A-series permanent architecture
 
-Phase A1 adds a storage-independent canonical domain contract in \`src/domain/canonical.ts\`.
+### A1 — Canonical Domain & Data Model
 
-This is a **target semantic layer**, not an A2 storage migration. The current Phase 1–11 runtime continues to use Entry + Markdown/YAML + derived task/calendar/query/graph/board projections until A2 defines serialization and persistence changes.
+A1 is implemented in `src/domain/canonical.ts`. Canonical identity is independent of title, filename, path, device and external-provider IDs. New A-series entities use offline UUIDv7 IDs; existing valid Entry UUIDs are preserved during migration.
 
-Permanent invariants now include:
+Permanent domain types include Notes, Folders, Tags, typed Properties, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. Explicit relationships remain distinct from inferred/AI relationships.
 
-- canonical identity is never a title, filename, path or provider ID
-- new domain entities use offline-generated UUIDv7 IDs
-- existing valid Entry UUIDs are preserved when bridging Notes/Folders/Attachments
-- Tasks, Events, Projects, People, Captures, Collections and explicit Links have first-class permanent-domain identities
-- Daily Notes are specialized Notes
-- scheduled task time and due time remain distinct
-- explicit links and inferred relationships remain distinct
-- backlinks/search/graph layouts/embeddings remain derived
-- normal deletion is soft deletion
-- entity revision and schema version are separate concepts
-- external services remain adapters around Vault identity
+See `docs/A1_DOMAIN_MODEL.md` and `docs/adr/001-canonical-domain-model.md`.
 
-See \`docs/A1_DOMAIN_MODEL.md\` and \`docs/adr/001-canonical-domain-model.md\`.
+### A2 — Local Storage, Serialization & Offline Persistence
+
+A2 is implemented as an additive compatibility migration rather than a rewrite of the Phase 1–12 runtime.
+
+```text
+CodeMirror / commands
+        ↓
+version-checked A2LocalRepository
+        ├── legacy Entry + Markdown compatibility stores
+        ├── canonical entities + noteBodies
+        └── content-addressed BlobStore
+                 ├── OPFS preferred
+                 └── IndexedDB fallback
+```
+
+Key A2 rules:
+
+- IndexedDB remains the transactional database; SQLite/WASM is not required.
+- schema v4 adds `entities`, `noteBodies`, `blobPayloads` and `migrationState` without deleting legacy stores.
+- Notes retain exact Markdown text.
+- Markdown task checkboxes gain hidden `<!-- vault:task=<uuid> -->` identities and corresponding first-class Task records.
+- duplicate/pasted task identities are deterministically rekeyed; A2 migration v2 repairs historical collisions including Trash.
+- attachment bytes are SHA-256 content-addressed and prefer OPFS, with IndexedDB fallback.
+- Web Locks serialize migration-class work; BroadcastChannel propagates cross-tab invalidation with per-session loop prevention.
+- stale editor writes remain version-checked and recovery drafts prevent silent loss.
+- `navigator.storage.persist()` is requested only after Vault adoption; usage/quota health is inspectable.
+- full Vault archives contain stable IDs, canonical entities, exact Markdown, Trash/recovery metadata and deleted attachment payloads, with SHA-256 checksums.
+- restore rejects collisions and reconstructs canonical + compatibility state atomically.
+- Service Worker/Cache Storage provide an offline application shell while user data stays outside Cache Storage.
+
+See `docs/A2_STORAGE_ARCHITECTURE.md` and `docs/adr/002-local-storage-and-offline-persistence.md`.
 
 ## Local write path
 
