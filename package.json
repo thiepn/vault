@@ -19,7 +19,8 @@
     "benchmark:board": "npm run build:core && node scripts/benchmark-phase11.mjs",
     "benchmark:canvas": "npm run build:core && node scripts/benchmark-phase12.mjs",
     "benchmark:interop": "npm run build:core && node scripts/benchmark-phase13.mjs",
-    "benchmark:sync-foundation": "npm run build:core && node scripts/benchmark-phase14.mjs"
+    "benchmark:sync-foundation": "npm run build:core && node scripts/benchmark-phase14.mjs",
+    "benchmark:replication": "npm run build:core && node scripts/benchmark-phase15.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
