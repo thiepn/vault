@@ -62,6 +62,20 @@ test('task edits rewrite one Markdown line and preserve CRLF', () => {
   assert.equal(mutation.recurringTaskInserted, false);
 });
 
+test('stable task identity lets rapid sequential edits resolve the latest line', () => {
+  const id = '123e4567-e89b-42d3-a456-426614174000';
+  const source = `- [ ] Send report @due(2026-09-21) @priority(high) <!-- vault:task=${id} -->`;
+  const staleTask = parseTaskLine(source, 0);
+  assert.ok(staleTask);
+
+  const dueMutation = updateTaskMarkdown(source, staleTask, { due: '2026-09-22' });
+  const priorityMutation = updateTaskMarkdown(dueMutation.text, staleTask, { priority: 'medium' });
+
+  assert.match(priorityMutation.text, /@due\(2026-09-22\)/u);
+  assert.match(priorityMutation.text, /@priority\(medium\)/u);
+  assert.match(priorityMutation.text, new RegExp(`vault:task=${id}`, 'u'));
+});
+
 test('completing a recurring task preserves history and creates the next occurrence', () => {
   const source = '- [ ] Review metrics @scheduled(2026-09-20) @due(2026-09-21) @priority(high) @repeat(weekly)\n';
   const task = parseTaskLine(source.trimEnd(), 0);
