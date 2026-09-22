@@ -10,10 +10,18 @@ export async function storageHealth(): Promise<StorageHealth> {
     return { persisted: null, usage: null, quota: null, usageRatio: null };
   }
 
-  const [persisted, estimate] = await Promise.all([
-    navigator.storage.persisted?.().catch(() => false) ?? Promise.resolve(false),
-    navigator.storage.estimate?.().catch(() => ({})) ?? Promise.resolve({}),
-  ]);
+  let persisted: boolean | null = null;
+  let estimate: StorageEstimate = {};
+  try {
+    if (typeof navigator.storage.persisted === 'function') persisted = await navigator.storage.persisted();
+  } catch {
+    persisted = false;
+  }
+  try {
+    if (typeof navigator.storage.estimate === 'function') estimate = await navigator.storage.estimate();
+  } catch {
+    estimate = {};
+  }
 
   const usage = typeof estimate.usage === 'number' ? estimate.usage : null;
   const quota = typeof estimate.quota === 'number' ? estimate.quota : null;
@@ -21,15 +29,15 @@ export async function storageHealth(): Promise<StorageHealth> {
     persisted,
     usage,
     quota,
-    usageRatio: usage !== null && quota && quota > 0 ? usage / quota : null,
+    usageRatio: usage !== null && quota !== null && quota > 0 ? usage / quota : null,
   };
 }
 
 export async function requestPersistentStorage(): Promise<boolean | null> {
-  if (typeof navigator === 'undefined' || !navigator.storage?.persist) return null;
+  if (typeof navigator === 'undefined' || !navigator.storage || typeof navigator.storage.persist !== 'function') return null;
   try {
-    if (await navigator.storage.persisted()) return true;
-    return navigator.storage.persist();
+    if (typeof navigator.storage.persisted === 'function' && await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
   } catch {
     return false;
   }
