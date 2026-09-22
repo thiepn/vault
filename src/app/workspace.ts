@@ -11,7 +11,7 @@ import { readZipStore, vaultFiles, zipStore } from '../services/export.js';
 import { fullVaultArchiveFiles, restoreFullVaultArchive, validateFullVaultArchiveFiles } from '../services/a2-archive.js';
 import { CommandRegistry } from '../commands/registry.js';
 import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file-tree.js';
-import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
+import { MarkdownEditor, type EditorStats, type MarkdownCommand, type RemoteCursorMarker } from '../editor/editor-controller.js';
 import { renderMarkdown } from '../editor/renderer.js';
 import { KnowledgeIndexService } from '../knowledge/index-service.js';
 import { parseKnowledge } from '../knowledge/parser.js';
@@ -48,11 +48,12 @@ import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
 import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
 import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realtime-wakeup.js';
 import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
+import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 18 browser workspace: shared Vault permissions on the accepted Phase 1-17 + A1/A2 foundation. */
+/** Phase 19 browser workspace: ephemeral collaboration presence on the accepted Phase 1-18 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -69,6 +70,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let syncCoordinator: SyncCoordinator | null = null;
   let realtimeWake: SupabaseRealtimeWakeup | null = null;
   let realtimeStatus: RealtimeWakeStatus = 'idle';
+  let collaboration: SupabaseCollaborationRealtime | null = null;
+  let collaborationStatus: CollaborationStatus = 'idle';
+  let collaborationParticipants: readonly CollaborationPresence[] = [];
+  const collaborationCursors = new Map<string, CollaborationCursor>();
+  let collaborationCursorCleanupTimer: number | undefined;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
@@ -154,7 +160,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const pendingCursorOffsets = new Map<EntryId, number>();
   let editorMode: EditorMode = 'live';
   let lineNumbers = false;
-  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0 };
+  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0, selectionFrom: 0, selectionTo: 0 };
   let renderGeneration = 0;
   let propertyRenderTimer: number | undefined;
   let templatesFolderId: EntryId | null = null;
@@ -273,7 +279,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="sidebar-bottom"><span class="local-dot"></span><span class="storage-scope-label">Stored in this browser</span></div>
       </aside>
       <main class="main" aria-label="Markdown workspace">
-        <div class="document-bar"><div class="breadcrumb">No file selected</div><div class="daily-document-nav" hidden><button type="button" data-daily-nav="-1" aria-label="Previous daily note">‹</button><button type="button" data-daily-nav="0">Today</button><button type="button" data-daily-nav="1" aria-label="Next daily note">›</button></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-editor-mode="source" aria-pressed="false">Source</button><button type="button" data-editor-mode="live" aria-pressed="true">Live Preview</button><button type="button" data-editor-mode="reading" aria-pressed="false">Reading</button></div></div>
+        <div class="document-bar"><div class="breadcrumb">No file selected</div><div class="daily-document-nav" hidden><button type="button" data-daily-nav="-1" aria-label="Previous daily note">‹</button><button type="button" data-daily-nav="0">Today</button><button type="button" data-daily-nav="1" aria-label="Next daily note">›</button></div><div class="collaboration-presence" hidden aria-label="Active collaborators"></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-editor-mode="source" aria-pressed="false">Source</button><button type="button" data-editor-mode="live" aria-pressed="true">Live Preview</button><button type="button" data-editor-mode="reading" aria-pressed="false">Reading</button></div></div>
         <div class="actions" aria-label="File actions">
           <button data-action="rename" disabled>Rename</button><button data-action="move" disabled>Move</button><button data-action="duplicate" disabled>Duplicate</button>
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
@@ -335,7 +341,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB · schema 4</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="collaboration-status" hidden></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB · schema 4</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
@@ -428,6 +434,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudAcceptToken = element<HTMLInputElement>('.cloud-accept-token');
   const cloudMembers = element<HTMLElement>('.cloud-members');
   const cloudDevices = element<HTMLElement>('.cloud-devices');
+  const collaborationPresence = element<HTMLElement>('.collaboration-presence');
+  const collaborationStatusElement = element<HTMLElement>('.collaboration-status');
 
   if (cloudAuth) {
     realtimeWake = new SupabaseRealtimeWakeup(
