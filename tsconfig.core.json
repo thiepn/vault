@@ -35,6 +35,7 @@
     "src/media/**/*.ts",
     "src/graph/**/*.ts",
     "src/boards/**/*.ts",
+    "src/canvas/**/*.ts",
     "src/app/workspace.ts",
     "src/editor/**/*.ts"
   ]

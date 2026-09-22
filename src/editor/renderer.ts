@@ -26,6 +26,9 @@ export interface QueryRenderBridge {
 export interface BoardRenderBridge {
   render(source: string, sourceEntryId?: string): Promise<HTMLElement>;
 }
+export interface CanvasRenderBridge {
+  render(source: string, sourceEntryId?: string): Promise<HTMLElement>;
+}
 export interface AttachmentRenderBridge {
   status(target: string, sourceEntryId?: string): 'resolved' | 'ambiguous' | 'unresolved';
   load(target: string, sourceEntryId?: string): Promise<{ entryId: string; name: string; mimeType: string; size: number; url: string } | null>;
@@ -34,6 +37,7 @@ export interface RenderMarkdownOptions {
   wiki?: WikiRenderBridge;
   query?: QueryRenderBridge;
   board?: BoardRenderBridge;
+  canvas?: CanvasRenderBridge;
   attachment?: AttachmentRenderBridge;
   stack?: readonly string[];
   depth?: number;
@@ -71,6 +75,7 @@ async function compileWikiAware(source: string, options: RenderMarkdownOptions):
             wiki,
             ...(options.query ? { query: options.query } : {}),
             ...(options.board ? { board: options.board } : {}),
+            ...(options.canvas ? { canvas: options.canvas } : {}),
             ...(options.attachment ? { attachment: options.attachment } : {}),
             stack: [...stack, loaded.entryId],
             depth: depth + 1,
@@ -95,6 +100,10 @@ async function compileWikiAware(source: string, options: RenderMarkdownOptions):
     .replaceAll(
       '<code class="language-vault-board">',
       `<code class="language-vault-board" data-vault-board-source="${sourceEntry}">`,
+    )
+    .replaceAll(
+      '<code class="language-vault-canvas">',
+      `<code class="language-vault-canvas" data-vault-canvas-source="${sourceEntry}">`,
     );
 }
 
@@ -286,6 +295,24 @@ async function enhanceBoards(root: HTMLElement, bridge: BoardRenderBridge | unde
   }
 }
 
+async function enhanceCanvases(root: HTMLElement, bridge: CanvasRenderBridge | undefined, sourceEntryId?: string): Promise<void> {
+  if (!bridge) return;
+  const blocks = [...root.querySelectorAll<HTMLElement>('pre > code.language-vault-canvas')];
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    if (!pre) continue;
+    try {
+      const rendered = await bridge.render(code.textContent ?? '', code.dataset.vaultCanvasSource ?? sourceEntryId);
+      pre.replaceWith(rendered);
+    } catch (error) {
+      const warning = document.createElement('aside');
+      warning.className = 'render-warning canvas-render-warning';
+      warning.textContent = `Vault canvas could not run: ${error instanceof Error ? error.message : 'invalid canvas'}`;
+      pre.replaceWith(warning);
+    }
+  }
+}
+
 function enhanceCode(root: HTMLElement): void {
   for (const code of root.querySelectorAll<HTMLElement>('pre > code')) {
     if (code.classList.contains('language-mermaid')) continue;
@@ -369,6 +396,7 @@ export async function renderMarkdown(markdownSource: string, options: RenderMark
   enhanceCallouts(container);
   await enhanceQueries(container, options.query, options.sourceEntryId);
   await enhanceBoards(container, options.board, options.sourceEntryId);
+  await enhanceCanvases(container, options.canvas, options.sourceEntryId);
   enhanceCode(container);
   await enhanceMermaid(container);
   return container;

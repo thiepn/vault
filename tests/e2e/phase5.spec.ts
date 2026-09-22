@@ -111,7 +111,7 @@ test('Phase 5 visual properties edit canonical frontmatter and reindex search', 
 
   const priorityName = page.locator('.property-row[data-property-name="priority"] .property-name');
   await priorityName.fill('importance');
-  await priorityName.dispatchEvent('change');
+  await priorityName.blur();
   await expect(page.locator('.property-row[data-property-name="importance"]')).toBeVisible();
 
   await page.locator('.property-row[data-property-name="status"] .property-delete').click();

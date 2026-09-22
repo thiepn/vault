@@ -30,11 +30,14 @@ import { updateAttachmentLinksAfterMove } from '../media/link-updater.js';
 import { buildKnowledgeGraph, filterKnowledgeGraph, graphStats, localKnowledgeGraph, type GraphGroupMode, type GraphNode, type KnowledgeGraph } from '../graph/model.js';
 import { GraphCanvasView } from '../graph/canvas-view.js';
 import { boardFieldLabel, parseBoard, runBoard, type BoardCard, type BoardColumn, type BoardPlan } from '../boards/kanban.js';
+import { emptyCanvasDocument, parseCanvasDocument, serializeCanvasDocument, type CanvasDocument } from '../canvas/model.js';
+import { replaceCanvasFenceSource } from '../canvas/fences.js';
+import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-view.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 11 browser workspace: Markdown-native Kanban boards on the accepted Phase 1-10 foundation. */
+/** Phase 12 browser workspace: Markdown-backed spatial canvases on the accepted Phase 1-11 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const a2 = await A2Persistence.create(db);
@@ -138,7 +141,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 11 · A2 persistence</span>
+        <span class="stage">Phase 12 · Canvas · A2 persistence</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -216,7 +219,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="insert-board" title="Insert Kanban board">Board</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="insert-board" title="Insert Kanban board">Board</button><button type="button" data-action="insert-canvas" title="Insert spatial canvas">Canvas</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="graph-surface" hidden aria-label="Knowledge graph">
@@ -242,8 +245,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           </div>
         </section>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 11</p><h1>Turn note properties into working boards.</h1>
-          <p>Keep projects as Markdown notes, then organize them into live Kanban lanes without creating a second task database.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 12</p><h1>Arrange knowledge spatially without leaving Markdown.</h1>
+          <p>Build movable note, text and media cards, connect ideas, group regions, and preserve the entire spatial document inside the vault.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -407,6 +410,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         return renderBoardBlock(source, selected?.id);
       },
     },
+    canvas: {
+      render(source) {
+        return renderSpatialCanvasBlock(source, selected?.id);
+      },
+    },
     onChange(text) {
       const reconciled = ensureTaskIdentityMarkers(text, { completeLinesOnly: true });
       const canonicalText = reconciled.text;
@@ -423,13 +431,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     errorBox.textContent = explainError(error);
     errorBox.hidden = false;
   }
-  function perform(action: () => Promise<void>): void {
+  function perform(action: () => Promise<void>): Promise<void> {
     chain = chain.then(async () => {
       if (disposed) return;
       // Stop accepting keystrokes while replacing the editor's owning document.
       editor.setReadOnly(true);
       try { await action(); } finally { editor.setReadOnly(!selected || selected.deletedAt !== null || !saver || editorMode === 'reading'); }
     }).catch(showError);
+    return chain.then(() => undefined);
   }
   function download(filename: string, content: BlobPart, type: string): void {
     const url = URL.createObjectURL(new Blob([content], { type }));
@@ -459,7 +468,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     attachmentObjectUrls.delete(entryId);
   }
 
-  async function attachmentRenderPayload(target: string, sourceEntryId?: string): Promise<{ entryId: string; name: string; mimeType: string; size: number; url: string } | null> {
+  async function attachmentRenderPayload(target: string, sourceEntryId?: string): Promise<{ entryId: EntryId; name: string; mimeType: string; size: number; url: string } | null> {
     const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : selected?.id;
     const resolution = resolveAttachmentTarget(target, source, entries);
     if (resolution.status !== 'resolved') return null;
@@ -474,6 +483,112 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       url: await attachmentObjectUrl(entry.id),
     };
   }
+  function resolveCanvasNote(target: string, sourceEntryId: EntryId): CanvasNoteResolution {
+    const resolution = knowledge.resolveRaw(target, sourceEntryId, entries);
+    if (resolution.status !== 'resolved') return { status: resolution.status };
+    const entry = entries.find(item => item.id === resolution.entryId && item.kind === 'markdown' && item.deletedAt === null);
+    if (!entry) return { status: 'unresolved' };
+    return {
+      status: 'resolved',
+      entryId: entry.id,
+      title: entry.name.replace(/\.md$/iu, ''),
+      path: pathOf(entry.id),
+    };
+  }
+
+  async function persistCanvasDocument(sourceEntryId: EntryId, document: CanvasDocument): Promise<void> {
+    const serialized = serializeCanvasDocument(document);
+    const sourceEntry = entries.find(item => item.id === sourceEntryId && item.kind === 'markdown' && item.deletedAt === null);
+    if (!sourceEntry) throw new VaultError('NOT_FOUND', 'The Markdown note containing this Canvas is unavailable.');
+
+    if (selected?.id === sourceEntryId && saver) {
+      await saver.flush();
+      const current = saver.draft;
+      const next = replaceCanvasFenceSource(current, document.id, serialized);
+      if (next === current) return;
+      editor.setText(next);
+      saver.update(next);
+      await saver.flush();
+
+      // Keep the active Canvas widget alive across its own canonical save.
+      // Rebuilding the preview here can tear down an in-progress pointer gesture.
+      const savedFile = await repository.read(sourceEntryId);
+      if (savedFile.content && savedFile.entry.kind === 'markdown' && savedFile.entry.deletedAt === null) {
+        await knowledge.upsert(savedFile.entry, savedFile.content.text);
+        const at = entries.findIndex(item => item.id === savedFile.entry.id);
+        if (at >= 0) entries[at] = savedFile.entry;
+        dirtyIds.add(savedFile.entry.id);
+        await refreshSearchEntry(savedFile.entry.id);
+        invalidateGraphModel();
+        renderTree();
+        renderKnowledgePanels();
+        renderTasks();
+        renderMedia();
+        renderCalendar();
+        if (graphOpen) renderGraph();
+      }
+    } else {
+      const file = await repository.read(sourceEntryId);
+      if (!file.content || file.entry.kind !== 'markdown' || file.entry.deletedAt !== null) {
+        throw new VaultError('NOT_FOUND', 'The Markdown note containing this Canvas is unavailable.');
+      }
+      const next = replaceCanvasFenceSource(file.content.text, document.id, serialized);
+      if (next === file.content.text) return;
+      const saved = await repository.saveMarkdown(sourceEntryId, next, file.entry.localVersion);
+      await knowledge.upsert(saved, next);
+      const at = entries.findIndex(item => item.id === saved.id);
+      if (at >= 0) entries[at] = saved;
+      dirtyIds.add(saved.id);
+      await refreshSearchEntry(saved.id);
+      invalidateGraphModel();
+      renderTree();
+      renderKnowledgePanels();
+      renderTasks();
+      renderMedia();
+      renderCalendar();
+      if (graphOpen) renderGraph();
+      editor.refreshPreview();
+    }
+
+    if (editorMode === 'reading' && selected?.kind === 'markdown') await renderReadingCurrent();
+  }
+
+  function renderSpatialCanvasBlock(source: string, sourceEntryId?: string): HTMLElement {
+    const document = parseCanvasDocument(source);
+    const owner = sourceEntryId && entries.some(entry => entry.id === sourceEntryId && entry.kind === 'markdown' && entry.deletedAt === null)
+      ? sourceEntryId as EntryId
+      : selected?.kind === 'markdown' && selected.deletedAt === null ? selected.id : undefined;
+    if (!owner) throw new VaultError('NOT_FOUND', 'Canvas owner note is unavailable.');
+
+    const view = new SpatialCanvasView(document, {
+      persist(nextDocument) {
+        return perform(() => persistCanvasDocument(owner, nextDocument));
+      },
+      resolveNote(target) {
+        return resolveCanvasNote(target, owner);
+      },
+      async loadMedia(target) {
+        const payload = await attachmentRenderPayload(target, owner);
+        return payload ? {
+          entryId: payload.entryId,
+          name: payload.name,
+          mimeType: payload.mimeType,
+          url: payload.url,
+        } : null;
+      },
+      openEntry(entryId) {
+        perform(() => openEntry(entryId));
+      },
+      requestValue(title, label, current = '') {
+        return ask(title, label, current);
+      },
+      onError(error) {
+        showError(error);
+      },
+    });
+    return view.root;
+  }
+
   async function setting(key: string, value?: unknown): Promise<unknown> {
     return transact(db, ['settings'], value === undefined ? 'readonly' : 'readwrite', async tx => {
       if (value !== undefined) { await request(tx.objectStore('settings').put({ key, value })); return value; }
@@ -2766,6 +2881,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           return renderBoardBlock(source, sourceEntryId);
         },
       },
+      canvas: {
+        async render(source, sourceEntryId) {
+          return renderSpatialCanvasBlock(source, sourceEntryId);
+        },
+      },
       attachment: {
         status(target, sourceEntryId) {
           const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : rootEntryId;
@@ -3208,6 +3328,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           'sort: updated desc',
           'limit: 200',
           'exclude-self: true',
+          '```',
+          '',
+        ].join('\n'));
+      });
+      return;
+    }
+    if (action === 'insert-canvas') {
+      perform(async () => {
+        if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null) return;
+        if (editorMode === 'reading') await setEditorMode('live');
+        const document = emptyCanvasDocument();
+        editor.insertText([
+          '```vault-canvas',
+          serializeCanvasDocument(document),
           '```',
           '',
         ].join('\n'));
