@@ -1,6 +1,7 @@
 declare const idBrand: unique symbol;
 export type Id<K extends string> = string & { readonly [idBrand]: K };
 export type VaultId = Id<'vault'>;
+export type AccountId = Id<'account'>;
 export type EntryId = Id<'entry'>;
 export type OperationId = Id<'operation'>;
 export type DeviceId = Id<'device'>;
@@ -12,7 +13,7 @@ export function newId<K extends string>(): Id<K> {
 }
 
 export interface CloudVaultBinding {
-  accountId: string;
+  accountId: AccountId;
   authUserId: string;
   projectRef: string;
   remoteVaultId: VaultId;
