@@ -23,6 +23,8 @@ create table if not exists public.vault_memberships (
 create index if not exists vault_memberships_user_idx
   on public.vault_memberships(auth_user_id,vault_id)
   where revoked_at is null;
+create index if not exists vault_memberships_account_identity_idx
+  on public.vault_memberships(account_id,auth_user_id);
 
 insert into public.vault_memberships(vault_id,account_id,auth_user_id,role)
 select v.id,v.account_id,v.auth_user_id,'owner'
@@ -119,6 +121,12 @@ create index if not exists vault_share_invites_vault_idx
 
 alter table public.vault_share_invites enable row level security;
 revoke all on public.vault_share_invites from anon,authenticated;
+
+drop policy if exists vault_share_invites_deny_direct on public.vault_share_invites;
+create policy vault_share_invites_deny_direct
+on public.vault_share_invites for all
+to authenticated
+using (false) with check (false);
 
 create or replace function public.vault_accessible_vaults()
 returns table(
