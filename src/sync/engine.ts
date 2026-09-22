@@ -239,7 +239,9 @@ export class SyncEngine {
           await this.replica.recordShadow(ownerId,binding.epoch,snapshot);
           await this.replica.clearDirtyIfMatched(snapshot);
         }
-        await this.state.acknowledge(row.id);
+        // Keep the immutable outbox operation until its ordered server event is
+        // pulled. This makes retries idempotent and lets a newer local edit be
+        // distinguished from a true remote conflict with our own just-pushed event.
         summary.pushedOperations++;
       } catch(error){
         if(error instanceof VaultError && ['ACCOUNT_MISMATCH','PROTOCOL','COLLISION','STALE_WRITE'].includes(error.code)) throw error;
