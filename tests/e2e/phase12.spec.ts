@@ -223,6 +223,7 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
   await expect(canvas).toBeVisible();
   await canvas.getByRole('button', { name:'Zoom in' }).click();
+  await expect(canvas.locator('.canvas-status')).toHaveText('Viewport saved');
 
   const afterZoomSource = await sourceText(page);
   const afterZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(afterZoomSource);
