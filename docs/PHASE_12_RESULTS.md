@@ -2,203 +2,176 @@
 
 ## Status
 
-**Phase 12 is implemented and browser-certified in Chromium.**
+**Phase 12 is implemented, rebased onto the current A1/A2 mainline, and browser-certified in Chromium.**
 
-Certified Phase 12 code/test head: `6d0227bec229d4b550b51494b959241d961876b6` plus the subsequent synchronized Phase 5 test hardening on the original branch.
+Authoritative integration branch: `phase-12-spatial-canvas-integration`
 
-Certification run: **35681757888** (CI run #166)
-
-GitHub stopped emitting `pull_request synchronize` CI events for PR #6 during final certification. A temporary certification branch was created from the identical Phase 12 code/test state and differed only by a CI push-trigger line. Run #166 therefore certifies the same Phase 12 implementation and tests that are being merged from PR #6.
+Certification run: **35686226952** (CI run #207)
 
 ## Canonical model
 
-A Canvas is authored content, not a derived visualization.
+A Canvas is authored data stored inside ordinary Markdown:
 
-```text
-vault-canvas fenced YAML
-        ↓
-strict format parser
-        ↓
-stable nodes / edges / groups / viewport
-        ↓
-DOM + SVG spatial workspace
-        ↓
-interaction mutation
-        ↓
-replace matching Canvas fence
-        ↓
-SaveCoordinator / version-checked Markdown save
+```markdown
+```vault-canvas
+version: 1
+id: canvas-project
+viewport: { x: 80, y: 80, zoom: 1 }
+nodes:
+  - id: note-alpha
+    type: note
+    target: Projects/Alpha
+    x: 0
+    y: 0
+    width: 260
+    height: 160
+edges: []
+groups: []
+```
 ```
 
-Canvas geometry, connections, groups and viewport remain inside the owning Markdown note.
+Unlike Graph layout, Canvas geometry is not disposable presentation state. Card positions, sizes, connections, groups and viewport are user-authored spatial content and therefore remain in the Markdown file.
 
-## Canvas document format
+## A1/A2 integration
 
-Format version 1 supports:
+Phase 12 was originally developed against the Phase 11 baseline. During development, `main` gained the A1 canonical-domain and A2 storage/PWA architecture.
 
-- stable Canvas id
-- viewport x/y/zoom
+The final integration branch was recreated from the newer `main` and semantically merged the Canvas system without replacing:
+
+- A2Persistence
+- A2LocalRepository
+- stable canonical IDs
+- task identity normalization
+- storage repair/health behavior
+- full-vault archive support
+- newer PWA/domain architecture
+
+Canvas writes now flow through the same A2-backed repository and SaveCoordinator used by the rest of Vault.
+
+## Canvas format
+
+Version 1 supports:
+
+- persisted viewport x/y/zoom
 - note cards
-- text cards
-- media cards
-- x/y/width/height geometry
-- directed labeled connections
-- visual groups
+- plain text cards
+- attachment/media cards
+- card x/y/width/height
+- directed labeled edges
+- visual groups with geometry
 
-Strict validation rejects:
+Safety limits:
 
-- invalid YAML
-- unsupported versions
-- duplicate object ids
-- invalid geometry
-- missing edge endpoints
-- self-connections
-- invalid references
-- documents above safety limits
+- 1,000 nodes
+- 2,500 edges
+- 250 groups
+- 2 MB Canvas source
+- bounded coordinates/object dimensions
+- viewport zoom from 0.1 to 4
 
-Current safety limits:
+The parser rejects malformed YAML, duplicate IDs, missing edge endpoints, self-edges, invalid geometry and unsupported versions.
 
-- **1,000 nodes**
-- **2,500 edges**
-- **250 groups**
-- **2 MB Canvas source**
-- zoom **0.1–4**
-- bounded coordinates and dimensions
-
-## Spatial workspace
+## Spatial interaction
 
 Implemented:
 
-- note cards resolved through Vault's note resolver
-- text cards
-- attachment/media cards
-- image previews
-- attachment open navigation
-- movable cards
-- resizable cards
-- movable/resizable groups
-- directed SVG connections
-- optional connection labels
-- connection edit/delete
-- item add/edit/delete
-- grid snapping
-- Alt modifier for free positioning
+- card move
+- card resize
+- group move
+- group resize
 - empty-space pan
 - wheel zoom
-- zoom buttons
+- toolbar zoom
 - Fit
-- keyboard pan
-- keyboard zoom
-- Home-to-fit
+- keyboard pan/zoom
+- grid snapping
+- Alt/free positioning
 - fullscreen expansion
-- responsive inspector
+- selection/inspection
+- add/edit/delete note cards
+- add/edit/delete text cards
+- add/edit/delete media cards
+- directed connections
+- connection labels
+- connection deletion
+- note/attachment open navigation
 
-## Input resilience
+Desktop interaction supports both Pointer Events and classic mouse-event fallback paths with a double-start guard. Touch/pen interaction uses Pointer Events.
 
-Canvas supports:
+## Persistence behavior
 
-- Pointer Events for mouse/touch/pen
-- classic desktop mouse fallback
-- guarded gesture starts so pointer + mouse event families cannot double-start
-- captured move/resize/pan gestures
-- deterministic browser-event acceptance coverage
+Each Canvas has a stable Canvas ID.
 
-A completed gesture enqueues its canonical Markdown write before subsequent navigation or mode-switch actions, preventing gesture loss when the Canvas widget detaches.
+A mutation replaces only the YAML body of that matching `vault-canvas` fence.
 
-## Persistence
+For a Canvas in the currently open note:
 
-Each Canvas has a stable id.
+- SaveCoordinator owns persistence
+- Canvas source updates do not rebuild the active widget mid-gesture
+- completed gestures are enqueued before later mode/navigation actions
 
-A mutation serializes the current Canvas document and replaces only the matching `vault-canvas` fence.
+For a Canvas rendered from another embedded note:
 
-Current note:
+- the owner note is resolved from source context
+- the repository performs a version-checked Markdown save
+- search, knowledge and graph projections refresh afterward
 
-- uses active `SaveCoordinator`
-- updates editor source
-- persists canonical Markdown
-- rebuilds relevant derived projections without unnecessarily tearing down the active Canvas DOM
-
-Embedded/other note:
-
-- re-reads canonical Markdown
-- performs version-checked `saveMarkdown(expectedVersion)`
-- rebuilds knowledge/search/graph projections
-
-Canvas Live Preview widgets are keyed by stable Canvas id so their DOM can survive their own source persistence.
+The final browser acceptance verifies visual drag movement and the corresponding persisted YAML geometry independently.
 
 ## Rendering boundary
 
-Live Preview recognizes only explicit `vault-canvas` fences.
+Live Preview:
+
+- recognizes explicit `vault-canvas` fences
+- keeps canonical source directly editable
+- keys rendered widgets by stable Canvas ID
 
 Reading mode:
 
-1. compiles the fence as ordinary code
-2. sanitizes the Markdown result
-3. recognizes only sanitized `language-vault-canvas` blocks
-4. creates controlled DOM/SVG Canvas UI
+1. renders the fence as ordinary code
+2. sanitizes the Markdown
+3. recognizes only `language-vault-canvas` blocks
+4. constructs controlled DOM/SVG
 
-Canvas YAML is never executed as HTML or JavaScript.
+Canvas YAML never executes as HTML or JavaScript.
 
-## Desktop and mobile
+## Performance certification
 
-Desktop acceptance covers:
-
-- resolved note cards
-- local image media
-- fullscreen expand/collapse
-- Fit
-- card movement
-- persisted geometry
-- add text card
-- create connection
-- add group
-- persisted zoom
-- note-card navigation
-- Reading-mode rendering
-- reload persistence
-
-Mobile acceptance covers:
-
-- spatial Canvas rendering
-- touch-sized controls
-- add text card
-- select/edit card
-- zoom
-- Reading-mode rendering
-
-## Maximum-size Canvas benchmark
-
-Synthetic benchmark document:
+Maximum-size synthetic Canvas:
 
 - **1,000 nodes**
 - **2,000 edges**
 - **100 groups**
-- **244,147 source bytes**
+- source size: **244,147 bytes**
 
-Measured in CI run **35681757888**:
+Measured in CI run **35686226952**:
 
-- parse: **222.5 ms**
-- serialize: **75.3 ms**
+- parse: **204.0 ms**
+- serialize: **70.9 ms**
 
-CI budgets:
+Other current-main performance gates in the same run:
 
-- parse < 1,500 ms
-- serialize < 1,000 ms
+- 10,000-note search worst query: **133.5 ms**
+- 10,000-node / 20,000-edge graph build: **159.8 ms**
+- graph filter: **6.8 ms**
+- local graph traversal: **6.8 ms**
+- graph grouping: **2.4 ms**
+- 10,000-note board projection: **64.4 ms**
 
 ## Reliability certification
 
-Certification run **35681757888** passed:
+CI run **35686226952** passed:
 
-- locked dependency install
-- **73/73 core tests**
-- 10,000-note search benchmark
-- 10,000-node graph benchmark
-- 10,000-note board benchmark
+- locked dependency installation
+- **87/87 core tests**
+- 10k search benchmark
+- 10k graph benchmark
+- 10k board benchmark
 - maximum-size Canvas benchmark
 - production TypeScript/Vite build
 - Chromium installation
-- **24/24 applicable desktop/mobile browser scenarios**
-- **24** opposite-project scenarios skipped by design
+- **26/26 applicable desktop/mobile browser scenarios**
+- **26** opposite-project scenarios skipped by design
 - **0 failures**
 
-Phase 1–11 applicable browser workflows remained green in the same run.
+This includes the newer A1/A2 tests and browser workflows in addition to Phase 1–12 regressions.
