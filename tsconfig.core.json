@@ -23,6 +23,7 @@
     "src/storage/**/*.ts",
     "src/services/**/*.ts",
     "src/sync/**/*.ts",
+    "src/cloud/**/*.ts",
     "src/commands/**/*.ts",
     "src/markdown/**/*.ts",
     "src/adapters/supabase-auth.ts",

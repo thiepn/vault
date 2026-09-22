@@ -595,3 +595,43 @@ body.vault-canvas-expanded{overflow:hidden}
   .migration-line{grid-template-columns:1fr;gap:2px;font-size:11px}
   .migration-vault-name{min-height:44px;font-size:16px}
 }
+
+
+/* Phase 14 — cloud account, device and adoption foundation */
+.cloud-toggle{padding:6px 10px;font-size:10px;font-weight:650;letter-spacing:.2px;background:#f7faf8}
+.cloud-toggle[data-cloud-state="adopted"]{background:#e7f1eb;border-color:#acc7b8;color:#285d4d}
+.cloud-dialog{width:min(620px,calc(100vw - 28px));max-height:min(86vh,780px);padding:0;border:1px solid var(--line);border-radius:9px}
+.cloud-dialog form{display:grid;gap:12px;padding:18px}
+.cloud-dialog-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.cloud-dialog-heading .eyebrow{margin:0 0 3px}
+.cloud-dialog-heading h2{margin:0;font-size:19px;letter-spacing:-.35px}
+.cloud-dialog-heading>button{min-width:34px;min-height:34px;padding:3px 8px;font-size:18px}
+.cloud-message{min-height:18px;margin:0;padding:8px 10px;border:1px solid #dce6e0;border-radius:6px;background:#f5f8f6;color:#435a51;font-size:10px;line-height:1.45}
+.cloud-signed-out,.cloud-signed-in{display:grid;gap:10px}
+.cloud-explainer,.cloud-phase-note,.cloud-empty{margin:0;color:var(--muted);font-size:10px;line-height:1.55}
+.cloud-signed-out label{display:grid;gap:4px;font-size:9px;font-weight:700;letter-spacing:.5px;color:var(--muted)}
+.cloud-signed-out input{min-height:40px;border:1px solid var(--line);border-radius:5px;padding:7px 9px;font-size:13px;color:var(--text);background:#fff}
+.cloud-auth-actions{display:flex;flex-wrap:wrap;gap:7px}
+.cloud-section-heading{margin-top:3px;padding-top:9px;border-top:1px solid var(--line);font-size:8px;font-weight:750;letter-spacing:1px;color:var(--muted)}
+.cloud-identity,.cloud-vault-state,.cloud-remote-vaults,.cloud-devices{display:grid;gap:5px}
+.cloud-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 9px;border:1px solid #e0e7e3;border-radius:6px;background:#fff}
+.cloud-row>div{display:grid;gap:2px;min-width:0}
+.cloud-row strong{font-size:10px;color:#31473e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cloud-row span{font-size:8px;line-height:1.4;color:var(--muted);overflow-wrap:anywhere}
+.cloud-row.current,.cloud-row.adopted{background:#eef6f1;border-color:#c8ddd1}
+.cloud-row.local{background:#fafbf9}
+.cloud-row.warning,.cloud-row.revoked{background:#fff7f3;border-color:#ead8cf}
+.cloud-row button{flex:0 0 auto;padding:4px 7px;font-size:8px}
+.cloud-adopt{justify-self:start}
+.sidebar-bottom .storage-scope-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:640px){
+  .cloud-toggle{padding:5px 7px;font-size:9px}
+  .cloud-dialog{width:calc(100vw - 12px);max-height:94vh}
+  .cloud-dialog form{padding:13px}
+  .cloud-signed-out input{min-height:44px;font-size:16px}
+  .cloud-auth-actions{display:grid;grid-template-columns:1fr}
+  .cloud-auth-actions button,.cloud-adopt,.cloud-signed-in>button{min-height:42px}
+  .cloud-row{padding:9px}
+  .cloud-row strong{font-size:11px}
+  .cloud-row span{font-size:9px}
+}

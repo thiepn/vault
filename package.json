@@ -1,6 +1,6 @@
 {
   "name": "@thiepn/vault",
-  "version": "0.13.0-phase13",
+  "version": "0.14.0-phase14",
   "private": true,
   "type": "module",
   "description": "Vault — browser-first Markdown knowledge system",
@@ -11,14 +11,15 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "build:core": "tsc -p tsconfig.core.json",
-    "test": "npm run build:core && node --test tests/phase1.test.mjs tests/phase2.test.mjs tests/phase3.test.mjs tests/phase4.test.mjs tests/phase5.test.mjs tests/phase6.test.mjs tests/phase7.test.mjs tests/phase8.test.mjs tests/phase9.test.mjs tests/phase10.test.mjs tests/phase11.test.mjs tests/phase12.test.mjs tests/phase13.test.mjs tests/a1-domain.test.mjs tests/a2-storage.test.mjs",
+    "test": "npm run build:core && node --test tests/phase1.test.mjs tests/phase2.test.mjs tests/phase3.test.mjs tests/phase4.test.mjs tests/phase5.test.mjs tests/phase6.test.mjs tests/phase7.test.mjs tests/phase8.test.mjs tests/phase9.test.mjs tests/phase10.test.mjs tests/phase11.test.mjs tests/phase12.test.mjs tests/phase13.test.mjs tests/phase14.test.mjs tests/a1-domain.test.mjs tests/a2-storage.test.mjs",
     "test:e2e": "playwright test",
     "preview": "vite preview --host 127.0.0.1",
     "benchmark:search": "npm run build:core && node scripts/benchmark-phase4.mjs",
     "benchmark:graph": "npm run build:core && node scripts/benchmark-phase10.mjs",
     "benchmark:board": "npm run build:core && node scripts/benchmark-phase11.mjs",
     "benchmark:canvas": "npm run build:core && node scripts/benchmark-phase12.mjs",
-    "benchmark:interop": "npm run build:core && node scripts/benchmark-phase13.mjs"
+    "benchmark:interop": "npm run build:core && node scripts/benchmark-phase13.mjs",
+    "benchmark:sync-foundation": "npm run build:core && node scripts/benchmark-phase14.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",

@@ -1,9 +1,10 @@
-import type { AttachmentContent, Entry, EntryId, EntryWithContent, Vault, VaultId, VaultSnapshot } from '../domain/model.js';
+import type { AttachmentContent, CloudVaultBinding, Entry, EntryId, EntryWithContent, Vault, VaultId, VaultSnapshot } from '../domain/model.js';
 
 export interface VaultRepository {
   listVaults(): Promise<Vault[]>;
   createVault(name: string): Promise<Vault>;
   renameVault(vaultId: VaultId, name: string): Promise<Vault>;
+  adoptCloud(vaultId: VaultId, binding: CloudVaultBinding): Promise<Vault>;
   snapshot(vaultId: VaultId): Promise<VaultSnapshot>;
 }
 export interface FileRepository {

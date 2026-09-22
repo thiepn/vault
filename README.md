@@ -19,10 +19,11 @@ The repository currently includes browser-certified:
 - **Phase 11 — Kanban & Structured Board Views**
 - **Phase 12 — Canvas & Spatial Knowledge Workspace**
 - **Phase 13 — Obsidian Import, Migration & Interoperability**
+- **Phase 14 — Cloud Accounts, Device Identity & Sync Foundation**
 
 ## Permanent architecture program
 
-The Phase 1–13 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–14 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
@@ -38,7 +39,7 @@ The Phase 1–13 product now runs on the **A1/A2 permanent local foundation**.
 - persistent-storage requests and quota/health support
 - full-fidelity Vault archives with checksums
 - service-worker application-shell caching and cold offline PWA startup
-- compatibility mirroring so Phase 1–13 behavior remains available during the canonical-storage transition
+- compatibility mirroring so Phase 1–14 behavior remains available during the canonical-storage transition
 
 See `docs/A1_DOMAIN_MODEL.md`, `docs/A2_STORAGE_ARCHITECTURE.md`, and the ADRs under `docs/adr/`.
 
@@ -367,6 +368,45 @@ Obsidian JSON Canvas files are converted into ordinary Markdown notes containing
 **Export Obsidian-compatible ZIP** keeps the canonical Markdown/attachment tree and additionally emits `.canvas` companion files for valid Vault Canvas blocks. Vault-only query/board fences remain readable Markdown code because Obsidian has no native equivalent.
 
 The interoperability layer has explicit safety limits: 20,000 ZIP entries, 512 MB archive/expanded content, 128 MB per file and no encrypted/multi-disk/ZIP64 imports in this release.
+### Cloud Accounts, Device Identity & Sync Foundation
+
+Phase 14 adds Vault's first production cloud identity layer without changing its local-first ownership model.
+
+Core guarantees:
+
+- signing in **does not upload any local Vault**
+- each Vault stays `local` until the user explicitly enables cloud foundation for that Vault
+- adoption preserves the existing Vault UUID rather than cloning/rekeying it
+- signing out removes the browser auth session but **does not delete local Vault data or the local cloud binding**
+- one browser installation keeps a stable random DeviceId across reloads/sign-outs
+- the server scopes that DeviceId by account, allowing the same installation to sign into different accounts safely
+- device labels are intentionally coarse (Windows/Android/iOS/etc.), not fingerprinting identifiers
+- a provider-independent AccountId is mapped to the Supabase Auth user ID
+- each adopted Vault receives one immutable synchronization epoch and protocol version
+- local sync cursors are account/epoch-bound and monotonic
+- local outbox operations are immutable/idempotent exact-byte envelopes with SHA-256 integrity
+
+Authentication/UI:
+
+- email/password sign-in and account creation
+- refresh-token session maintenance
+- Google OAuth browser handoff/callback plumbing
+- account/device Cloud panel on desktop and mobile
+- remote adopted-Vault metadata list
+- revocation of other devices
+- explicit per-Vault adoption
+- offline-safe session handling: network failure does not silently erase an expired stored session
+- local sign-out succeeds even when the network is unavailable
+
+Backend:
+
+- Supabase/Postgres tables for provider-independent accounts, devices and adopted Vault metadata
+- default-deny Row Level Security scoped to the authenticated user
+- immutable device/Vault identity guards
+- irreversible device revocation and remote-Vault disable semantics
+- no service-role or secret key enters the browser
+
+**Phase 14 does not sync note or attachment contents yet.** It establishes the authenticated account/device/Vault identity, cursor and outbox foundations that Phase 15 will use for real remote replication and conflict handling.
 ## Canonical data
 
 ```text
@@ -396,7 +436,7 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 ## Not implemented yet
 
-- cloud accounts and cross-device sync
+- remote note/attachment replication, conflict handling and full cross-device sync
 
 ## Development
 
@@ -407,17 +447,18 @@ npm ci
 npm test
 npm run benchmark:search
 npm run benchmark:interop
+npm run benchmark:sync-foundation
 npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration performance gates, production Vite build and real Chromium desktop/mobile acceptance.
+CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration/sync-foundation performance gates, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.13.0-phase13**
+- Current package version: **0.14.0-phase14**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.

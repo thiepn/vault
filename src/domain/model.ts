@@ -1,6 +1,7 @@
 declare const idBrand: unique symbol;
 export type Id<K extends string> = string & { readonly [idBrand]: K };
 export type VaultId = Id<'vault'>;
+export type AccountId = Id<'account'>;
 export type EntryId = Id<'entry'>;
 export type OperationId = Id<'operation'>;
 export type DeviceId = Id<'device'>;
@@ -11,12 +12,25 @@ export function newId<K extends string>(): Id<K> {
   return crypto.randomUUID() as Id<K>;
 }
 
+export interface CloudVaultBinding {
+  accountId: AccountId;
+  authUserId: string;
+  projectRef: string;
+  remoteVaultId: VaultId;
+  epoch: string;
+  protocolVersion: 1;
+  deviceId: DeviceId;
+  adoptedAt: string;
+}
+
 export interface Vault {
   id: VaultId;
   name: string;
   createdAt: string;
   updatedAt: string;
-  mode: 'local'; // Cloud adoption is an explicit later operation, never inferred from login.
+  mode: 'local' | 'cloud';
+  /** Present only after an explicit user-initiated cloud adoption. */
+  cloud?: CloudVaultBinding;
 }
 
 export interface Entry {
