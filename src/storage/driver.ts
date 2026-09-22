@@ -15,10 +15,12 @@ export interface TransactionStore {
 export interface StorageTransaction { store(name: StoreName): TransactionStore }
 export interface LocalStorageDriver {
   transaction<T>(stores: readonly StoreName[], mode: IDBTransactionMode, body: (tx: StorageTransaction) => Promise<T>): Promise<T>;
+  hasStore?(name: StoreName): boolean;
 }
 
 export class NativeIndexedDBDriver implements LocalStorageDriver {
   constructor(readonly database: IDBDatabase) {}
+  hasStore(name: StoreName): boolean { return this.database.objectStoreNames.contains(name); }
   transaction<T>(stores: readonly StoreName[], mode: IDBTransactionMode, body: (tx: StorageTransaction) => Promise<T>): Promise<T> {
     return transact(this.database, [...stores], mode, tx => body({
       store(name) {
