@@ -90,7 +90,7 @@ test('Phase 18 viewer replicas are locally read-only and become writable after a
   await assert.rejects(()=>repo.trash(note.id,note.localVersion),error=>error?.code==='PERMISSION');
   assert.equal((await repo.read(note.id)).content.text,'# original');
 
-  vault=await repo.updateCloudAccess(vault.id,{accessRole:'editor',ownerAccountId,ownerAuthUserId:owner});
+  vault=await repo.updateCloudAccess(vault.id,{accessRole:'editor',ownerAccountId:ownerAccount,ownerAuthUserId:owner});
   assert.equal(vault.cloud.accessRole,'editor');
   const updated=await repo.saveMarkdown(note.id,'# editor edit',note.localVersion);
   assert.equal((await repo.read(updated.id)).content.text,'# editor edit');
