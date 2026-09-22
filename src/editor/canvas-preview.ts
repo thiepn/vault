@@ -16,7 +16,10 @@ class CanvasWidget extends WidgetType {
   }
 
   eq(other: CanvasWidget): boolean {
-    return other.fence.source === this.fence.source
+    const sameCanvas = this.fence.canvasId !== null && other.fence.canvasId !== null
+      ? this.fence.canvasId === other.fence.canvasId
+      : this.fence.source === other.fence.source;
+    return sameCanvas
       && other.fence.from === this.fence.from
       && other.bridge === this.bridge
       && other.generation === this.generation;
