@@ -49,11 +49,13 @@ import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
 import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realtime-wakeup.js';
 import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
 import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
+import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-text.js';
+import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 19 browser workspace: ephemeral collaboration presence on the accepted Phase 1-18 + A1/A2 foundation. */
+/** Phase 20 browser workspace: Yjs live Markdown co-editing on the accepted Phase 1-19 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -75,6 +77,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let collaborationParticipants: readonly CollaborationPresence[] = [];
   const collaborationCursors = new Map<string, CollaborationCursor>();
   let collaborationCursorCleanupTimer: number | undefined;
+  let crdtRealtime: SupabaseCrdtRealtime | null = null;
+  let crdtStatus: CrdtRealtimeStatus = 'idle';
+  let crdtDocument: CrdtTextDocument | null = null;
+  let crdtBase: CrdtBaseSnapshot | null = null;
+  let crdtLocalDirty = false;
+  let crdtLeaderSession: string | null = null;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
@@ -207,7 +215,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 19 · Presence</span>
+        <span class="stage">Phase 20 · Live co-editing</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
