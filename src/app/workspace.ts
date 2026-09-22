@@ -451,7 +451,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     attachmentObjectUrls.delete(entryId);
   }
 
-  async function attachmentRenderPayload(target: string, sourceEntryId?: string): Promise<{ entryId: string; name: string; mimeType: string; size: number; url: string } | null> {
+  async function attachmentRenderPayload(target: string, sourceEntryId?: string): Promise<{ entryId: EntryId; name: string; mimeType: string; size: number; url: string } | null> {
     const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : selected?.id;
     const resolution = resolveAttachmentTarget(target, source, entries);
     if (resolution.status !== 'resolved') return null;
