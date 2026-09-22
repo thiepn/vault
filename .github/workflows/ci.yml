@@ -38,6 +38,8 @@ jobs:
         run: npm run benchmark:interop
       - name: Sync foundation benchmark
         run: npm run benchmark:sync-foundation
+      - name: Remote replication benchmark
+        run: npm run benchmark:replication
       - name: Production build
         run: npm run build
       - name: Install Chromium
