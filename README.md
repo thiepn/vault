@@ -32,7 +32,7 @@ The Phase 1–12 product now runs on the **A1/A2 permanent local foundation**.
 - stable hidden IDs for Markdown-embedded tasks
 - content-addressed SHA-256 attachment blobs
 - OPFS-preferred blob persistence with IndexedDB fallback
-- migration/repair state and Web Locks coordination
+- migration/repair state plus Web Locks coordination
 - BroadcastChannel invalidation
 - persistent-storage requests and quota/health support
 - full-fidelity Vault archives with checksums
