@@ -674,7 +674,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     button.dataset.cloudState = adopted ? 'adopted' : 'local';
     button.textContent = adopted ? 'Cloud ✓' : 'Cloud';
     const label = element<HTMLElement>('.storage-scope-label');
-    label.textContent = adopted ? `Stored locally · cloud · ${role}` : 'Stored in this browser';
+    label.textContent = adopted ? `Stored locally · cloud adopted · ${role}` : 'Stored in this browser';
   }
 
   function cloudRow(title: string, detail: string, className = ''): HTMLElement {
