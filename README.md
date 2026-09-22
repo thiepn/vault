@@ -21,10 +21,11 @@ The repository currently includes browser-certified:
 - **Phase 13 — Obsidian Import, Migration & Interoperability**
 - **Phase 14 — Cloud Accounts, Device Identity & Sync Foundation**
 - **Phase 15 — Remote Replication, Conflict Resolution & Attachment Sync**
+- **Phase 16 — Continuous/Background Sync, Advanced Conflict Resolution & Sync Hardening**
 
 ## Permanent architecture program
 
-The Phase 1–15 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–16 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
@@ -458,7 +459,33 @@ Attachments use content-addressed blob identity:
 
 The Cloud panel displays the current cursor, pull/push counts, preserved conflicts, uploaded/downloaded blobs and queued operation count.
 
-Phase 15 does not claim real-time/background synchronization or automatic diff3 text merging. Those are later hardening/workflow layers.
+Phase 15 established explicit/manual replication. Phase 16 builds continuous hardened scheduling and conservative three-way Markdown merging on top of this protocol.
+
+### Continuous/Background Sync, Advanced Conflict Resolution & Sync Hardening
+
+Phase 16 makes adopted Vaults synchronize opportunistically while Vault is open without weakening local-first behavior.
+
+Continuous synchronization:
+
+- coalesces local-save, startup, reconnect, focus, visibility, cross-tab and periodic wakeups
+- runs at most one replication pass per account/Vault/epoch inside a workspace
+- uses Web Locks when available to avoid duplicate multi-tab sync loops
+- retains **Sync now** as an explicit control/recovery path
+- backs off transient failures with jitter instead of retry storms
+- avoids background refresh while the Markdown editor has focused or unsaved work
+
+Advanced Markdown conflict handling:
+
+- the last verified remote shadow is used as the three-way merge base
+- unchanged-side and identical edits resolve automatically
+- clearly non-overlapping line-region edits merge automatically and are re-pushed through the normal immutable outbox
+- overlapping edits, local structural changes, delete races and path collisions retain Phase 15 conflict-copy/collision behavior
+- Vault never inserts conflict-marker text into canonical Markdown automatically
+
+Browser background execution remains best-effort. Timers may be throttled or suspended by the browser, and Phase 16 does not claim guaranteed synchronization after the PWA is fully terminated.
+
+See docs/PHASE16_SYNC_HARDENING.md.
+
 ## Canonical data
 
 ```text
@@ -488,8 +515,9 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 ## Not implemented yet
 
-- continuous/background sync scheduling
-- automatic diff3 merge for independently edited Markdown regions
+- server-push/WebSocket real-time collaboration or presence
+- guaranteed closed-app service-worker replication
+- semantic/block-aware interactive conflict resolution
 
 ## Development
 
@@ -502,6 +530,7 @@ npm run benchmark:search
 npm run benchmark:interop
 npm run benchmark:sync-foundation
 npm run benchmark:replication
+npm run benchmark:sync-hardening
 npm run build
 npm run test:e2e
 ```
@@ -513,6 +542,6 @@ CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidia
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.15.0-phase15**
+- Current package version: **0.16.0-phase16**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
