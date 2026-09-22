@@ -2,6 +2,7 @@ import { VaultError } from '../domain/errors.js';
 import type { OperationId, VaultId } from '../domain/model.js';
 import { storageDriver, type LocalStorageDriver } from '../storage/driver.js';
 import { assertOwner, decodeOperation, type Cursor, type SealedOperation } from './protocol.js';
+import type { RemoteEntrySnapshot } from './remote-types.js';
 
 export interface SyncOutboxRecord {
   id: OperationId;
@@ -19,6 +20,15 @@ export interface SyncCursorRecord {
   ownerId: string;
   epoch: string;
   cursor: Cursor;
+  updatedAt: string;
+}
+
+export interface SyncRemoteShadow {
+  entryId: import('../domain/model.js').EntryId;
+  vaultId: VaultId;
+  ownerId: string;
+  epoch: string;
+  snapshot: RemoteEntrySnapshot;
   updatedAt: string;
 }
 
@@ -75,6 +85,53 @@ export class SyncLocalState {
     for (const row of rows) {
       assertOwner({id:row.id,vaultId:row.vaultId,ownerId:row.ownerId,wire:row.wire,sha256:row.sha256},authenticatedUserId);
     }
+  }
+
+  async pendingForEntry(vaultId: VaultId, ownerId: string, entryId: import('../domain/model.js').EntryId): Promise<SyncOutboxRecord[]> {
+    const rows=await this.driver.transaction(['outbox'],'readonly',tx=>tx.store('outbox').allFromIndex<SyncOutboxRecord>('vaultId',vaultId));
+    return rows.filter(row=>{
+      if(row.ownerId!==ownerId) return false;
+      const operation=decodeOperation(row.wire);
+      return operation.mutations.some(mutation=>mutation.entryId===entryId);
+    }).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
+  }
+
+  async dropEntryOperations(vaultId: VaultId, ownerId: string, entryId: import('../domain/model.js').EntryId): Promise<void> {
+    const rows=await this.pendingForEntry(vaultId,ownerId,entryId);
+    if(!rows.length) return;
+    await this.driver.transaction(['outbox'],'readwrite',async tx=>{
+      for(const row of rows) await tx.store('outbox').delete(row.id);
+    });
+  }
+
+  async shadow(entryId: import('../domain/model.js').EntryId, ownerId: string, epoch: string): Promise<SyncRemoteShadow|null> {
+    const row=await this.driver.transaction(['remoteShadows'],'readonly',tx=>tx.store('remoteShadows').get<SyncRemoteShadow>(entryId));
+    if(!row) return null;
+    if(row.ownerId!==ownerId) throw new VaultError('ACCOUNT_MISMATCH','This remote entry shadow belongs to another account.');
+    if(row.epoch!==epoch) throw new VaultError('PROTOCOL','The remote entry shadow belongs to another synchronization epoch.');
+    if(row.snapshot.entryId!==entryId || row.snapshot.vaultId!==row.vaultId) throw new VaultError('CORRUPT','Remote entry shadow identity is inconsistent.');
+    return row;
+  }
+
+  async putShadow(ownerId: string, epoch: string, snapshot: RemoteEntrySnapshot): Promise<SyncRemoteShadow> {
+    const record:SyncRemoteShadow={
+      entryId:snapshot.entryId,
+      vaultId:snapshot.vaultId,
+      ownerId,
+      epoch,
+      snapshot:structuredClone(snapshot),
+      updatedAt:new Date().toISOString(),
+    };
+    await this.driver.transaction(['remoteShadows'],'readwrite',tx=>tx.store('remoteShadows').put(record));
+    return record;
+  }
+
+  async clearDirty(entryId: import('../domain/model.js').EntryId): Promise<void> {
+    await this.driver.transaction(['dirty'],'readwrite',tx=>tx.store('dirty').delete(entryId));
+  }
+
+  async isDirty(entryId: import('../domain/model.js').EntryId): Promise<boolean> {
+    return this.driver.transaction(['dirty'],'readonly',async tx=>!!await tx.store('dirty').get(entryId));
   }
 
   async markAttempt(id: OperationId, attempt: number, nextAttemptAt: string): Promise<void> {
