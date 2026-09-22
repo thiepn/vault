@@ -59,6 +59,10 @@ async function sourceText(page: Page): Promise<string> {
   return (await page.locator('#vault-editor .cm-line').allTextContents()).join('\n');
 }
 
+async function liveEditorText(page: Page): Promise<string> {
+  return (await page.locator('#vault-editor .cm-line').allTextContents()).join('\n');
+}
+
 async function returnLive(page: Page): Promise<void> {
   await page.locator('[data-editor-mode="live"]').click();
   const content = page.locator('#vault-editor .cm-content');
@@ -223,12 +227,13 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
   await expect(canvas).toBeVisible();
   await canvas.getByRole('button', { name:'Zoom in' }).click();
-  await expect(canvas.locator('.canvas-status')).toHaveText('Viewport saved');
 
-  const afterZoomSource = await sourceText(page);
-  const afterZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(afterZoomSource);
-  expect(afterZoomMatch).not.toBeNull();
-  expect(Number(afterZoomMatch![1])).toBeGreaterThan(beforeZoom);
+  await expect.poll(async () => {
+    const text = await liveEditorText(page);
+    const match = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(text);
+    return match ? Number(match[1]) : 0;
+  }).toBeGreaterThan(beforeZoom);
+  await expect(page.locator('.save-status')).toContainText('Saved locally');
 
   await returnLive(page);
   canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
@@ -245,6 +250,10 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
 
   await page.reload();
   await quickOpen(page, 'Spatial');
+  const reloadedSource = await sourceText(page);
+  const reloadedZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(reloadedSource);
+  expect(reloadedZoomMatch).not.toBeNull();
+  expect(Number(reloadedZoomMatch![1])).toBeGreaterThan(beforeZoom);
   await page.locator('[data-editor-mode="reading"]').click();
   await expect(page.locator('.reading-view .canvas-node-text').filter({ hasText:'New spatial idea' })).toBeVisible();
   await expect(page.locator('.reading-view .canvas-edge-line')).toHaveCount(2);
