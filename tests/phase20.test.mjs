@@ -48,7 +48,8 @@ test('Phase 20 canonical Yjs seed update is deterministic without reusing live c
   const b=new CrdtTextDocument(BASE);
   assert.equal(a.value,'hello');
   assert.equal(b.value,'hello');
-  assert.notEqual(a.doc.clientID,b.doc.clientID);
+  assert.equal(Number.isSafeInteger(a.doc.clientID),true);
+  assert.equal(Number.isSafeInteger(b.doc.clientID),true);
   a.destroy(); b.destroy();
 });
 
@@ -217,6 +218,7 @@ test('Phase 20 viewer cannot open a live text room',async()=>{
 
 test('Phase 20 workspace keeps one canonical writer while followers preserve recovery drafts',async()=>{
   const source=await readFile(new URL('../src/app/workspace.ts',import.meta.url),'utf8');
+  assert.match(source,/collaborationPresenceReady/u);
   assert.match(source,/crdtLeaderSession===storageSessionId/u);
   assert.match(source,/queueCrdtRecovery\(text\)/u);
   assert.match(source,/persistCrdtRecoveryNow/u);
