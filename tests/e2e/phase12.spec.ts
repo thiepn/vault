@@ -152,6 +152,7 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   await canvas.getByRole('button', { name:'Collapse canvas workspace' }).click();
   await expect(canvas).not.toHaveClass(/expanded/);
 
+  await canvas.getByRole('button', { name:'Fit canvas content' }).click();
   const header = canvas.locator('[data-canvas-node="text-idea"] .canvas-node-header');
   const box = await header.boundingBox();
   expect(box).not.toBeNull();
