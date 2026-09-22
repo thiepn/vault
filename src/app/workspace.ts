@@ -2728,6 +2728,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           return renderDynamicQueryBlock(source, sourceEntryId);
         },
       },
+      board: {
+        async render(source, sourceEntryId) {
+          return renderBoardBlock(source, sourceEntryId);
+        },
+      },
       attachment: {
         status(target, sourceEntryId) {
           const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : rootEntryId;
@@ -2992,6 +2997,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
 
+    const boardEntryButton = (event.target as Element).closest<HTMLButtonElement>('[data-board-entry]');
+    if (boardEntryButton?.dataset.boardEntry) {
+      perform(() => openEntry(boardEntryButton.dataset.boardEntry as EntryId));
+      return;
+    }
+
     const searchResult = (event.target as Element).closest<HTMLButtonElement>('[data-search-entry]');
     if (searchResult?.dataset.searchEntry) {
       const fromValue = searchResult.dataset.searchFrom === undefined ? null : Number(searchResult.dataset.searchFrom);
@@ -3120,6 +3131,26 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           'fields: file, path, tags, property:status',
           'sort: updated desc',
           'limit: 25',
+          'exclude-self: true',
+          '```',
+          '',
+        ].join('\n'));
+      });
+      return;
+    }
+    if (action === 'insert-board') {
+      perform(async () => {
+        if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null) return;
+        if (editorMode === 'reading') await setEditorMode('live');
+        editor.insertText([
+          '```vault-board',
+          'title: Project board',
+          'query: tag:#project',
+          'group-by: property:status',
+          'columns: backlog=Backlog, todo=To do, doing=Doing, done=Done',
+          'card-fields: tags, property:priority, updated',
+          'sort: updated desc',
+          'limit: 200',
           'exclude-self: true',
           '```',
           '',
