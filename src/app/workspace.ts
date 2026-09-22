@@ -493,7 +493,26 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       editor.setText(next);
       saver.update(next);
       await saver.flush();
-      await refreshKnowledgeEntry(sourceEntryId);
+
+      // Keep the currently-interactive Canvas DOM alive across its own source
+      // persistence. Rebuilding the preview here can tear down a pointer gesture
+      // between Fit/pan/drag operations. The Canvas widget is keyed by stable
+      // canvas id and already reflects the mutation in memory.
+      const savedFile = await repository.read(sourceEntryId);
+      if (savedFile.content && savedFile.entry.kind === 'markdown' && savedFile.entry.deletedAt === null) {
+        await knowledge.upsert(savedFile.entry, savedFile.content.text);
+        const at = entries.findIndex(item => item.id === savedFile.entry.id);
+        if (at >= 0) entries[at] = savedFile.entry;
+        dirtyIds.add(savedFile.entry.id);
+        await refreshSearchEntry(savedFile.entry.id);
+        invalidateGraphModel();
+        renderTree();
+        renderKnowledgePanels();
+        renderTasks();
+        renderMedia();
+        renderCalendar();
+        if (graphOpen) renderGraph();
+      }
     } else {
       const file = await repository.read(sourceEntryId);
       if (!file.content || file.entry.kind !== 'markdown' || file.entry.deletedAt !== null) {
