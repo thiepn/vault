@@ -218,7 +218,7 @@ test('Phase 20 viewer cannot open a live text room',async()=>{
 test('Phase 20 workspace keeps one canonical writer while followers preserve recovery drafts',async()=>{
   const source=await readFile(new URL('../src/app/workspace.ts',import.meta.url),'utf8');
   assert.match(source,/crdtLeaderSession===storageSessionId/u);
-  assert.match(source,/queueCrdtRecovery(text)/u);
+  assert.match(source,/queueCrdtRecovery\(text\)/u);
   assert.match(source,/persistCrdtRecoveryNow/u);
   assert.match(source,/syncState\.shadow/u);
   assert.match(source,/syncState\.pendingForEntry/u);
