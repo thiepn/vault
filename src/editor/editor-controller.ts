@@ -162,6 +162,37 @@ export class MarkdownEditor {
     this.emitStats(this.view.state);
   }
 
+  /** Apply a storage/identity normalization without resetting the user's selection. */
+  reconcileText(text: string): void {
+    const current = this.getText();
+    if (text === current) return;
+    let prefix = 0;
+    const maxPrefix = Math.min(current.length, text.length);
+    while (prefix < maxPrefix && current[prefix] === text[prefix]) prefix++;
+
+    let suffix = 0;
+    const maxSuffix = Math.min(current.length - prefix, text.length - prefix);
+    while (
+      suffix < maxSuffix
+      && current[current.length - 1 - suffix] === text[text.length - 1 - suffix]
+    ) suffix++;
+
+    this.suppressChange = true;
+    try {
+      this.view.dispatch({
+        changes: {
+          from: prefix,
+          to: current.length - suffix,
+          insert: text.slice(prefix, text.length - suffix),
+        },
+      });
+    } finally {
+      this.suppressChange = false;
+    }
+    this.recount(this.view.state);
+    this.emitStats(this.view.state);
+  }
+
   setReadOnly(value: boolean): void {
     this.view.dispatch({
       effects: [
