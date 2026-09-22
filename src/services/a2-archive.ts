@@ -330,7 +330,7 @@ export async function parseFullVaultArchiveFiles(files: readonly ExportFile[]): 
       vaultEntityCount += 1;
       if (id !== state.vault.id) throw new VaultError('CORRUPT', 'Vault archive canonical Vault entity does not match restore state.');
     } else {
-      if (!('vaultId' in entity) || entity.vaultId !== state.vault.id) {
+      if (!('vaultId' in entity) || (entity.vaultId as string) !== (state.vault.id as string)) {
         throw new VaultError('CORRUPT', 'Vault archive contains a cross-vault canonical entity.');
       }
       if (entity.entityType === 'note') noteEntityIds.add(id);
@@ -341,7 +341,7 @@ export async function parseFullVaultArchiveFiles(files: readonly ExportFile[]): 
   const noteBodyIds = new Set<string>();
   for (const body of noteBodies) {
     const noteId = body?.noteId as string | undefined;
-    if (!noteId || body.vaultId !== state.vault.id || typeof body.text !== 'string'
+    if (!noteId || (body.vaultId as string) !== (state.vault.id as string) || typeof body.text !== 'string'
       || noteBodyIds.has(noteId) || !noteEntityIds.has(noteId)) {
       throw new VaultError('CORRUPT', 'Vault archive note-body records are invalid or duplicated.');
     }
