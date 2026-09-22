@@ -73,6 +73,22 @@ async function mockCloud(page: Page) {
       }]:[]);
     }
 
+    if(url.pathname==='/rest/v1/rpc/vault_accessible_vaults' && request.method()==='POST'){
+      return json(route,adopted?[{
+        id:remoteVaultId,account_id:accountId,auth_user_id:userId,
+        owner_account_id:accountId,owner_auth_user_id:userId,access_role:'owner',
+        name:remoteVaultName,epoch,protocol_version:1,
+        created_at:'2026-09-22T12:00:00.000Z',updated_at:'2026-09-22T12:00:00.000Z',disabled_at:null,
+      }]:[]);
+    }
+
+    if(url.pathname==='/rest/v1/rpc/vault_share_members' && request.method()==='POST'){
+      return json(route,adopted?[{
+        vault_id:remoteVaultId,account_id:accountId,auth_user_id:userId,role:'owner',
+        created_at:'2026-09-22T12:00:00.000Z',updated_at:'2026-09-22T12:00:00.000Z',
+      }]:[]);
+    }
+
     if(url.pathname==='/rest/v1/vault_cloud_vaults' && request.method()==='POST'){
       const body=JSON.parse(request.postData() ?? '{}');
       remoteVaultId=body.id;

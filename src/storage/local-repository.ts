@@ -4,6 +4,7 @@ import { assertMarkdownContent, assertVersion, nextVersion } from '../domain/int
 import { VaultTree } from '../domain/tree.js';
 import { newId, type AttachmentContent, type AttachmentSnapshot, type CloudVaultBinding, type DirtyEntry, type Entry, type EntryId, type EntryWithContent, type LocalRevision, type MarkdownContent, type RecoveryDraft, type Vault, type VaultId, type VaultSnapshot } from '../domain/model.js';
 import { normalizeAttachmentMimeType, validateAttachmentBytes, validateAttachmentName } from '../media/attachments.js';
+import { cloudBindingCanWrite } from '../cloud/access.js';
 import type { FileRepository, RevisionRepository, VaultRepository } from '../services/ports.js';
 import type { StoreName } from './database.js';
 import { storageDriver, type LocalStorageDriver, type StorageTransaction } from './driver.js';
@@ -21,6 +22,14 @@ function live(entry: Entry): void {
 }
 async function dirty(tx: StorageTransaction, entry: Entry, intent: DirtyEntry['intent']): Promise<void> {
   await tx.store('dirty').put({ entryId: entry.id, vaultId: entry.vaultId, localVersion: entry.localVersion, changedAt: entry.updatedAt, intent } satisfies DirtyEntry);
+}
+async function requireWritableVault(tx: StorageTransaction, vaultId: VaultId): Promise<Vault> {
+  const vault = await tx.store('vaults').get<Vault>(vaultId);
+  if (!vault) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
+  if (vault.mode === 'cloud' && !cloudBindingCanWrite(vault.cloud)) {
+    throw new VaultError('PERMISSION', 'This shared Vault is read-only for the current account.');
+  }
+  return vault;
 }
 async function validateParent(tx: StorageTransaction, vaultId: VaultId, parentId: EntryId | null, childId?: EntryId): Promise<void> {
   const visited = new Set<EntryId>(); let id = parentId;
@@ -68,8 +77,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
   async renameVault(vaultId: VaultId, raw: string): Promise<Vault> {
     const name = validateName(raw);
     return this.driver.transaction(['vaults'], 'readwrite', async tx => {
-      const vault = await tx.store('vaults').get<Vault>(vaultId);
-      if (!vault) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
+      const vault = await requireWritableVault(tx, vaultId);
       if (vault.name === name) return vault;
       const updated: Vault = { ...vault, name, updatedAt: now() };
       await tx.store('vaults').put(updated);
@@ -97,6 +105,24 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       return updated;
     });
   }
+  async updateCloudAccess(vaultId: VaultId, access: { accessRole: import('../domain/model.js').CloudVaultRole; ownerAccountId: CloudVaultBinding['accountId']; ownerAuthUserId: string }): Promise<Vault> {
+    return this.driver.transaction(['vaults'], 'readwrite', async tx => {
+      const vault = await tx.store('vaults').get<Vault>(vaultId);
+      if (!vault || vault.mode !== 'cloud' || !vault.cloud) throw new VaultError('NOT_FOUND', 'The cloud Vault is no longer available locally.');
+      const updated: Vault = {
+        ...vault,
+        cloud: {
+          ...vault.cloud,
+          accessRole: access.accessRole,
+          ownerAccountId: access.ownerAccountId,
+          ownerAuthUserId: access.ownerAuthUserId,
+        },
+        updatedAt: now(),
+      };
+      await tx.store('vaults').put(updated);
+      return updated;
+    });
+  }
   async createCloudReplica(raw: string, binding: CloudVaultBinding): Promise<Vault> {
     if (binding.remoteVaultId.length === 0) throw new VaultError('PROTOCOL', 'Remote Vault identity is required.');
     const name = validateName(raw);
@@ -116,8 +142,12 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
           && existing.cloud.accountId === binding.accountId
           && existing.cloud.authUserId === binding.authUserId
           && existing.cloud.epoch === binding.epoch
-          && existing.cloud.remoteVaultId === binding.remoteVaultId) return existing;
-        throw new VaultError('COLLISION', 'A different local Vault already uses this cloud Vault UUID.');
+          && existing.cloud.remoteVaultId === binding.remoteVaultId) {
+          const refreshed:Vault={...existing,name,cloud:binding,updatedAt:now()};
+          await tx.store('vaults').put(refreshed);
+          return refreshed;
+        }
+        throw new VaultError('COLLISION', 'This cloud Vault already has a local replica bound to another account or synchronization identity.');
       }
       await tx.store('vaults').add(vault);
       return vault;
@@ -148,7 +178,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
   private async create(tx: StorageTransaction, vaultId: VaultId, parentId: EntryId | null, raw: string, kind: Exclude<Entry['kind'], 'attachment'>, text: string): Promise<Entry> {
     if (typeof text !== 'string') throw new VaultError('CORRUPT', 'Markdown content must be text.');
     const name = kind === 'markdown' ? markdownName(raw) : validateName(raw);
-    if (!await tx.store('vaults').get(vaultId)) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
+    await requireWritableVault(tx, vaultId);
     await validateParent(tx, vaultId, parentId);
     const key = activeKey(vaultId, parentId, name); await assertAvailable(tx, key);
     const entry: Entry = { id: newId<'entry'>(), vaultId, parentId, name, kind, createdAt: now(), updatedAt: now(), localVersion: 1, deletedAt: null, deletionBatch: null, activeKey: key };
@@ -170,7 +200,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
   ): Promise<Entry> {
     validateAttachmentBytes(bytes);
     const name = validateAttachmentName(raw);
-    if (!await tx.store('vaults').get(vaultId)) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
+    await requireWritableVault(tx, vaultId);
     await validateParent(tx, vaultId, parentId);
     const key = activeKey(vaultId, parentId, name);
     await assertAvailable(tx, key);
@@ -232,6 +262,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     if (typeof text !== 'string') throw new VaultError('CORRUPT', 'Markdown content must be text.');
     const result = await this.driver.transaction(WRITE_STORES, 'readwrite', async tx => {
       const entry = await requiredEntry(tx, entryId);
+      await requireWritableVault(tx, entry.vaultId);
       if (entry.kind !== 'markdown') throw new VaultError('UNSUPPORTED', 'Only Markdown files have text contents.');
       if (entry.deletedAt !== null) {
         await this.draft(tx, entry, text, expectedVersion, 'deleted-write');
@@ -282,6 +313,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     assertVersion(expectedVersion);
     return this.driver.transaction(WRITE_STORES, 'readwrite', async tx => {
       const entry = await requiredEntry(tx, entryId); live(entry);
+      await requireWritableVault(tx, entry.vaultId);
       if (entry.localVersion !== expectedVersion) throw new VaultError('STALE_WRITE', 'The file changed. Reopen it before moving or renaming.');
       const name = entry.kind === 'markdown' ? markdownName(raw) : entry.kind === 'attachment' ? validateAttachmentName(raw) : validateName(raw);
       await validateParent(tx, entry.vaultId, parentId, entryId);
@@ -304,6 +336,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     assertVersion(expectedVersion);
     return this.driver.transaction(WRITE_STORES, 'readwrite', async tx => {
       const source = await requiredEntry(tx, entryId); live(source);
+      await requireWritableVault(tx, source.vaultId);
       if (source.localVersion !== expectedVersion) throw new VaultError('STALE_WRITE', 'The file changed. Reopen it before duplicating.');
       const all = await tx.store('entries').allFromIndex<Entry>('vaultId', source.vaultId);
       const tree = new VaultTree(all);
@@ -371,6 +404,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     assertVersion(expectedVersion);
     await this.driver.transaction(WRITE_STORES, 'readwrite', async tx => {
       const root = await requiredEntry(tx, entryId); live(root);
+      await requireWritableVault(tx, root.vaultId);
       if (root.localVersion !== expectedVersion) throw new VaultError('STALE_WRITE', 'The file changed. Reopen it before deleting.');
       const all = await tx.store('entries').allFromIndex<Entry>('vaultId', root.vaultId);
       const tree = new VaultTree(all); tree.path(entryId);
@@ -389,6 +423,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
   async restore(entryId: EntryId): Promise<void> {
     await this.driver.transaction(WRITE_STORES, 'readwrite', async tx => {
       const root = await requiredEntry(tx, entryId); if (!root.deletedAt) return;
+      await requireWritableVault(tx, root.vaultId);
       if (!root.deletionBatch) throw new VaultError('CORRUPT', 'The Trash record has no deletion batch.');
       await validateParent(tx, root.vaultId, root.parentId);
       const all = await tx.store('entries').allFromIndex<Entry>('vaultId', root.vaultId);

@@ -3,6 +3,7 @@ import { newId, type DeviceId, type EntryId, type OperationId, type Vault } from
 import type { SyncLocalState } from './local-state.js';
 import type { SyncReplicaStore } from './replica-store.js';
 import { sealOperation, type Mutation, type Operation, type SealedOperation } from './protocol.js';
+import { cloudBindingCanWrite } from '../cloud/access.js';
 
 export interface PendingBlobUpload {
   entryId: EntryId;
@@ -29,6 +30,7 @@ export async function synthesizeEntryOperation(input:{
   const {vault,ownerId,deviceId,entryId,state,replica}=input;
   if(vault.mode!=='cloud' || !vault.cloud) throw new VaultError('PROTOCOL','Only an adopted cloud Vault can synthesize remote operations.');
   if(vault.cloud.authUserId!==ownerId || vault.cloud.deviceId!==deviceId) throw new VaultError('ACCOUNT_MISMATCH','Cloud binding does not match the active account/device.');
+  if(!cloudBindingCanWrite(vault.cloud)) throw new VaultError('PERMISSION','This shared Vault is read-only for the current account.');
 
   const local=await replica.read(entryId);
   if(!local || local.entry.vaultId!==vault.id) return null;

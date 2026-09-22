@@ -47,11 +47,12 @@ import { SyncReplicaStore } from '../sync/replica-store.js';
 import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
 import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
 import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realtime-wakeup.js';
+import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 17 browser workspace: realtime wakeups on the accepted Phase 1-16 + A1/A2 foundation. */
+/** Phase 18 browser workspace: shared Vault permissions on the accepted Phase 1-17 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -360,9 +361,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 17 adds private authenticated Realtime wakeups so remote commits trigger the existing pull/merge/push protocol immediately while Vault is open. Polling, reconnect/focus wakeups and Sync now remain as fallbacks. Search, tasks, calendar, queries, graph and boards are rebuilt locally rather than uploaded.</p>
+          <p class="cloud-phase-note">Phase 18 adds shared Vault ownership, editor/viewer roles and revocable one-time invitations. Canonical Markdown and attachments still synchronize through the existing pull/merge/push protocol; this is not live co-editing or presence.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
+          <div class="cloud-section-heading">SHARING</div>
+          <div class="cloud-share-accept"><input class="cloud-accept-token" type="text" autocomplete="off" spellcheck="false" placeholder="Paste one-time invitation token" aria-label="Share invitation token" /><button type="button" data-cloud-action="accept-share">Accept invitation</button></div>
+          <div class="cloud-owner-share" hidden>
+            <div class="cloud-share-create"><select class="cloud-share-role" aria-label="Invitation role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select><button type="button" data-cloud-action="create-share">Create one-time invite</button></div>
+            <textarea class="cloud-share-output" rows="2" readonly spellcheck="false" aria-label="Generated one-time invitation token" placeholder="Generated token appears here"></textarea>
+            <div class="cloud-members"></div>
+          </div>
           <div class="cloud-section-heading">DEVICES</div>
           <div class="cloud-devices"></div>
           <button type="button" data-cloud-action="sign-out">Sign out on this device</button>
@@ -414,6 +422,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudSyncNow = element<HTMLButtonElement>('.cloud-sync-now');
   const cloudSyncDetail = element<HTMLElement>('.cloud-sync-detail');
   const cloudRemoteVaults = element<HTMLElement>('.cloud-remote-vaults');
+  const cloudOwnerShare = element<HTMLElement>('.cloud-owner-share');
+  const cloudShareRole = element<HTMLSelectElement>('.cloud-share-role');
+  const cloudShareOutput = element<HTMLTextAreaElement>('.cloud-share-output');
+  const cloudAcceptToken = element<HTMLInputElement>('.cloud-accept-token');
+  const cloudMembers = element<HTMLElement>('.cloud-members');
   const cloudDevices = element<HTMLElement>('.cloud-devices');
 
   if (cloudAuth) {
@@ -585,7 +598,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (disposed) return;
       // Stop accepting keystrokes while replacing the editor's owning document.
       editor.setReadOnly(true);
-      try { await action(); } finally { editor.setReadOnly(!selected || selected.deletedAt !== null || !saver || editorMode === 'reading'); }
+      try { await action(); } finally { editor.setReadOnly(!selected || selected.deletedAt !== null || !saver || editorMode === 'reading' || !currentVaultWritable()); }
     }).catch(showError);
     return chain.then(() => undefined);
   }
@@ -619,14 +632,49 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function cloudEmptyStatus(): CloudFoundationStatus {
     return { signedIn:false, identity:null, account:null, device:null, remoteVaults:[] };
   }
+  function currentVaultReadable(): boolean {
+    return !!vault && (vault.mode === 'local' || cloudBindingCanRead(vault.cloud));
+  }
+  function currentVaultWritable(): boolean {
+    return !!vault && (vault.mode === 'local' || cloudBindingCanWrite(vault.cloud));
+  }
+  async function reloadCloudBindingCache(): Promise<void> {
+    const currentId=vault?.id;
+    const wasWritable=currentVaultWritable();
+    vaults=await repository.listVaults();
+    if(currentId) vault=vaults.find(item=>item.id===currentId);
+    const isWritable=currentVaultWritable();
+    if(!currentId || wasWritable===isWritable || selected?.vaultId!==currentId) return;
+
+    if(!isWritable){
+      if(saver){
+        await saver.closeToRecovery();
+        saver=undefined;
+      }
+      await syncEditorSurface();
+      if(selected.kind==='markdown') renderPropertiesPanel(editor.getText());
+      renderTasks();
+      element<HTMLElement>('.save-status').textContent =
+        effectiveCloudRole(vault?.cloud)==='revoked' ? 'Access revoked · local copy read only' : 'Viewer access · read only';
+      return;
+    }
+
+    if(selected.kind==='markdown' && selected.deletedAt===null && !saver){
+      await openEntry(selected.id,true);
+    } else {
+      await syncEditorSurface();
+      renderTasks();
+    }
+  }
 
   function renderCloudIndicator(): void {
     const button = element<HTMLButtonElement>('[data-action="cloud-open"]');
     const adopted = vault?.mode === 'cloud';
+    const role=adopted ? effectiveCloudRole(vault?.cloud) : null;
     button.dataset.cloudState = adopted ? 'adopted' : 'local';
     button.textContent = adopted ? 'Cloud ✓' : 'Cloud';
     const label = element<HTMLElement>('.storage-scope-label');
-    label.textContent = adopted ? 'Stored locally · cloud adopted' : 'Stored in this browser';
+    label.textContent = adopted ? `Stored locally · cloud adopted · ${role}` : 'Stored in this browser';
   }
 
   function cloudRow(title: string, detail: string, className = ''): HTMLElement {
@@ -647,6 +695,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     cloudSignedOut.hidden = cloudStatus.signedIn;
     cloudSignedIn.hidden = !cloudStatus.signedIn;
     cloudRemoteVaults.replaceChildren();
+    cloudMembers.replaceChildren();
     cloudDevices.replaceChildren();
 
     if (!cloudStatus.signedIn || !cloudStatus.identity || !cloudStatus.account || !cloudStatus.device) {
@@ -655,6 +704,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudAdopt.disabled = true;
       cloudSyncNow.disabled = true;
       cloudSyncDetail.textContent = '';
+      cloudOwnerShare.hidden = true;
       return;
     }
 
@@ -666,10 +716,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     );
 
     cloudVaultState.replaceChildren();
+    const activeRole=vault?.mode==='cloud' && vault.cloud ? effectiveCloudRole(vault.cloud) : null;
+    cloudOwnerShare.hidden = activeRole !== 'owner';
     const syncEligible = !!vault
       && vault.mode === 'cloud'
       && vault.cloud?.accountId === cloudStatus.account.id
-      && vault.cloud.authUserId === cloudStatus.identity.userId;
+      && vault.cloud.authUserId === cloudStatus.identity.userId
+      && cloudBindingCanRead(vault.cloud);
     cloudSyncNow.disabled = !syncEligible || !syncEngine;
     cloudSyncDetail.textContent = syncEligible ? (cachedSyncDetail || 'Ready to synchronize.') : '';
 
@@ -681,7 +734,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudAdopt.disabled = false;
       cloudAdopt.textContent = 'Enable cloud sync for this Vault';
     } else if (syncEligible) {
-      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
+      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · ${effectiveCloudRole(vault.cloud!)} · sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
       cloudAdopt.disabled = true;
       cloudAdopt.textContent = 'Cloud sync enabled';
     } else {
@@ -699,7 +752,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         const localCopy = vaults.some(local => local.id === remote.id);
         const row = cloudRow(
           remote.name,
-          `${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}${localCopy ? ' · on this device' : ''}`,
+          `${remote.accessRole} · ${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}${localCopy ? ' · on this device' : ''}`,
         );
         if (vault?.id === remote.id) row.classList.add('current');
         if (!localCopy) {
@@ -711,6 +764,32 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           row.append(add);
         }
         cloudRemoteVaults.append(row);
+      }
+    }
+
+    if(activeRole==='owner'){
+      for(const member of awaitableMembersCache){
+        const row=cloudRow(
+          member.role==='owner' ? 'Owner' : `Member ${member.authUserId.slice(0,8)}…`,
+          `${member.role} · account ${member.accountId.slice(0,8)}…`,
+          member.role==='owner' ? 'current' : '',
+        );
+        if(member.role!=='owner'){
+          if(member.role!=='editor'){
+            const edit=document.createElement('button');
+            edit.type='button'; edit.dataset.cloudAction='member-editor'; edit.dataset.memberAuthUserId=member.authUserId; edit.textContent='Editor';
+            row.append(edit);
+          }
+          if(member.role!=='viewer'){
+            const view=document.createElement('button');
+            view.type='button'; view.dataset.cloudAction='member-viewer'; view.dataset.memberAuthUserId=member.authUserId; view.textContent='Viewer';
+            row.append(view);
+          }
+          const remove=document.createElement('button');
+          remove.type='button'; remove.dataset.cloudAction='member-remove'; remove.dataset.memberAuthUserId=member.authUserId; remove.textContent='Remove';
+          row.append(remove);
+        }
+        cloudMembers.append(row);
       }
     }
 
@@ -733,6 +812,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   let awaitableDevicesCache: Awaited<ReturnType<CloudFoundation['listDevices']>> = [];
+  let awaitableMembersCache: Awaited<ReturnType<CloudFoundation['listMembers']>> = [];
   let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
   let cachedSyncDetail = '';
 
@@ -747,7 +827,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function refreshRealtimeSubscription(): Promise<void> {
     if (!realtimeWake || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
-      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
       realtimeWake?.stop();
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
       return;
@@ -756,9 +836,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     realtimeStatus = realtimeWake.currentStatus;
   }
 
+  async function refreshCloudMembers(): Promise<void> {
+    awaitableMembersCache=[];
+    if(!cloud || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud) return;
+    if(vault.cloud.authUserId!==cloudStatus.identity.userId || effectiveCloudRole(vault.cloud)!=='owner') return;
+    awaitableMembersCache=await cloud.listMembers(vault.id);
+  }
+
   async function refreshCloudSyncDetail(): Promise<void> {
     if (!vault || vault.mode !== 'cloud' || !vault.cloud || !cloudStatus.identity
-      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
       cachedSyncDetail = '';
       return;
     }
@@ -774,9 +861,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!syncEngine || !cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
       throw new VaultError('CONFIGURATION', 'Cloud synchronization is unavailable.');
     }
-    if (!vault || vault.mode !== 'cloud' || !vault.cloud
-      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
-      throw new VaultError('ACCOUNT_MISMATCH', 'Choose a cloud-enabled Vault owned by this signed-in account.');
+    // Background runs occur only with a clean editor, so they can cheaply
+    // reconcile server-authoritative membership before touching sync state.
+    // Manual runs do the same whenever no unsaved draft would be disturbed.
+    if (background || !saver?.hasUnsavedChanges) {
+      cloudStatus = await cloud.status();
+      await reloadCloudBindingCache();
+      await refreshRealtimeSubscription();
+    }
+    if (!cloudStatus.signedIn || !cloudStatus.identity || !vault || vault.mode !== 'cloud' || !vault.cloud
+      || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
+      throw new VaultError('PERMISSION', 'Choose a cloud Vault this signed-in account can access.');
     }
     if (saver) await saver.flush();
     const activeVaultId = vault.id;
@@ -806,14 +901,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return summary;
     } finally {
       const eligible = !!vault && !!syncEngine && cloudStatus.signedIn && !!cloudStatus.identity
-        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId;
+        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud);
       cloudSyncNow.disabled = !eligible;
     }
   }
 
   syncCoordinator = new SyncCoordinator({
     eligible: () => !!syncEngine && !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
-      && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId
+      && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud)
       && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus() && !cloudDialog.open,
     key: () => {
       if (!cloudStatus.identity || !vault?.cloud) return null;
@@ -836,7 +931,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     try {
       cloudStatus = await cloud.status();
+      await reloadCloudBindingCache();
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+      await refreshCloudMembers();
       await refreshRealtimeSubscription();
       await refreshCloudSyncDetail();
       renderCloudDialog(message);
@@ -844,6 +941,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     } catch (error) {
       cloudStatus = cloudEmptyStatus();
       awaitableDevicesCache = [];
+      awaitableMembersCache = [];
       realtimeWake?.stop();
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
       renderCloudDialog(error instanceof Error ? error.message : 'Cloud status could not be loaded.');
@@ -1104,6 +1202,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!owner) throw new VaultError('NOT_FOUND', 'Canvas owner note is unavailable.');
 
     const view = new SpatialCanvasView(document, {
+      readOnly: !currentVaultWritable(),
       persist(nextDocument) {
         return perform(() => persistCanvasDocument(owner, nextDocument));
       },
@@ -1767,6 +1866,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     check.checked = item.task.completed;
     check.dataset.taskRole = 'completed';
     check.setAttribute('aria-label', `Complete task: ${item.task.text}`);
+    check.disabled = !currentVaultWritable();
 
     const title = document.createElement('input');
     title.type = 'text';
@@ -1774,6 +1874,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     title.value = item.task.text;
     title.dataset.taskRole = 'text';
     title.setAttribute('aria-label', 'Task text');
+    title.disabled = !currentVaultWritable();
 
     const source = document.createElement('button');
     source.type = 'button';
@@ -1795,6 +1896,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     scheduled.dataset.taskRole = 'scheduled';
     scheduled.title = 'Scheduled date';
     scheduled.setAttribute('aria-label', 'Scheduled date');
+    scheduled.disabled = !currentVaultWritable();
 
     const due = document.createElement('input');
     due.type = 'date';
@@ -1803,6 +1905,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     due.dataset.taskRole = 'due';
     due.title = 'Due date';
     due.setAttribute('aria-label', 'Due date');
+    due.disabled = !currentVaultWritable();
 
     const priority = document.createElement('select');
     priority.className = 'task-priority-input';
@@ -1813,6 +1916,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     priority.add(new Option('Medium', 'medium'));
     priority.add(new Option('Low', 'low'));
     priority.value = item.task.priority ?? '';
+    priority.disabled = !currentVaultWritable();
 
     const recurrence = document.createElement('input');
     recurrence.type = 'text';
@@ -1822,6 +1926,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     recurrence.placeholder = 'repeat';
     recurrence.title = 'daily, weekly, monthly, yearly, every 2w…';
     recurrence.setAttribute('aria-label', 'Task recurrence');
+    recurrence.disabled = !currentVaultWritable();
 
     metadata.append(scheduled, due, priority, recurrence);
     card.append(metadata);
@@ -1842,7 +1947,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const overdue = open.filter(item => taskDateState(item.task) === 'overdue').length;
     const today = open.filter(item => taskDateState(item.task) === 'today').length;
     taskSummary.textContent = `${open.length} open · ${overdue} overdue · ${today} today · ${all.length} total`;
-    element<HTMLButtonElement>('[data-task-action="add"]').disabled = !selected || selected.kind !== 'markdown' || selected.deletedAt !== null;
+    element<HTMLButtonElement>('[data-task-action="add"]').disabled = !selected || selected.kind !== 'markdown' || selected.deletedAt !== null || !currentVaultWritable();
 
     const query = taskFilterText.trim().normalize('NFC').toLocaleLowerCase();
     const filtered = all.filter(item => {
@@ -2662,7 +2767,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
 
     sourceButton.disabled = false;
-    add.disabled = selected.deletedAt !== null;
+    add.disabled = selected.deletedAt !== null || !currentVaultWritable();
 
     const view = inspectFrontmatter(source);
     if (view.status === 'invalid' || view.status === 'unsupported-root') {
@@ -2675,6 +2780,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     status.classList.remove('properties-warning');
     if (selected.deletedAt !== null) {
       status.textContent = 'This note is in Trash. Properties are read only.';
+    } else if (!currentVaultWritable()) {
+      status.textContent = 'Viewer access · properties are read only.';
     } else {
       status.textContent = view.properties.length
         ? `${view.properties.length} ${view.properties.length === 1 ? 'property' : 'properties'} · stored in YAML frontmatter`
@@ -2691,7 +2798,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       name.value = property.name;
       name.setAttribute('aria-label', `Property name: ${property.name}`);
       name.dataset.propertyRole = 'name';
-      name.disabled = selected.deletedAt !== null;
+      name.disabled = selected.deletedAt !== null || !currentVaultWritable();
 
       const type = document.createElement('select');
       type.className = 'property-type';
@@ -2706,7 +2813,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (value === 'unsupported' && property.kind !== 'unsupported') option.disabled = true;
         type.add(option);
       }
-      type.disabled = selected.deletedAt !== null || !property.editable;
+      type.disabled = selected.deletedAt !== null || !currentVaultWritable() || !property.editable;
 
       const valueWrap = document.createElement('div');
       valueWrap.className = 'property-value-wrap';
@@ -2716,7 +2823,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         input.className = 'property-value property-checkbox';
         input.dataset.propertyRole = 'value';
         input.checked = property.value === true;
-        input.disabled = selected.deletedAt !== null;
+        input.disabled = selected.deletedAt !== null || !currentVaultWritable();
         input.setAttribute('aria-label', `Property value: ${property.name}`);
         valueWrap.append(input);
       } else if (property.kind === 'unsupported') {
@@ -2735,7 +2842,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         input.dataset.propertyRole = 'value';
         input.type = property.kind === 'number' ? 'number' : property.kind === 'date' ? 'date' : 'text';
         input.value = rawValueForProperty(property);
-        input.disabled = selected.deletedAt !== null;
+        input.disabled = selected.deletedAt !== null || !currentVaultWritable();
         input.setAttribute('aria-label', `Property value: ${property.name}`);
         if (property.kind === 'list') input.placeholder = 'value 1, value 2';
         if (property.kind === 'tags') input.placeholder = 'tag, nested/tag';
@@ -2749,7 +2856,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       remove.textContent = '×';
       remove.title = `Delete ${property.name}`;
       remove.setAttribute('aria-label', `Delete property ${property.name}`);
-      remove.disabled = selected.deletedAt !== null;
+      remove.disabled = selected.deletedAt !== null || !currentVaultWritable();
 
       row.append(name, type, valueWrap, remove);
       list.append(row);
@@ -3139,7 +3246,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cards.className = 'board-card-list';
       cards.dataset.boardDrop = column.value ?? '';
       cards.addEventListener('dragover', event => {
-        if (!event.dataTransfer?.types.includes('application/x-vault-board-entry')) return;
+        if (!currentVaultWritable() || !event.dataTransfer?.types.includes('application/x-vault-board-entry')) return;
         event.preventDefault();
         if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
         cards.classList.add('drop-target');
@@ -3148,6 +3255,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (!cards.contains(event.relatedTarget as Node | null)) cards.classList.remove('drop-target');
       });
       cards.addEventListener('drop', event => {
+        if (!currentVaultWritable()) return;
         const raw = event.dataTransfer?.getData('application/x-vault-board-entry');
         cards.classList.remove('drop-target');
         if (!raw) return;
@@ -3159,8 +3267,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         const article = document.createElement('article');
         article.className = 'board-card';
         article.dataset.boardCard = card.entryId;
-        article.draggable = true;
+        article.draggable = currentVaultWritable();
         article.addEventListener('dragstart', event => {
+          if (!currentVaultWritable()) { event.preventDefault(); return; }
           event.dataTransfer?.setData('application/x-vault-board-entry', card.entryId);
           if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
           article.classList.add('dragging');
@@ -3365,6 +3474,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       checkbox.checked = row.task.completed;
       checkbox.dataset.taskRole = 'completed';
       checkbox.setAttribute('aria-label', `Complete task: ${row.task.text}`);
+      checkbox.disabled = !currentVaultWritable();
 
       const body = document.createElement('div');
       body.className = 'query-task-body';
@@ -3449,10 +3559,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     editorHost.hidden = !noteOpen || editorMode === 'reading';
     readingView.hidden = !noteOpen || editorMode !== 'reading';
     attachmentView.hidden = selected?.kind !== 'attachment';
-    element<HTMLElement>('.editor-toolbar').hidden = !noteOpen || editorMode === 'reading' || selected?.deletedAt !== null;
+    element<HTMLElement>('.editor-toolbar').hidden = !noteOpen || editorMode === 'reading' || selected?.deletedAt !== null || !currentVaultWritable();
     editor.setMode(editorMode === 'source' ? 'source' : 'live');
     editor.setLineNumbers(lineNumbers);
-    editor.setReadOnly(!noteOpen || selected?.deletedAt !== null || !saver || editorMode === 'reading');
+    editor.setReadOnly(!noteOpen || selected?.deletedAt !== null || !saver || editorMode === 'reading' || !currentVaultWritable());
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-editor-mode]')) {
       const active = button.dataset.editorMode === editorMode;
       button.setAttribute('aria-pressed', String(active));
@@ -3498,16 +3608,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('.folder-message').hidden = selected.kind !== 'directory';
     element<HTMLElement>('.folder-message').textContent = selected.deletedAt ? 'This folder is in Trash. Restore its parent first, then restore the folder.' : 'Folder selected. New files will be created inside this folder.';
     element<HTMLElement>('.breadcrumb').textContent = targetPath;
-    element<HTMLElement>('.save-status').textContent = selected.deletedAt ? 'In Trash \u00b7 read only' : 'Saved locally \u00b7 not synced';
-    for (const action of ['rename', 'move', 'duplicate', 'delete']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = selected.deletedAt !== null;
-    element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null;
+    element<HTMLElement>('.save-status').textContent = selected.deletedAt
+      ? 'In Trash \u00b7 read only'
+      : !currentVaultWritable()
+        ? effectiveCloudRole(vault?.cloud)==='revoked' ? 'Access revoked \u00b7 local copy read only' : 'Viewer access \u00b7 read only'
+        : 'Saved locally \u00b7 not synced';
+    for (const action of ['rename', 'move', 'duplicate', 'delete']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = selected.deletedAt !== null || !currentVaultWritable();
+    element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null || !currentVaultWritable();
     element<HTMLButtonElement>('[data-action="export-draft"]').disabled = selected.kind !== 'markdown';
-    element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null;
+    element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null || !currentVaultWritable();
     if (selected.kind !== 'markdown') renderPropertiesPanel(null);
     if (selected.kind === 'markdown' && item.content) {
       editor.setText(item.content.text);
       renderPropertiesPanel(item.content.text);
-      if (selected.deletedAt === null) {
+      if (selected.deletedAt === null && currentVaultWritable()) {
         const opened = selected; const draftId = `editor:${crypto.randomUUID()}`;
         saver = new SaveCoordinator(repository, selected.id, { version: selected.localVersion, text: item.content.text }, (state, updated) => {
           if (disposed || selected?.id !== opened.id) return;
@@ -3572,7 +3686,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const name = await ask('Create a vault', 'Vault name'); if (name === null) return;
     await clearSelection(); vault = await repository.createVault(name); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh(); await setting('lastVault', vault.id); void requestPersistentStorage();
   } });
-  for (const kind of ['markdown', 'directory'] as const) registry.register({ id: kind === 'markdown' ? 'file.create' : 'folder.create', label: kind === 'markdown' ? 'Create Markdown note' : 'Create folder', enabled: () => !!vault, run: async () => {
+  for (const kind of ['markdown', 'directory'] as const) registry.register({ id: kind === 'markdown' ? 'file.create' : 'folder.create', label: kind === 'markdown' ? 'Create Markdown note' : 'Create folder', enabled: () => !!vault && currentVaultWritable(), run: async () => {
     if (!vault) return;
     const name = await ask(kind === 'markdown' ? 'Create a Markdown note' : 'Create a folder', 'Name'); if (name === null) return;
     if (saver) await saver.flush();
@@ -3636,7 +3750,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           cloudMessage.textContent = 'Signing in…';
           cloudStatus = await cloud.signIn(cloudEmail.value, cloudPassword.value);
           cloudPassword.value = '';
+          await reloadCloudBindingCache();
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+          await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Signed in. Local Vaults remain local until explicitly adopted.');
@@ -3647,7 +3763,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           const result = await cloud.signUp(cloudEmail.value, cloudPassword.value);
           cloudStatus = result.status;
           cloudPassword.value = '';
+          await reloadCloudBindingCache();
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+          await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog(result.result.signedIn ? 'Account created and signed in.' : 'Account created. Check your email to confirm it, then sign in.');
@@ -3659,13 +3777,56 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           window.location.assign(cloud.googleAuthorizeUrl(redirect.toString()));
           return;
         }
+        if (action === 'create-share') {
+          if (!vault || vault.mode!=='cloud' || !vault.cloud || effectiveCloudRole(vault.cloud)!=='owner') {
+            throw new VaultError('PERMISSION','Only the Vault owner can create invitations.');
+          }
+          const role=cloudShareRole.value==='viewer' ? 'viewer' : 'editor';
+          const invite=await cloud.createShareInvite(vault.id,role);
+          cloudShareOutput.value=invite.token;
+          renderCloudDialog(`One-time ${role} invitation created. It expires ${new Date(invite.expiresAt).toLocaleString()}.`);
+          return;
+        }
+        if (action === 'accept-share') {
+          const token=cloudAcceptToken.value.trim();
+          if(!token) throw new VaultError('PROTOCOL','Paste a one-time invitation token first.');
+          const remote=await cloud.acceptShareInvite(token);
+          if (saver) await saver.flush();
+          await clearSelection();
+          vault=await cloud.addRemoteVault(remote);
+          vaults=await repository.listVaults();
+          preferencesVaultId=undefined;
+          knowledgeVaultId=undefined;
+          searchVaultId=undefined;
+          showingTrash=false;
+          filterText='';
+          lastSyncSummary=null;
+          cloudAcceptToken.value='';
+          await setting('lastVault',vault.id);
+          await refresh();
+          await refreshCloudStatus(`Invitation accepted with ${remote.accessRole} access. Downloading canonical history…`);
+          renderCloudIndicator();
+          await runCurrentCloudSync();
+          return;
+        }
+        if (action === 'member-editor' || action === 'member-viewer' || action === 'member-remove') {
+          if(!vault) throw new VaultError('NOT_FOUND','Choose the shared Vault first.');
+          const memberAuthUserId=cloudAction.dataset.memberAuthUserId;
+          if(!memberAuthUserId) throw new VaultError('PROTOCOL','Shared member identity is missing.');
+          const role=action==='member-editor' ? 'editor' : action==='member-viewer' ? 'viewer' : null;
+          await cloud.setMemberRole(vault.id,memberAuthUserId,role);
+          await refreshCloudStatus(role ? `Member changed to ${role}.` : 'Member access revoked.');
+          return;
+        }
         if (action === 'adopt') {
           if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud sync.');
           if (saver) await saver.flush();
           vault = await cloud.adoptVault(vault);
           vaults = await repository.listVaults();
           cloudStatus = await cloud.status();
+          await reloadCloudBindingCache();
           awaitableDevicesCache = await cloud.listDevices();
+          await refreshCloudMembers();
           lastSyncSummary = null;
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
@@ -3696,7 +3857,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await setting('lastVault', vault.id);
           await refresh();
           cloudStatus = await cloud.status();
+          await reloadCloudBindingCache();
           awaitableDevicesCache = await cloud.listDevices();
+          await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
@@ -3709,6 +3872,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await cloud.signOut();
           cloudStatus = cloudEmptyStatus();
           awaitableDevicesCache = [];
+          awaitableMembersCache = [];
           lastSyncSummary = null;
           cachedSyncDetail = '';
           realtimeWake?.stop();

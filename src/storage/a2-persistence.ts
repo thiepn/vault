@@ -3,6 +3,7 @@ import { assertMarkdownContent, nextVersion } from '../domain/integrity.js';
 import type {
   AttachmentContent,
   CloudVaultBinding,
+  CloudVaultRole,
   DirtyEntry,
   Entry,
   EntryId,
@@ -528,6 +529,12 @@ export class A2LocalRepository extends LocalRepository {
 
   override async createCloudReplica(raw: string, binding: CloudVaultBinding): Promise<Vault> {
     const vault = await super.createCloudReplica(raw, binding);
+    await this.mirror(() => this.a2.syncVault(vault.id));
+    return vault;
+  }
+
+  override async updateCloudAccess(vaultId: VaultId, access: { accessRole: CloudVaultRole; ownerAccountId: CloudVaultBinding['accountId']; ownerAuthUserId: string }): Promise<Vault> {
+    const vault = await super.updateCloudAccess(vaultId, access);
     await this.mirror(() => this.a2.syncVault(vault.id));
     return vault;
   }

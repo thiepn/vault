@@ -1,4 +1,4 @@
-import type { AttachmentContent, CloudVaultBinding, Entry, EntryId, EntryWithContent, Vault, VaultId, VaultSnapshot } from '../domain/model.js';
+import type { AttachmentContent, CloudVaultBinding, CloudVaultRole, Entry, EntryId, EntryWithContent, Vault, VaultId, VaultSnapshot } from '../domain/model.js';
 
 export interface VaultRepository {
   listVaults(): Promise<Vault[]>;
@@ -6,6 +6,7 @@ export interface VaultRepository {
   renameVault(vaultId: VaultId, name: string): Promise<Vault>;
   adoptCloud(vaultId: VaultId, binding: CloudVaultBinding): Promise<Vault>;
   createCloudReplica(name: string, binding: CloudVaultBinding): Promise<Vault>;
+  updateCloudAccess(vaultId: VaultId, access: { accessRole: CloudVaultRole; ownerAccountId: CloudVaultBinding['accountId']; ownerAuthUserId: string }): Promise<Vault>;
   snapshot(vaultId: VaultId): Promise<VaultSnapshot>;
 }
 export interface FileRepository {

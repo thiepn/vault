@@ -4,7 +4,7 @@ import type { VaultRepository, AuthIdentity } from '../services/ports.js';
 import { projectRefFromUrl } from './config.js';
 import { SupabaseRestAuth, type SignUpResult } from './auth-rest.js';
 import { defaultDeviceLabel, ensureDeviceId, type KeyValueStorage } from './device.js';
-import { SupabaseCloudRegistry, type CloudAccount, type CloudDevice, type RemoteCloudVault } from './supabase-registry.js';
+import { SupabaseCloudRegistry, type CloudAccount, type CloudDevice, type CloudShareInvite, type CloudVaultMember, type RemoteCloudVault } from './supabase-registry.js';
 import { SyncLocalState } from '../sync/local-state.js';
 
 export interface CloudFoundationStatus {
@@ -46,12 +46,24 @@ export class CloudFoundation {
   async status(): Promise<CloudFoundationStatus> {
     const initialized=await this.initializeIdentity();
     if (!initialized) return {signedIn:false,identity:null,account:null,device:null,remoteVaults:[]};
+    const remoteVaults=await this.registry.listVaults(initialized.account);
+    const byId=new Map(remoteVaults.map(remote=>[remote.id,remote]));
+    for(const local of await this.vaults.listVaults()){
+      if(local.mode!=='cloud' || !local.cloud || local.cloud.authUserId!==initialized.identity.userId) continue;
+      const remote=byId.get(local.id);
+      const role=remote?.accessRole ?? 'revoked';
+      const ownerAccountId=remote?.ownerAccountId ?? local.cloud.ownerAccountId ?? local.cloud.accountId;
+      const ownerAuthUserId=remote?.ownerAuthUserId ?? local.cloud.ownerAuthUserId ?? local.cloud.authUserId;
+      if(local.cloud.accessRole!==role || local.cloud.ownerAccountId!==ownerAccountId || local.cloud.ownerAuthUserId!==ownerAuthUserId){
+        await this.vaults.updateCloudAccess(local.id,{accessRole:role,ownerAccountId,ownerAuthUserId});
+      }
+    }
     return {
       signedIn:true,
       identity:initialized.identity,
       account:initialized.account,
       device:initialized.device,
-      remoteVaults:await this.registry.listVaults(initialized.account),
+      remoteVaults,
     };
   }
 
@@ -89,6 +101,9 @@ export class CloudFoundation {
     const binding: CloudVaultBinding={
       accountId:initialized.account.id as AccountId,
       authUserId:initialized.identity.userId,
+      ownerAccountId:initialized.account.id as AccountId,
+      ownerAuthUserId:initialized.identity.userId,
+      accessRole:'owner',
       projectRef:projectRefFromUrl(this.projectUrl),
       remoteVaultId:remote.id,
       epoch:remote.epoch,
@@ -110,6 +125,9 @@ export class CloudFoundation {
     const binding: CloudVaultBinding={
       accountId:initialized.account.id as AccountId,
       authUserId:initialized.identity.userId,
+      ownerAccountId:remote.ownerAccountId,
+      ownerAuthUserId:remote.ownerAuthUserId,
+      accessRole:remote.accessRole,
       projectRef:projectRefFromUrl(this.projectUrl),
       remoteVaultId:remote.id,
       epoch:remote.epoch,
@@ -120,6 +138,34 @@ export class CloudFoundation {
     const vault=await this.vaults.createCloudReplica(remote.name,binding);
     await this.syncState.initializeCursor(vault.id,initialized.identity.userId,remote.epoch);
     return vault;
+  }
+
+  async listMembers(vaultId: RemoteCloudVault['id']): Promise<CloudVaultMember[]> {
+    const initialized=await this.initializeIdentity();
+    if(!initialized) throw new VaultError('ACCOUNT_MISMATCH','Sign in before managing shared Vault access.');
+    return this.registry.listMembers(vaultId);
+  }
+
+  async createShareInvite(vaultId: RemoteCloudVault['id'], role:'editor'|'viewer', expiresHours=168): Promise<CloudShareInvite> {
+    const initialized=await this.initializeIdentity();
+    if(!initialized) throw new VaultError('ACCOUNT_MISMATCH','Sign in before sharing a Vault.');
+    return this.registry.createInvite(vaultId,role,expiresHours);
+  }
+
+  async acceptShareInvite(token:string): Promise<RemoteCloudVault> {
+    const initialized=await this.initializeIdentity();
+    if(!initialized) throw new VaultError('ACCOUNT_MISMATCH','Sign in before accepting a Vault invitation.');
+    const remote=await this.registry.acceptInvite(token);
+    if(remote.accountId!==initialized.account.id || remote.authUserId!==initialized.identity.userId){
+      throw new VaultError('PROTOCOL','Accepted invitation returned another account membership.');
+    }
+    return remote;
+  }
+
+  async setMemberRole(vaultId:RemoteCloudVault['id'],memberAuthUserId:string,role:'editor'|'viewer'|null):Promise<void>{
+    const initialized=await this.initializeIdentity();
+    if(!initialized) throw new VaultError('ACCOUNT_MISMATCH','Sign in before managing shared Vault access.');
+    await this.registry.setMemberRole(vaultId,memberAuthUserId,role);
   }
 
   async listDevices(): Promise<CloudDevice[]> {
