@@ -215,6 +215,31 @@ test('Phase 20 enters a private Yjs room, uses shared undo and persists through 
   await dialog.locator('[data-cloud-action="sync"]').click();
   await expect(dialog.locator('.cloud-sync-detail')).toContainText('0 queued');
 
+  const crdtDiagnostics=await page.evaluate(async()=>{
+    const open=indexedDB.open('vault:local');
+    const db:IDBDatabase=await new Promise((resolve,reject)=>{
+      open.onsuccess=()=>resolve(open.result);
+      open.onerror=()=>reject(open.error);
+    });
+    const readAll=(name:string)=>new Promise<any[]>((resolve,reject)=>{
+      const tx=db.transaction(name,'readonly');
+      const request=tx.objectStore(name).getAll();
+      request.onsuccess=()=>resolve(request.result);
+      request.onerror=()=>reject(request.error);
+    });
+    const [dirty,outbox,shadows,entries,contents]=await Promise.all([
+      readAll('dirty'),readAll('outbox'),readAll('remoteShadows'),readAll('entries'),readAll('contents'),
+    ]);
+    db.close();
+    return {
+      dirty,outbox,shadows,
+      notes:entries.filter((row:any)=>row.kind==='markdown'),
+      contents,
+      frames:(globalThis as any).__phase20RealtimeFrames,
+    };
+  });
+  console.log('PHASE20_CRDT_DIAGNOSTICS',JSON.stringify(crdtDiagnostics));
+
   await expect(page.locator('.collaboration-status')).toContainText('Live edit connected');
   await expect(page.locator('.collaboration-status')).toContainText('canonical writer');
   const joinedEditRoom=await page.evaluate(()=>((globalThis as any).__phase20RealtimeFrames as any[])
