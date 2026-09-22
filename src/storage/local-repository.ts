@@ -2,7 +2,7 @@ import { VaultError } from '../domain/errors.js';
 import { activeKey, markdownName, validateName } from '../domain/paths.js';
 import { assertMarkdownContent, assertVersion, nextVersion } from '../domain/integrity.js';
 import { VaultTree } from '../domain/tree.js';
-import { newId, type AttachmentContent, type AttachmentSnapshot, type DirtyEntry, type Entry, type EntryId, type EntryWithContent, type LocalRevision, type MarkdownContent, type RecoveryDraft, type Vault, type VaultId, type VaultSnapshot } from '../domain/model.js';
+import { newId, type AttachmentContent, type AttachmentSnapshot, type CloudVaultBinding, type DirtyEntry, type Entry, type EntryId, type EntryWithContent, type LocalRevision, type MarkdownContent, type RecoveryDraft, type Vault, type VaultId, type VaultSnapshot } from '../domain/model.js';
 import { normalizeAttachmentMimeType, validateAttachmentBytes, validateAttachmentName } from '../media/attachments.js';
 import type { FileRepository, RevisionRepository, VaultRepository } from '../services/ports.js';
 import type { StoreName } from './database.js';
@@ -72,6 +72,27 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       if (!vault) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
       if (vault.name === name) return vault;
       const updated: Vault = { ...vault, name, updatedAt: now() };
+      await tx.store('vaults').put(updated);
+      return updated;
+    });
+  }
+  async adoptCloud(vaultId: VaultId, binding: CloudVaultBinding): Promise<Vault> {
+    if (binding.remoteVaultId !== vaultId) throw new VaultError('ACCOUNT_MISMATCH', 'Cloud adoption must preserve the Vault UUID.');
+    return this.driver.transaction(['vaults'], 'readwrite', async tx => {
+      const vault = await tx.store('vaults').get<Vault>(vaultId);
+      if (!vault) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
+      if (vault.mode === 'cloud') {
+        const existing = vault.cloud;
+        if (existing
+          && existing.accountId === binding.accountId
+          && existing.authUserId === binding.authUserId
+          && existing.projectRef === binding.projectRef
+          && existing.remoteVaultId === binding.remoteVaultId
+          && existing.epoch === binding.epoch
+          && existing.deviceId === binding.deviceId) return vault;
+        throw new VaultError('ACCOUNT_MISMATCH', 'This Vault is already adopted by a different cloud account or synchronization epoch.');
+      }
+      const updated: Vault = { ...vault, mode: 'cloud', cloud: binding, updatedAt: now() };
       await tx.store('vaults').put(updated);
       return updated;
     });
