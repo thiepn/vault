@@ -6,6 +6,7 @@ export type EntryId = Id<'entry'>;
 export type OperationId = Id<'operation'>;
 export type DeviceId = Id<'device'>;
 export type Revision = number;
+export type CloudVaultRole = 'owner' | 'editor' | 'viewer' | 'revoked';
 export type Principal = { kind: 'local' } | { kind: 'account'; userId: string; projectRef: string };
 
 export function newId<K extends string>(): Id<K> {
@@ -13,8 +14,15 @@ export function newId<K extends string>(): Id<K> {
 }
 
 export interface CloudVaultBinding {
+  /** Account currently using this local replica. */
   accountId: AccountId;
+  /** Auth user currently using this local replica. */
   authUserId: string;
+  /** Stable owner identity. Omitted on legacy bindings where actor = owner. */
+  ownerAccountId?: AccountId;
+  ownerAuthUserId?: string;
+  /** Server-authoritative membership role. Legacy bindings default to owner. */
+  accessRole?: CloudVaultRole;
   projectRef: string;
   remoteVaultId: VaultId;
   epoch: string;
