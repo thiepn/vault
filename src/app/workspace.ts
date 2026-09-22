@@ -384,6 +384,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const dialogInput = element<HTMLInputElement>('#vault-dialog-input');
   const dialogSelect = element<HTMLSelectElement>('.dialog-select');
   const recoveryDialog = element<HTMLDialogElement>('.recovery-dialog');
+  const cloudDialog = element<HTMLDialogElement>('.cloud-dialog');
+  const cloudMessage = element<HTMLElement>('.cloud-message');
+  const cloudSignedOut = element<HTMLElement>('.cloud-signed-out');
+  const cloudSignedIn = element<HTMLElement>('.cloud-signed-in');
+  const cloudEmail = element<HTMLInputElement>('.cloud-email');
+  const cloudPassword = element<HTMLInputElement>('.cloud-password');
+  const cloudIdentity = element<HTMLElement>('.cloud-identity');
+  const cloudVaultState = element<HTMLElement>('.cloud-vault-state');
+  const cloudAdopt = element<HTMLButtonElement>('.cloud-adopt');
+  const cloudRemoteVaults = element<HTMLElement>('.cloud-remote-vaults');
+  const cloudDevices = element<HTMLElement>('.cloud-devices');
   const migrationDialog = element<HTMLDialogElement>('.migration-dialog');
   const migrationSummary = element<HTMLElement>('.migration-summary');
   const migrationDetails = element<HTMLElement>('.migration-details');
@@ -561,6 +572,128 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function downloadDraft(): void {
     if (!selected || selected.kind !== 'markdown') return;
     download(selected.name, saver?.draft ?? editor.getText(), 'text/markdown;charset=utf-8');
+  }
+
+  function cloudEmptyStatus(): CloudFoundationStatus {
+    return { signedIn:false, identity:null, account:null, device:null, remoteVaults:[] };
+  }
+
+  function renderCloudIndicator(): void {
+    const button = element<HTMLButtonElement>('[data-action="cloud-open"]');
+    const adopted = vault?.mode === 'cloud';
+    button.dataset.cloudState = adopted ? 'adopted' : 'local';
+    button.textContent = adopted ? 'Cloud ✓' : 'Cloud';
+    const label = element<HTMLElement>('.storage-scope-label');
+    label.textContent = adopted ? 'Stored locally · cloud adopted' : 'Stored in this browser';
+  }
+
+  function cloudRow(title: string, detail: string, className = ''): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'cloud-row' + (className ? ' ' + className : '');
+    const text = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = title;
+    const span = document.createElement('span');
+    span.textContent = detail;
+    text.append(strong, span);
+    row.append(text);
+    return row;
+  }
+
+  function renderCloudDialog(message = ''): void {
+    cloudMessage.textContent = message || cloudBootstrapError || (oauthCompleted ? 'Google sign-in completed on this device.' : '');
+    cloudSignedOut.hidden = cloudStatus.signedIn;
+    cloudSignedIn.hidden = !cloudStatus.signedIn;
+    cloudRemoteVaults.replaceChildren();
+    cloudDevices.replaceChildren();
+
+    if (!cloudStatus.signedIn || !cloudStatus.identity || !cloudStatus.account || !cloudStatus.device) {
+      cloudIdentity.replaceChildren();
+      cloudVaultState.replaceChildren();
+      cloudAdopt.disabled = true;
+      return;
+    }
+
+    cloudIdentity.replaceChildren(
+      cloudRow(
+        cloudStatus.identity.email ?? 'Signed-in account',
+        `Account ${cloudStatus.account.id.slice(0, 8)}… · current device ${cloudStatus.device.label}`,
+      ),
+    );
+
+    cloudVaultState.replaceChildren();
+    if (!vault) {
+      cloudVaultState.append(cloudRow('No Vault selected', 'Choose or create a local Vault before enabling cloud foundation.'));
+      cloudAdopt.disabled = true;
+    } else if (vault.mode === 'local') {
+      cloudVaultState.append(cloudRow(vault.name, 'Local only · nothing has been uploaded.', 'local'));
+      cloudAdopt.disabled = false;
+      cloudAdopt.textContent = 'Enable cloud foundation for this Vault';
+    } else if (vault.cloud?.accountId === cloudStatus.account.id && vault.cloud.authUserId === cloudStatus.identity.userId) {
+      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · epoch ${vault.cloud.epoch.slice(0, 8)}… · device ${vault.cloud.deviceId.slice(0, 8)}…`, 'adopted'));
+      cloudAdopt.disabled = true;
+      cloudAdopt.textContent = 'Cloud foundation enabled';
+    } else {
+      cloudVaultState.append(cloudRow(vault.name, 'This Vault is linked to another cloud account. Local data remains available.', 'warning'));
+      cloudAdopt.disabled = true;
+    }
+
+    if (!cloudStatus.remoteVaults.length) {
+      const empty = document.createElement('p');
+      empty.className = 'cloud-empty';
+      empty.textContent = 'No cloud-adopted Vaults for this account yet.';
+      cloudRemoteVaults.append(empty);
+    } else {
+      for (const remote of cloudStatus.remoteVaults) {
+        const row = cloudRow(remote.name, `${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}`);
+        if (vault?.id === remote.id) row.classList.add('current');
+        cloudRemoteVaults.append(row);
+      }
+    }
+
+    for (const device of cloudStatus.device ? awaitableDevicesCache : []) {
+      const row = cloudRow(
+        device.label,
+        `${device.id === cloudStatus.device.id ? 'Current device · ' : ''}${device.revokedAt ? 'Revoked' : 'Last seen ' + new Date(device.lastSeenAt).toLocaleString()}`,
+        device.revokedAt ? 'revoked' : device.id === cloudStatus.device.id ? 'current' : '',
+      );
+      if (!device.revokedAt && device.id !== cloudStatus.device.id) {
+        const revoke = document.createElement('button');
+        revoke.type = 'button';
+        revoke.dataset.cloudAction = 'revoke-device';
+        revoke.dataset.deviceId = device.id;
+        revoke.textContent = 'Revoke';
+        row.append(revoke);
+      }
+      cloudDevices.append(row);
+    }
+  }
+
+  let awaitableDevicesCache: Awaited<ReturnType<CloudFoundation['listDevices']>> = [];
+
+  async function refreshCloudStatus(message = ''): Promise<void> {
+    if (!cloud) {
+      cloudStatus = cloudEmptyStatus();
+      awaitableDevicesCache = [];
+      renderCloudDialog(message || cloudBootstrapError || 'Cloud foundation is unavailable in this browser.');
+      return;
+    }
+    try {
+      cloudStatus = await cloud.status();
+      awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+      renderCloudDialog(message);
+    } catch (error) {
+      cloudStatus = cloudEmptyStatus();
+      awaitableDevicesCache = [];
+      renderCloudDialog(error instanceof Error ? error.message : 'Cloud status could not be loaded.');
+    }
+  }
+
+  async function openCloudDialog(): Promise<void> {
+    renderCloudDialog('Checking account and device…');
+    cloudDialog.showModal();
+    await refreshCloudStatus();
+    if (!cloudStatus.signedIn) cloudEmail.focus();
   }
 
   function migrationLine(label: string, value: string): HTMLElement {
