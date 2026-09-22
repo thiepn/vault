@@ -624,6 +624,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudIdentity.replaceChildren();
       cloudVaultState.replaceChildren();
       cloudAdopt.disabled = true;
+      cloudSyncNow.disabled = true;
+      cloudSyncDetail.textContent = '';
       return;
     }
 
@@ -635,17 +637,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     );
 
     cloudVaultState.replaceChildren();
+    const syncEligible = !!vault
+      && vault.mode === 'cloud'
+      && vault.cloud?.accountId === cloudStatus.account.id
+      && vault.cloud.authUserId === cloudStatus.identity.userId;
+    cloudSyncNow.disabled = !syncEligible || !syncEngine;
+    cloudSyncDetail.textContent = syncEligible ? (cachedSyncDetail || 'Ready to synchronize.') : '';
+
     if (!vault) {
-      cloudVaultState.append(cloudRow('No Vault selected', 'Choose or create a local Vault before enabling cloud foundation.'));
+      cloudVaultState.append(cloudRow('No Vault selected', 'Choose or create a local Vault before enabling cloud sync.'));
       cloudAdopt.disabled = true;
     } else if (vault.mode === 'local') {
       cloudVaultState.append(cloudRow(vault.name, 'Local only · nothing has been uploaded.', 'local'));
       cloudAdopt.disabled = false;
-      cloudAdopt.textContent = 'Enable cloud foundation for this Vault';
-    } else if (vault.cloud?.accountId === cloudStatus.account.id && vault.cloud.authUserId === cloudStatus.identity.userId) {
-      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · epoch ${vault.cloud.epoch.slice(0, 8)}… · device ${vault.cloud.deviceId.slice(0, 8)}…`, 'adopted'));
+      cloudAdopt.textContent = 'Enable cloud sync for this Vault';
+    } else if (syncEligible) {
+      cloudVaultState.append(cloudRow(vault.name, `Cloud sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
       cloudAdopt.disabled = true;
-      cloudAdopt.textContent = 'Cloud foundation enabled';
+      cloudAdopt.textContent = 'Cloud sync enabled';
     } else {
       cloudVaultState.append(cloudRow(vault.name, 'This Vault is linked to another cloud account. Local data remains available.', 'warning'));
       cloudAdopt.disabled = true;
@@ -658,8 +667,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudRemoteVaults.append(empty);
     } else {
       for (const remote of cloudStatus.remoteVaults) {
-        const row = cloudRow(remote.name, `${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}`);
+        const localCopy = vaults.some(local => local.id === remote.id);
+        const row = cloudRow(
+          remote.name,
+          `${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}${localCopy ? ' · on this device' : ''}`,
+        );
         if (vault?.id === remote.id) row.classList.add('current');
+        if (!localCopy) {
+          const add = document.createElement('button');
+          add.type = 'button';
+          add.dataset.cloudAction = 'add-remote-vault';
+          add.dataset.remoteVaultId = remote.id;
+          add.textContent = 'Add to this device';
+          row.append(add);
+        }
         cloudRemoteVaults.append(row);
       }
     }
@@ -686,6 +707,45 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
   let cachedSyncDetail = '';
 
+  async function refreshCloudSyncDetail(): Promise<void> {
+    if (!vault || vault.mode !== 'cloud' || !vault.cloud || !cloudStatus.identity
+      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      cachedSyncDetail = '';
+      return;
+    }
+    const cursor = await syncState.cursor(vault.id, cloudStatus.identity.userId);
+    const queued = await syncState.count(vault.id);
+    const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
+    cachedSyncDetail = latest
+      ? `Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
+      : `Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
+  }
+
+  async function runCurrentCloudSync(): Promise<SyncRunSummary> {
+    if (!syncEngine || !cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
+      throw new VaultError('CONFIGURATION', 'Cloud synchronization is unavailable.');
+    }
+    if (!vault || vault.mode !== 'cloud' || !vault.cloud
+      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      throw new VaultError('ACCOUNT_MISMATCH', 'Choose a cloud-enabled Vault owned by this signed-in account.');
+    }
+    if (saver) await saver.flush();
+    const activeVaultId = vault.id;
+    const selectedId = selected?.id;
+    cloudMessage.textContent = 'Synchronizing canonical files and attachments…';
+    cloudSyncNow.disabled = true;
+    const summary = await syncEngine.sync(vault, cloudStatus.identity.userId);
+    lastSyncSummary = { vaultId: activeVaultId, summary };
+    await refresh();
+    if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
+    await refreshCloudSyncDetail();
+    renderCloudDialog(
+      `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`,
+    );
+    renderCloudIndicator();
+    return summary;
+  }
+
   async function refreshCloudStatus(message = ''): Promise<void> {
     if (!cloud) {
       cloudStatus = cloudEmptyStatus();
@@ -696,6 +756,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     try {
       cloudStatus = await cloud.status();
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+      await refreshCloudSyncDetail();
       renderCloudDialog(message);
     } catch (error) {
       cloudStatus = cloudEmptyStatus();
