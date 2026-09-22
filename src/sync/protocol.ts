@@ -103,6 +103,9 @@ export function validateOperation(operation: unknown): asserts operation is Oper
     }
     if (mutation.kind === 'write' || mutation.kind === 'create') {
       if (typeof mutation.text !== 'string') throw new VaultError('PROTOCOL', 'Markdown content must be a string.');
+      if (new TextEncoder().encode(mutation.text).byteLength > 16 * 1024 * 1024) {
+        throw new VaultError('PROTOCOL', 'Markdown content exceeds the 16 MB synchronization limit.');
+      }
     }
     if (mutation.kind === 'create') {
       if (!['directory', 'markdown', 'attachment'].includes(String(mutation.entryKind))) throw new VaultError('PROTOCOL', 'Invalid entry kind.');
