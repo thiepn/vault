@@ -32,13 +32,16 @@ import { buildKnowledgeGraph, filterKnowledgeGraph, graphStats, localKnowledgeGr
 import { GraphCanvasView } from '../graph/canvas-view.js';
 import { boardFieldLabel, parseBoard, runBoard, type BoardCard, type BoardColumn, type BoardPlan } from '../boards/kanban.js';
 import { emptyCanvasDocument, parseCanvasDocument, serializeCanvasDocument, type CanvasDocument } from '../canvas/model.js';
-import { replaceCanvasFenceSource } from '../canvas/fences.js';
+import { parseCanvasFences, replaceCanvasFenceSource } from '../canvas/fences.js';
+import { readZipArchive } from '../interoperability/zip.js';
+import { browserFilesToArchiveFiles, obsidianExportFiles, planObsidianMigration, type ObsidianMigrationPlan } from '../interoperability/obsidian.js';
+import { commitObsidianMigration } from '../interoperability/importer.js';
 import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-view.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 12 browser workspace: Markdown-backed spatial canvases on the accepted Phase 1-11 + A1/A2 foundation. */
+/** Phase 13 browser workspace: Obsidian migration and interoperability on the accepted Phase 1-12 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -143,7 +146,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 12 · Canvas · A2 persistence</span>
+        <span class="stage">Phase 13 · Interop · A2 persistence</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -158,7 +161,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
           <button data-action="trash-view" class="quiet trash-button">Open Trash</button>
           <button data-action="recovery" class="quiet" disabled>Recovery drafts</button>
-          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.archive" disabled>Full Vault archive</button><button data-command="vault.restore">Restore Vault archive</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
+          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.export-obsidian" disabled>Obsidian ZIP</button><button data-command="vault.archive" disabled>Full Vault archive</button><button data-command="vault.restore">Restore Vault archive</button><button data-command="vault.import-obsidian-zip">Import Obsidian ZIP</button><button data-command="vault.import-obsidian-folder">Import Obsidian folder</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
         </section>
         <section class="sidebar-panel search-panel" data-panel="search" hidden>
           <div class="section-heading"><span>VAULT SEARCH</span><button data-action="rebuild-search" aria-label="Rebuild search index">\u21bb</button></div>
@@ -247,16 +250,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           </div>
         </section>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 12</p><h1>Arrange knowledge spatially without leaving Markdown.</h1>
-          <p>Build movable note, text and media cards, connect ideas, group regions, and preserve the entire spatial document inside the vault.</p>
-          <button data-command="vault.create" class="primary">Create a vault</button><button data-command="vault.restore" class="quiet">Restore Vault archive</button>
+          <p class="eyebrow">VAULT \u00b7 PHASE 13</p><h1>Bring an Obsidian vault without surrendering your files.</h1>
+          <p>Import Markdown, attachments and JSON Canvas into a new local Vault, review migration changes first, and export back to an Obsidian-friendly ZIP.</p>
+          <button data-command="vault.create" class="primary">Create a vault</button><button data-command="vault.import-obsidian-zip" class="quiet">Import Obsidian ZIP</button><button data-command="vault.restore" class="quiet">Restore Vault archive</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
         <div id="vault-editor" class="editor-host" hidden aria-label="Markdown source editor"></div>
         <article class="reading-view" hidden aria-label="Rendered Markdown"></article>
         <section class="attachment-view" hidden aria-label="Attachment preview"><div class="attachment-preview"></div><div class="attachment-meta"><h2 class="attachment-title"></h2><p class="attachment-detail"></p><button type="button" data-action="attachment-download">Download</button></div></section>
         <div class="folder-message" hidden></div>
-        <input class="attachment-file-input" type="file" multiple hidden /><input class="archive-restore-input" type="file" accept=".zip,.vault.zip,application/zip" hidden />
+        <input class="attachment-file-input" type="file" multiple hidden /><input class="archive-restore-input" type="file" accept=".zip,.vault.zip,application/zip" hidden /><input class="obsidian-zip-input" type="file" accept=".zip,application/zip" hidden /><input class="obsidian-folder-input" type="file" multiple webkitdirectory hidden />
       </main>
       <aside class="inspector" aria-label="Knowledge and storage information"><button type="button" class="inspector-close" data-action="knowledge-panel" aria-label="Close knowledge panel">\u00d7</button>
         <p class="label">FILE INFORMATION</p><dl class="file-info"></dl>
@@ -267,8 +270,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <label class="knowledge-setting"><input class="auto-update-links" type="checkbox" checked /> Update links on rename/move</label>
         <div class="rule"></div><p class="label">DATA OWNERSHIP</p>
         <button data-command="vault.export" disabled>Markdown ZIP</button>
+        <button data-command="vault.export-obsidian" disabled>Obsidian ZIP</button>
         <button data-command="vault.archive" disabled>Full Vault archive</button>
         <button data-command="vault.restore">Restore Vault archive</button>
+        <button data-command="vault.import-obsidian-zip">Import Obsidian ZIP</button>
+        <button data-command="vault.import-obsidian-folder">Import Obsidian folder</button>
         <button data-command="vault.backup" disabled>Recovery backup</button>
         <p class="fineprint">Markdown ZIP maximizes interoperability. Full Vault archive adds stable IDs and structured A2 metadata. Recovery backup preserves the legacy recovery snapshot.</p>
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
@@ -284,6 +290,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     <dialog class="template-dialog" aria-labelledby="template-dialog-title"><form method="dialog"><h2 id="template-dialog-title">Choose template</h2><select class="template-dialog-select" aria-label="Template"></select><p class="template-dialog-help fineprint"></p><div class="dialog-buttons"><button value="cancel">Cancel</button><button value="confirm" class="primary">Use template</button></div></form></dialog>
     <dialog class="quick-switcher-dialog" aria-labelledby="quick-switcher-title">
       <div class="quick-switcher-shell"><h2 id="quick-switcher-title">Quick Switcher</h2><input class="quick-switcher-input" type="search" placeholder="Open a note\u2026" aria-label="Quick switcher" autocomplete="off" /><div class="quick-switcher-results" role="listbox" aria-label="Matching notes"></div><p class="quick-switcher-help">\u2191\u2193 navigate \u00b7 Enter open \u00b7 Esc close</p></div>
+    </dialog>
+    <dialog class="migration-dialog" aria-labelledby="migration-title">
+      <form method="dialog"><h2 id="migration-title">Import Obsidian vault</h2>
+        <p class="migration-summary"></p>
+        <div class="migration-details"></div>
+        <label for="migration-vault-name">New Vault name</label><input id="migration-vault-name" class="migration-vault-name" required />
+        <p class="migration-note fineprint">Import creates a separate local Vault. Existing Vaults are never merged or overwritten.</p>
+        <div class="dialog-buttons"><button value="cancel">Cancel</button><button value="confirm" class="primary">Import as new Vault</button></div>
+      </form>
     </dialog>
     <dialog class="recovery-dialog" aria-labelledby="recovery-title">
       <form method="dialog"><h2 id="recovery-title">Recovery drafts</h2>
