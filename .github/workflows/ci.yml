@@ -30,6 +30,8 @@ jobs:
         run: npm run benchmark:search
       - name: 10k knowledge graph benchmark
         run: npm run benchmark:graph
+      - name: 10k board projection benchmark
+        run: npm run benchmark:board
       - name: Production build
         run: npm run build
       - name: Install Chromium

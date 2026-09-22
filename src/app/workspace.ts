@@ -26,11 +26,12 @@ import { attachmentMediaKind, attachmentReferenceCounts, attachmentSuggestions, 
 import { updateAttachmentLinksAfterMove } from '../media/link-updater.js';
 import { buildKnowledgeGraph, filterKnowledgeGraph, graphStats, localKnowledgeGraph, type GraphGroupMode, type GraphNode, type KnowledgeGraph } from '../graph/model.js';
 import { GraphCanvasView } from '../graph/canvas-view.js';
+import { boardFieldLabel, parseBoard, runBoard, type BoardCard, type BoardColumn, type BoardPlan } from '../boards/kanban.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 10 browser workspace: knowledge graph visualization on the accepted Phase 1-9 foundation. */
+/** Phase 11 browser workspace: Markdown-native Kanban boards on the accepted Phase 1-10 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -129,7 +130,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 10 \u00b7 Graph</span>
+        <span class="stage">Phase 11 \u00b7 Boards</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -207,7 +208,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="insert-board" title="Insert Kanban board">Board</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="graph-surface" hidden aria-label="Knowledge graph">
@@ -233,8 +234,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           </div>
         </section>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 10</p><h1>Build a connected knowledge vault.</h1>
-          <p>Write in Markdown, attach local media, and use the Graph to explore relationships, clusters and isolated notes.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 11</p><h1>Turn note properties into working boards.</h1>
+          <p>Keep projects as Markdown notes, then organize them into live Kanban lanes without creating a second task database.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -390,6 +391,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     query: {
       render(source) {
         return renderDynamicQueryBlock(source, selected?.id);
+      },
+    },
+    board: {
+      render(source) {
+        return renderBoardBlock(source, selected?.id);
       },
     },
     onChange(text) { saver?.update(text); updateCounts(); schedulePropertiesRender(text); },
@@ -2333,6 +2339,205 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     renderKnowledgePanels();
   }
 
+  async function moveBoardCard(entryId: EntryId, plan: BoardPlan, columnValue: string | null): Promise<void> {
+    const entry = entries.find(item => item.id === entryId && item.kind === 'markdown' && item.deletedAt === null);
+    if (!entry) throw new VaultError('NOT_FOUND', 'This board card is no longer available.');
+    const record = knowledge.get(entryId);
+    const groupProperty = Object.keys(record?.properties ?? {}).find(name =>
+      name.normalize('NFC').toLocaleLowerCase() === plan.groupProperty.normalize('NFC').toLocaleLowerCase()
+    ) ?? plan.groupProperty;
+
+    if (selected?.id === entryId && saver) {
+      await saver.flush();
+      const source = saver.draft;
+      const next = columnValue === null
+        ? deleteFrontmatterProperty(source, groupProperty)
+        : setFrontmatterProperty(source, groupProperty, columnValue);
+      if (next === source) return;
+      editor.setText(next);
+      saver.update(next);
+      await saver.flush();
+      await refreshKnowledgeEntry(entryId);
+    } else {
+      const file = await repository.read(entryId);
+      if (!file.content || file.entry.kind !== 'markdown' || file.entry.deletedAt !== null) {
+        throw new VaultError('NOT_FOUND', 'This board card is no longer available.');
+      }
+      const next = columnValue === null
+        ? deleteFrontmatterProperty(file.content.text, groupProperty)
+        : setFrontmatterProperty(file.content.text, groupProperty, columnValue);
+      if (next === file.content.text) return;
+      const saved = await repository.saveMarkdown(entryId, next, file.entry.localVersion);
+      await knowledge.upsert(saved, next);
+      const at = entries.findIndex(item => item.id === saved.id);
+      if (at >= 0) entries[at] = saved;
+      dirtyIds.add(saved.id);
+      await refreshSearchEntry(saved.id);
+      invalidateGraphModel();
+      renderTree();
+      renderKnowledgePanels();
+      renderTasks();
+      renderMedia();
+      renderCalendar();
+      if (graphOpen) renderGraph();
+      editor.refreshPreview();
+    }
+
+    if (editorMode === 'reading' && selected?.kind === 'markdown') await renderReadingCurrent();
+  }
+
+  function boardCardDetails(card: BoardCard, plan: BoardPlan): string[] {
+    const details: string[] = [];
+    for (const field of plan.cardFields) {
+      if (field === 'file' || field === 'path') continue;
+      const value = card.values[field];
+      if (value) details.push(`${boardFieldLabel(field)}: ${value}`);
+    }
+    return details;
+  }
+
+  function renderBoardBlock(source: string, sourceEntryId?: string): HTMLElement {
+    const plan = parseBoard(source);
+    const currentEntryId = sourceEntryId && entries.some(entry => entry.id === sourceEntryId)
+      ? sourceEntryId as EntryId
+      : selected?.id;
+    const result = runBoard(plan, entries, knowledge.records(), {
+      ...(currentEntryId ? { currentEntryId } : {}),
+      pathOf,
+    });
+
+    const section = document.createElement('section');
+    section.className = `board-view board-layout-${plan.layout}`;
+    section.dataset.boardProperty = plan.groupProperty;
+
+    const header = document.createElement('header');
+    header.className = 'board-view-header';
+    const heading = document.createElement('strong');
+    heading.textContent = plan.title ?? `Board by ${plan.groupProperty}`;
+    const meta = document.createElement('span');
+    meta.textContent = result.truncated || result.shown !== result.total
+      ? `${result.shown} of ${result.total} cards · ${result.columns.length} lane${result.columns.length === 1 ? '' : 's'}`
+      : `${result.total} card${result.total === 1 ? '' : 's'} · ${result.columns.length} lane${result.columns.length === 1 ? '' : 's'}`;
+    header.append(heading, meta);
+    section.append(header);
+
+    if (plan.query) {
+      const query = document.createElement('code');
+      query.className = 'board-query-expression';
+      query.textContent = plan.query;
+      section.append(query);
+    }
+
+    const lanes = document.createElement('div');
+    lanes.className = 'board-columns';
+    lanes.setAttribute('role', 'list');
+
+    for (const column of result.columns) {
+      const lane = document.createElement('section');
+      lane.className = 'board-column';
+      lane.dataset.boardColumn = column.value ?? '';
+      lane.setAttribute('role', 'listitem');
+
+      const laneHeader = document.createElement('header');
+      laneHeader.className = 'board-column-header';
+      const laneTitle = document.createElement('strong');
+      laneTitle.textContent = column.label;
+      const count = document.createElement('span');
+      count.textContent = String(column.cards.length);
+      laneHeader.append(laneTitle, count);
+      lane.append(laneHeader);
+
+      const cards = document.createElement('div');
+      cards.className = 'board-card-list';
+      cards.dataset.boardDrop = column.value ?? '';
+      cards.addEventListener('dragover', event => {
+        if (!event.dataTransfer?.types.includes('application/x-vault-board-entry')) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        cards.classList.add('drop-target');
+      });
+      cards.addEventListener('dragleave', event => {
+        if (!cards.contains(event.relatedTarget as Node | null)) cards.classList.remove('drop-target');
+      });
+      cards.addEventListener('drop', event => {
+        const raw = event.dataTransfer?.getData('application/x-vault-board-entry');
+        cards.classList.remove('drop-target');
+        if (!raw) return;
+        event.preventDefault();
+        perform(() => moveBoardCard(raw as EntryId, plan, column.value));
+      });
+
+      for (const card of column.cards) {
+        const article = document.createElement('article');
+        article.className = 'board-card';
+        article.dataset.boardCard = card.entryId;
+        article.draggable = true;
+        article.addEventListener('dragstart', event => {
+          event.dataTransfer?.setData('application/x-vault-board-entry', card.entryId);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+          article.classList.add('dragging');
+        });
+        article.addEventListener('dragend', () => article.classList.remove('dragging'));
+
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'board-card-title';
+        open.dataset.boardEntry = card.entryId;
+        open.textContent = card.title;
+
+        const path = document.createElement('span');
+        path.className = 'board-card-path';
+        path.textContent = card.path;
+        article.append(open, path);
+
+        const detailValues = boardCardDetails(card, plan);
+        if (detailValues.length) {
+          const details = document.createElement('div');
+          details.className = 'board-card-details';
+          for (const value of detailValues) {
+            const item = document.createElement('span');
+            item.textContent = value;
+            details.append(item);
+          }
+          article.append(details);
+        }
+
+        const moveLabel = document.createElement('label');
+        moveLabel.className = 'board-card-move-label';
+        const sr = document.createElement('span');
+        sr.className = 'sr-only';
+        sr.textContent = `Move ${card.title} to lane`;
+        const select = document.createElement('select');
+        select.className = 'board-card-move';
+        select.setAttribute('aria-label', `Move ${card.title} to lane`);
+        for (const target of result.columns) {
+          const option = new Option(target.label, target.value ?? '');
+          if ((card.columnValue ?? '') === (target.value ?? '')) option.selected = true;
+          select.add(option);
+        }
+        select.addEventListener('change', () => {
+          const target = result.columns.find(item => (item.value ?? '') === select.value);
+          if (target) perform(() => moveBoardCard(card.entryId, plan, target.value));
+        });
+        moveLabel.append(sr, select);
+        article.append(moveLabel);
+        cards.append(article);
+      }
+
+      if (!column.cards.length) {
+        const empty = document.createElement('p');
+        empty.className = 'board-column-empty';
+        empty.textContent = 'Drop cards here';
+        cards.append(empty);
+      }
+      lane.append(cards);
+      lanes.append(lane);
+    }
+
+    section.append(lanes);
+    return section;
+  }
+
   function renderDynamicQueryBlock(source: string, sourceEntryId?: string): HTMLElement {
     const plan = parseDynamicQuery(source);
     const currentEntryId = sourceEntryId && entries.some(entry => entry.id === sourceEntryId)
@@ -2525,6 +2730,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       query: {
         async render(source, sourceEntryId) {
           return renderDynamicQueryBlock(source, sourceEntryId);
+        },
+      },
+      board: {
+        async render(source, sourceEntryId) {
+          return renderBoardBlock(source, sourceEntryId);
         },
       },
       attachment: {
@@ -2791,6 +3001,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
 
+    const boardEntryButton = (event.target as Element).closest<HTMLButtonElement>('[data-board-entry]');
+    if (boardEntryButton?.dataset.boardEntry) {
+      perform(() => openEntry(boardEntryButton.dataset.boardEntry as EntryId));
+      return;
+    }
+
     const searchResult = (event.target as Element).closest<HTMLButtonElement>('[data-search-entry]');
     if (searchResult?.dataset.searchEntry) {
       const fromValue = searchResult.dataset.searchFrom === undefined ? null : Number(searchResult.dataset.searchFrom);
@@ -2919,6 +3135,26 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           'fields: file, path, tags, property:status',
           'sort: updated desc',
           'limit: 25',
+          'exclude-self: true',
+          '```',
+          '',
+        ].join('\n'));
+      });
+      return;
+    }
+    if (action === 'insert-board') {
+      perform(async () => {
+        if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null) return;
+        if (editorMode === 'reading') await setEditorMode('live');
+        editor.insertText([
+          '```vault-board',
+          'title: Project board',
+          'query: tag:#project',
+          'group-by: property:status',
+          'columns: backlog=Backlog, todo=To do, doing=Doing, done=Done',
+          'card-fields: tags, property:priority, updated',
+          'sort: updated desc',
+          'limit: 200',
           'exclude-self: true',
           '```',
           '',

@@ -8,7 +8,7 @@
 - CodeMirror = active editing state
 - template configuration = stable IDs/settings only
 - knowledge/search indexes = rebuildable acceleration
-- calendar/tasks/query/graph views = derived projections
+- calendar/tasks/query/graph/board views = derived projections
 - attachment store = local binary payload truth keyed by stable entry ID
 - future cloud database = synchronization/remote identity truth
 
@@ -190,6 +190,58 @@ The canvas is paired with ordinary DOM controls and a keyboard-accessible node b
 ### Canonical boundary
 
 Graph coordinates, zoom/pan state, groups, filters, orphan views and highlighted search matches are not canonical or synchronized data. Future cloud sync should continue synchronizing Markdown, stable entry metadata and attachment payloads only.
+
+## Phase 11 — Kanban board projection
+
+A board definition is canonical Markdown source inside a `vault-board` fence. Cards are not board records: they are active Markdown notes selected through the existing query grammar.
+
+```text
+vault-board fence
+      ↓
+strict board-plan parser
+      ↓
+existing dynamic-query semantics
+      ↓
+KnowledgeRecord properties + active Entry metadata
+      ↓
+property-backed columns and note cards
+      ├─→ Live Preview widget
+      └─→ sanitized Reading-mode board
+```
+
+### Lane identity
+
+Writable boards require `group-by: property:<name>`. This is deliberate: a lane move has one unambiguous canonical mutation—set or delete that frontmatter property on the card note.
+
+Configured columns define stable order and optional display labels. Property values not listed in the definition are surfaced as additional lanes rather than hiding notes. Notes without the grouping property appear in the uncategorized lane unless explicitly disabled.
+
+### Card moves
+
+A desktop drag/drop move and a touch/keyboard lane-selector move use the same mutation path.
+
+For another note:
+
+1. re-read its canonical Markdown
+2. modify YAML through the round-trip frontmatter model
+3. call `saveMarkdown(expectedVersion)`
+4. rebuild knowledge/search projections
+5. refresh the visible board
+
+For the currently open note, the mutation goes through its active `SaveCoordinator` so CodeMirror state and durable Markdown cannot diverge.
+
+No lane membership database exists.
+
+### Rendering boundary
+
+In Live Preview, only explicit `vault-board` fences produce board widgets. The source definition remains editable and becomes active when the cursor moves into it.
+
+In Reading mode, the fence is first compiled and sanitized as ordinary code. Vault then replaces only `language-vault-board` blocks with controlled DOM. Board definitions are never evaluated as HTML or JavaScript.
+
+### Performance boundary
+
+Board projection reuses the indexed knowledge records and dynamic-query engine. CI includes a 10,000-note board projection benchmark with a bounded result limit to prevent a single view from rendering an unbounded number of cards.
+
+Board lanes, rendered cards, drag state and scroll position are presentation state only. Future sync must continue to synchronize canonical Markdown/frontmatter, not board projections.
 
 ## Knowledge index
 
