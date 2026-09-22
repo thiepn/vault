@@ -14,6 +14,28 @@
 
 No UI projection is a proprietary note/task/query-result store. Binary files are intentionally not encoded into Markdown; Markdown stores readable attachment references while IndexedDB owns the local bytes.
 
+## A-series permanent domain architecture
+
+Phase A1 adds a storage-independent canonical domain contract in \`src/domain/canonical.ts\`.
+
+This is a **target semantic layer**, not an A2 storage migration. The current Phase 1–11 runtime continues to use Entry + Markdown/YAML + derived task/calendar/query/graph/board projections until A2 defines serialization and persistence changes.
+
+Permanent invariants now include:
+
+- canonical identity is never a title, filename, path or provider ID
+- new domain entities use offline-generated UUIDv7 IDs
+- existing valid Entry UUIDs are preserved when bridging Notes/Folders/Attachments
+- Tasks, Events, Projects, People, Captures, Collections and explicit Links have first-class permanent-domain identities
+- Daily Notes are specialized Notes
+- scheduled task time and due time remain distinct
+- explicit links and inferred relationships remain distinct
+- backlinks/search/graph layouts/embeddings remain derived
+- normal deletion is soft deletion
+- entity revision and schema version are separate concepts
+- external services remain adapters around Vault identity
+
+See \`docs/A1_DOMAIN_MODEL.md\` and \`docs/adr/001-canonical-domain-model.md\`.
+
 ## Local write path
 
 ```text
