@@ -18,6 +18,16 @@ The repository currently includes browser-certified:
 - **Phase 10 — Graph View & Knowledge Visualization**
 - **Phase 11 — Kanban & Structured Board Views**
 
+## Permanent architecture program
+
+The existing Phase 1–11 product remains operational. In parallel, **Architecture Phase A1 — Canonical Domain & Data Model** is now implemented as a storage-independent contract.
+
+A1 adds stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs; existing valid Entry UUIDs are preserved during future migration.
+
+A1 does **not** migrate current Markdown/IndexedDB persistence. Phase A2 will decide serialization and offline-storage architecture.
+
+See \`docs/A1_DOMAIN_MODEL.md\` and \`docs/adr/001-canonical-domain-model.md\`.
+
 ## Current capabilities
 
 ### Vault and files
