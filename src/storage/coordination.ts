@@ -1,6 +1,6 @@
 import { VaultError } from '../domain/errors.js';
 
-interface NavigatorWithLocks extends Navigator {
+interface NavigatorWithLocks {
   locks?: LockManager;
 }
 
