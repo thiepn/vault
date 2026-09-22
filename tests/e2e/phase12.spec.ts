@@ -160,11 +160,14 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   await page.mouse.move(box!.x + 140, box!.y + 74, { steps:5 });
   await page.mouse.up();
 
-  await expect.poll(async () => {
-    const text = await sourceText(page);
-    const match = /id: text-idea[\s\S]*?x:\s*(-?\d+(?:\.\d+)?)[\s\S]*?y:\s*(-?\d+(?:\.\d+)?)/u.exec(text);
-    return !!match && Number(match[1]) > 340 && Number(match[2]) > 0;
-  }).toBe(true);
+  const movedStyle = await page.locator('[data-canvas-node="text-idea"]').evaluate(element => ({
+    left: (element as HTMLElement).style.left,
+    top: (element as HTMLElement).style.top,
+  }));
+  const movedSource = await sourceText(page);
+  console.log('[phase12-drag]', JSON.stringify({ movedStyle, movedSource }));
+  const movedMatch = /id: text-idea[\s\S]*?x:\s*(-?\d+(?:\.\d+)?)[\s\S]*?y:\s*(-?\d+(?:\.\d+)?)/u.exec(movedSource);
+  expect(!!movedMatch && Number(movedMatch[1]) > 340 && Number(movedMatch[2]) > 0).toBe(true);
 
   await returnLive(page);
   canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
