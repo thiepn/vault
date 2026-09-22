@@ -164,3 +164,11 @@ create index if not exists vault_cloud_devices_account_identity_idx
 
 create index if not exists vault_cloud_vaults_account_identity_idx
   on public.vault_cloud_vaults(account_id, auth_user_id);
+
+-- A browser installation keeps one DeviceId across account sign-outs.
+-- Server identity is therefore account + device, not globally unique device.
+alter table public.vault_cloud_devices
+  drop constraint if exists vault_cloud_devices_pkey;
+
+alter table public.vault_cloud_devices
+  add constraint vault_cloud_devices_pkey primary key (account_id, id);
