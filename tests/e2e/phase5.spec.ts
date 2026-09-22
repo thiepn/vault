@@ -110,11 +110,8 @@ test('Phase 5 visual properties edit canonical frontmatter and reindex search', 
   await expect(page.locator('.property-row[data-property-name="priority"] .property-type')).toHaveValue('number');
 
   const priorityName = page.locator('.property-row[data-property-name="priority"] .property-name');
-  await priorityName.evaluate(element => {
-    const input = element as HTMLInputElement;
-    input.value = 'importance';
-    input.dispatchEvent(new Event('change', { bubbles:true }));
-  });
+  await priorityName.fill('importance');
+  await priorityName.blur();
   await expect(page.locator('.property-row[data-property-name="importance"]')).toBeVisible();
 
   await page.locator('.property-row[data-property-name="status"] .property-delete').click();
