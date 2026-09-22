@@ -2411,8 +2411,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const heading = document.createElement('strong');
     heading.textContent = plan.title ?? `Board by ${plan.groupProperty}`;
     const meta = document.createElement('span');
-    meta.textContent = result.truncated
-      ? `${result.shown} of ${result.total} cards`
+    meta.textContent = result.truncated || result.shown !== result.total
+      ? `${result.shown} of ${result.total} cards · ${result.columns.length} lane${result.columns.length === 1 ? '' : 's'}`
       : `${result.total} card${result.total === 1 ? '' : 's'} · ${result.columns.length} lane${result.columns.length === 1 ? '' : 's'}`;
     header.append(heading, meta);
     section.append(header);
