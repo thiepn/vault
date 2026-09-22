@@ -20,10 +20,11 @@ The repository currently includes browser-certified:
 - **Phase 12 — Canvas & Spatial Knowledge Workspace**
 - **Phase 13 — Obsidian Import, Migration & Interoperability**
 - **Phase 14 — Cloud Accounts, Device Identity & Sync Foundation**
+- **Phase 15 — Remote Replication, Conflict Resolution & Attachment Sync**
 
 ## Permanent architecture program
 
-The Phase 1–14 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–15 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
@@ -39,7 +40,7 @@ The Phase 1–14 product now runs on the **A1/A2 permanent local foundation**.
 - persistent-storage requests and quota/health support
 - full-fidelity Vault archives with checksums
 - service-worker application-shell caching and cold offline PWA startup
-- compatibility mirroring so Phase 1–14 behavior remains available during the canonical-storage transition
+- compatibility mirroring so Phase 1–15 behavior remains available during the canonical-storage transition
 
 See `docs/A1_DOMAIN_MODEL.md`, `docs/A2_STORAGE_ARCHITECTURE.md`, and the ADRs under `docs/adr/`.
 
@@ -407,6 +408,57 @@ Backend:
 - no service-role or secret key enters the browser
 
 **Phase 14 does not sync note or attachment contents yet.** It establishes the authenticated account/device/Vault identity, cursor and outbox foundations that Phase 15 will use for real remote replication and conflict handling.
+### Remote Replication, Conflict Resolution & Attachment Sync
+
+Phase 15 turns the Phase 14 identity/outbox foundation into explicit cross-device content synchronization.
+
+Synchronization remains local-first:
+
+- local editing never waits for the network
+- only explicitly cloud-adopted Vaults can synchronize
+- **Sync now** is an explicit user action in this phase
+- every run pulls ordered remote events before synthesizing/pushing local dirty state
+- one second pull/synthesize/push pass catches races created during the first pass
+- account, Vault epoch and DeviceId mismatches fail closed
+
+Canonical remote content:
+
+- folders and stable entry identity
+- Markdown text
+- move/rename state
+- Trash/restore state
+- attachment metadata
+- attachment binary payloads through a private content-addressed Supabase Storage bucket
+
+Replication protocol:
+
+- immutable operation IDs and exact JSON wire payloads
+- SHA-256 operation integrity
+- idempotent push retry
+- per-Vault PostgreSQL-bigint-compatible ordered event cursor
+- strict runtime validation of every page, event, snapshot and push acknowledgement
+- remote tables are not directly writable/readable by the browser; authenticated RPCs are the mutation/read boundary
+
+Conflict handling is deliberately conservative:
+
+- clean remote updates apply to the canonical local entry
+- identical local/remote state reconciles without creating a conflict
+- concurrent Markdown edits preserve the local side as a separate `conflict` copy, then apply the remote canonical version
+- a local delete racing a remote edit preserves a conflict copy and reapplies the local delete intent
+- remote path collisions fail closed and require an explicit rename rather than guessing
+- already-synchronized attachment bytes are immutable in-place; duplicate the attachment to preserve a changed binary version
+
+Attachments use content-addressed blob identity:
+
+- SHA-256 is calculated locally
+- blob upload happens before the attachment create operation
+- retries verify an already-existing remote blob instead of overwriting it
+- downloaded bytes are verified against SHA-256 and expected size before becoming canonical locally
+- a second device can reconstruct notes, folders and attachments from the remote event stream and private blob bucket
+
+The Cloud panel displays the current cursor, pull/push counts, preserved conflicts, uploaded/downloaded blobs and queued operation count.
+
+Phase 15 does not claim real-time/background synchronization or automatic diff3 text merging. Those are later hardening/workflow layers.
 ## Canonical data
 
 ```text
@@ -436,7 +488,8 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 ## Not implemented yet
 
-- remote note/attachment replication, conflict handling and full cross-device sync
+- continuous/background sync scheduling
+- automatic diff3 merge for independently edited Markdown regions
 
 ## Development
 
@@ -448,17 +501,18 @@ npm test
 npm run benchmark:search
 npm run benchmark:interop
 npm run benchmark:sync-foundation
+npm run benchmark:replication
 npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration/sync-foundation performance gates, production Vite build and real Chromium desktop/mobile acceptance.
+CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration/sync-foundation/remote-replication performance gates, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.14.0-phase14**
+- Current package version: **0.15.0-phase15**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
