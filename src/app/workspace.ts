@@ -4,6 +4,7 @@ import { VaultTree } from '../domain/tree.js';
 import { openDatabase } from '../storage/database.js';
 import { A2LocalRepository, A2Persistence } from '../storage/a2-persistence.js';
 import { requestPersistentStorage } from '../storage/storage-health.js';
+import { VaultBroadcast } from '../storage/coordination.js';
 import { request, transact } from '../storage/idb.js';
 import { SaveCoordinator } from '../services/save-coordinator.js';
 import { readZipStore, vaultFiles, zipStore } from '../services/export.js';
@@ -40,7 +41,8 @@ type EditorMode = 'source' | 'live' | 'reading';
 /** Phase 12 browser workspace: Markdown-backed spatial canvases on the accepted Phase 1-11 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
-  const a2 = await A2Persistence.create(db);
+  const storageSessionId = crypto.randomUUID();
+  const a2 = await A2Persistence.create(db, storageSessionId);
   await a2.repairAll().catch(async error => {
     await a2.markRepairNeeded(error).catch(() => undefined);
   });
@@ -454,6 +456,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }).catch(showError);
     return chain.then(() => undefined);
   }
+  const crossTab = new VaultBroadcast('vault:storage', message => {
+    if (disposed || message.kind === 'migration-started') return;
+    if (saver?.hasUnsavedChanges) {
+      errorBox.textContent = 'Another Vault tab changed local data while this editor has unsaved work. Your draft is preserved; save/reopen to reconcile instead of overwriting it.';
+      errorBox.hidden = false;
+      return;
+    }
+    perform(async () => {
+      const currentId = selected?.id;
+      await refresh();
+      if (currentId && entries.some(entry => entry.id === currentId)) await openEntry(currentId);
+    });
+  }, storageSessionId);
+
   function download(filename: string, content: BlobPart, type: string): void {
     const url = URL.createObjectURL(new Blob([content], { type }));
     const link = document.createElement('a');
@@ -3808,6 +3824,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     graphCanvasView.destroy();
     for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
     attachmentObjectUrls.clear();
+    crossTab.close();
     a2.close();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
   };
