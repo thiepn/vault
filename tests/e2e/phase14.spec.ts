@@ -22,8 +22,14 @@ async function createVault(page: Page, name='Cloud Test'): Promise<void> {
   await expect(page.locator('#vault-vault option:checked')).toHaveText(name);
 }
 
+const corsHeaders={
+  'Access-Control-Allow-Origin':'*',
+  'Access-Control-Allow-Headers':'authorization,apikey,content-type,prefer',
+  'Access-Control-Allow-Methods':'GET,POST,PATCH,OPTIONS',
+};
+
 function json(route: Route, body: unknown, status=200) {
-  return route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
+  return route.fulfill({status,contentType:'application/json',headers:corsHeaders,body:JSON.stringify(body)});
 }
 
 async function mockCloud(page: Page) {
@@ -37,6 +43,7 @@ async function mockCloud(page: Page) {
     const request=route.request();
     const url=new URL(request.url());
     calls.push(request.method()+' '+url.pathname+url.search);
+    if(request.method()==='OPTIONS') return route.fulfill({status:204,headers:corsHeaders,body:''});
 
     if(url.pathname==='/auth/v1/token' && url.searchParams.get('grant_type')==='password'){
       return json(route,{access_token:ACCESS,refresh_token:REFRESH,expires_in:3600});
@@ -45,7 +52,7 @@ async function mockCloud(page: Page) {
       expect(request.headers()['authorization']).toBe('Bearer '+ACCESS);
       return json(route,{id:userId,email:'cloud@example.test'});
     }
-    if(url.pathname==='/auth/v1/logout') return route.fulfill({status:204,body:''});
+    if(url.pathname==='/auth/v1/logout') return route.fulfill({status:204,headers:corsHeaders,body:''});
 
     if(url.pathname==='/rest/v1/vault_accounts' && request.method()==='POST'){
       return json(route,[{id:accountId,auth_user_id:userId,created_at:'2026-09-22T12:00:00.000Z'}],201);
