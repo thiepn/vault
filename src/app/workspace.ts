@@ -41,6 +41,7 @@ import { browserCloudConfiguration } from '../cloud/config.js';
 import { SupabaseRestAuth } from '../cloud/auth-rest.js';
 import { SupabaseCloudRegistry } from '../cloud/supabase-registry.js';
 import { CloudFoundation, type CloudFoundationStatus } from '../cloud/foundation.js';
+import { SyncLocalState } from '../sync/local-state.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
@@ -55,6 +56,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   });
   const repository = new A2LocalRepository(db, a2);
   const cloudConfig = browserCloudConfiguration();
+  const syncState = new SyncLocalState(db);
   let cloud: CloudFoundation | null = null;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
@@ -65,6 +67,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       auth,
       registry,
       repository,
+      syncState,
       window.localStorage,
       cloudConfig.url,
       navigator.userAgent,
