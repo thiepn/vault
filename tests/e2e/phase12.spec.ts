@@ -59,10 +59,6 @@ async function sourceText(page: Page): Promise<string> {
   return (await page.locator('#vault-editor .cm-line').allTextContents()).join('\n');
 }
 
-async function liveEditorText(page: Page): Promise<string> {
-  return (await page.locator('#vault-editor .cm-line').allTextContents()).join('\n');
-}
-
 async function returnLive(page: Page): Promise<void> {
   await page.locator('[data-editor-mode="live"]').click();
   const content = page.locator('#vault-editor .cm-content');
@@ -228,19 +224,16 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   await expect(canvas).toBeVisible();
   await canvas.getByRole('button', { name:'Zoom in' }).click();
 
-  await expect.poll(async () => {
-    const text = await liveEditorText(page);
-    const match = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(text);
-    return match ? Number(match[1]) : 0;
-  }).toBeGreaterThan(beforeZoom);
-  await expect(page.locator('.save-status')).toContainText('Saved locally');
-
-  await returnLive(page);
-  canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
+  // Canvas persistence and navigation share Vault's serialized action queue.
+  // Opening Alpha cannot run until the zoom write has durably completed.
   await canvas.locator('[data-canvas-node="note-alpha"] .canvas-open-button').click();
   await expect(page.locator('.breadcrumb')).toContainText('Alpha.md');
 
   await quickOpen(page, 'Spatial');
+  const afterZoomSource = await sourceText(page);
+  const afterZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(afterZoomSource);
+  expect(afterZoomMatch).not.toBeNull();
+  expect(Number(afterZoomMatch![1])).toBeGreaterThan(beforeZoom);
   await page.locator('[data-editor-mode="reading"]').click();
   const readingCanvas = page.locator('.reading-view .canvas-workspace');
   await expect(readingCanvas).toBeVisible();
