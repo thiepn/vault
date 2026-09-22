@@ -89,11 +89,11 @@ test('A2 PWA cold-starts offline and opens durable local data', async ({ page, c
     if (!('serviceWorker' in navigator)) return false;
     await navigator.serviceWorker.ready;
     const keys = await caches.keys();
-    return navigator.serviceWorker.controller !== null && keys.some(key => key.startsWith('vault-shell-'));
+    return navigator.serviceWorker.controller !== null && document.documentElement.dataset.offlineShell === 'ready' && keys.some(key => key.startsWith('vault-shell-'));
   }), { timeout: 10_000 }).toBe(true);
 
   await expect.poll(async () => page.evaluate(async () => {
-    const cache = await caches.open('vault-shell-a2-v1');
+    const cache = await caches.open('vault-shell-a2-v2');
     const keys = await cache.keys();
     return keys.some(request => /\/assets\/.*\.js(?:$|\?)/u.test(request.url));
   }), { timeout: 10_000 }).toBe(true);
