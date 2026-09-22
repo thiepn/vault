@@ -1,8 +1,31 @@
 import { VaultError } from '../domain/errors.js';
 import type { Principal } from '../domain/model.js';
 
-export const SCHEMA_VERSION = 3;
-export const STORES = ['vaults', 'entries', 'contents', 'attachments', 'dirty', 'outbox', 'revisions', 'drafts', 'settings', 'remoteShadows', 'syncCursors', 'knowledge'] as const;
+/**
+ * Schema v4 is the A2 additive persistence foundation.
+ * Phase 1–11 stores stay intact while canonical entities/note bodies/blobs are
+ * populated and verified before a later cut-over. This makes upgrade rollback
+ * possible without re-identifying existing content.
+ */
+export const SCHEMA_VERSION = 4;
+export const STORES = [
+  'vaults',
+  'entries',
+  'contents',
+  'attachments',
+  'dirty',
+  'outbox',
+  'revisions',
+  'drafts',
+  'settings',
+  'remoteShadows',
+  'syncCursors',
+  'knowledge',
+  'entities',
+  'noteBodies',
+  'blobPayloads',
+  'migrationState',
+] as const;
 export type StoreName = typeof STORES[number];
 
 export function databaseName(principal: Principal): string {
@@ -50,6 +73,21 @@ export async function openDatabase(name = databaseName({ kind: 'local' })): Prom
       if (event.oldVersion < 3) {
         const attachments = db.createObjectStore('attachments', { keyPath: 'entryId' });
         attachments.createIndex('vaultId', 'vaultId');
+      }
+      if (event.oldVersion < 4) {
+        const entities = db.createObjectStore('entities', { keyPath: 'id' });
+        entities.createIndex('vaultId', 'vaultId');
+        entities.createIndex('entityType', 'entityType');
+        entities.createIndex('vaultEntityType', ['vaultId', 'entityType']);
+        entities.createIndex('sourceNoteId', 'sourceNoteId');
+
+        const noteBodies = db.createObjectStore('noteBodies', { keyPath: 'noteId' });
+        noteBodies.createIndex('vaultId', 'vaultId');
+
+        const blobs = db.createObjectStore('blobPayloads', { keyPath: 'hash' });
+        blobs.createIndex('createdAt', 'createdAt');
+
+        db.createObjectStore('migrationState', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => {
