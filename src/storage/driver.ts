@@ -10,6 +10,7 @@ export interface TransactionStore {
   allFromIndex<T>(index: string, key: string): Promise<T[]>;
   add(value: object): Promise<void>;
   put(value: object): Promise<void>;
+  delete(key: string): Promise<void>;
 }
 export interface StorageTransaction { store(name: StoreName): TransactionStore }
 export interface LocalStorageDriver {
@@ -29,6 +30,7 @@ export class NativeIndexedDBDriver implements LocalStorageDriver {
           allFromIndex: <V>(index: string, key: string) => request<V[]>(target.index(index).getAll(key)),
           async add(value) { await request(target.add(value)); },
           async put(value) { await request(target.put(value)); },
+          async delete(key) { await request(target.delete(key)); },
         };
       },
     }));
