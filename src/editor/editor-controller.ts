@@ -8,6 +8,7 @@ import { livePreviewExtension } from './live-preview.js';
 import { wikiCompletionExtension, wikiPreviewExtension, type WikiEditorBridge } from './wiki-links.js';
 import { queryPreviewExtension, type QueryEditorBridge } from './query-preview.js';
 import { boardPreviewExtension, type BoardEditorBridge } from './board-preview.js';
+import { canvasPreviewExtension, type CanvasEditorBridge } from './canvas-preview.js';
 
 export type EditMode = 'source' | 'live';
 export type MarkdownCommand =
@@ -32,6 +33,7 @@ export interface MarkdownEditorOptions {
   wiki?: WikiEditorBridge;
   query?: QueryEditorBridge;
   board?: BoardEditorBridge;
+  canvas?: CanvasEditorBridge;
   onChange(text: string): void;
   onStats?(stats: EditorStats): void;
 }
@@ -89,6 +91,7 @@ export class MarkdownEditor {
   private readonly wiki: WikiEditorBridge | undefined;
   private readonly query: QueryEditorBridge | undefined;
   private readonly board: BoardEditorBridge | undefined;
+  private readonly canvas: CanvasEditorBridge | undefined;
   private cachedCharacters = 0;
   private cachedWords = 0;
 
@@ -99,6 +102,7 @@ export class MarkdownEditor {
     this.wiki = options.wiki;
     this.query = options.query;
     this.board = options.board;
+    this.canvas = options.canvas;
     host.dataset.lineNumbers = String(options.lineNumbers ?? false);
     host.dataset.mode = this.mode;
 
@@ -225,6 +229,7 @@ export class MarkdownEditor {
       ...(this.wiki ? [wikiPreviewExtension(this.wiki)] : []),
       ...(this.query ? [queryPreviewExtension(this.query)] : []),
       ...(this.board ? [boardPreviewExtension(this.board)] : []),
+      ...(this.canvas ? [canvasPreviewExtension(this.canvas)] : []),
     ];
   }
 
