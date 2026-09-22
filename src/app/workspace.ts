@@ -476,7 +476,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       {
         onStatus(status) {
           collaborationStatus = status;
-          if (status !== 'connected') collaborationPresenceReady = false;
+          if (status !== 'connected') {
+            collaborationPresenceReady = false;
+            updateCrdtLeader();
+          }
           if (!disposed) renderCollaborationState();
         },
         onPresence(participants) {
@@ -1041,10 +1044,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           .then(()=>crdtBase ? clearCrdtRecoveryDraft(crdtBase.entryId) : undefined)
           .catch(showError);
       }
-    }else if(next){
+    }else{
       queueCrdtRecovery(crdtDocument.value);
       if(previous===storageSessionId) void saver?.flush().catch(showError);
-      if(crdtStatus==='connected') requestCrdtSync();
+      if(next && crdtStatus==='connected') requestCrdtSync();
     }
     renderCollaborationState();
   }
