@@ -17,6 +17,7 @@ The repository currently includes browser-certified:
 - **Phase 9 — Attachments, Images & Media**
 - **Phase 10 — Graph View & Knowledge Visualization**
 - **Phase 11 — Kanban & Structured Board Views**
+- **Phase 12 — Canvas & Spatial Knowledge Workspace**
 
 ## Current capabilities
 
@@ -268,7 +269,8 @@ Markdown
    ├─→ task projection
    ├─→ dynamic query projection
    ├─→ knowledge graph projection
-   └─→ Kanban board projection
+   ├─→ Kanban board projection
+   └─→ authored spatial Canvas document
 ```
 
 Tasks, Daily Notes, templates and query definitions remain file/text concepts. Attachment bytes are stored as separate local binary records keyed by stable vault entry IDs; Markdown contains readable attachment paths. Query results remain disposable projections.
@@ -299,6 +301,62 @@ CI runs strict TypeScript, all core contracts, the 10k search benchmark, product
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.11.0-phase11**
+- Current package version: **0.12.0-phase12**
 
-Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
+Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.### Canvas & Spatial Knowledge Workspace
+
+Spatial canvases are authored directly inside Markdown with a strict `vault-canvas` YAML document.
+
+```vault-canvas
+version: 1
+id: canvas-project
+viewport: { x: 80, y: 80, zoom: 1 }
+nodes:
+  - id: note-alpha
+    type: note
+    target: Projects/Alpha
+    x: 0
+    y: 0
+    width: 260
+    height: 160
+  - id: text-question
+    type: text
+    text: What connects these ideas?
+    x: 340
+    y: 0
+    width: 260
+    height: 160
+edges:
+  - id: edge-alpha-question
+    from: note-alpha
+    to: text-question
+    label: motivates
+groups: []
+```
+
+Canvas capabilities include:
+
+- note cards resolved against the vault
+- text cards
+- local media cards
+- movable and resizable cards
+- visual groups
+- directed labeled connections
+- add/edit/delete workflows
+- pan, zoom and Fit
+- persisted viewport
+- grid snapping with Alt for free positioning
+- keyboard pan/zoom
+- desktop mouse and Pointer Event gestures
+- touch-compatible pointer interaction
+- Live Preview Canvas widgets
+- Reading-mode Canvas rendering after sanitization
+- fullscreen workspace expansion
+- stale-safe Markdown fence persistence
+- reload-safe geometry and connections
+- automatic cleanup when a rendered Canvas detaches
+- maximum-size Canvas performance certification
+
+Unlike Graph coordinates, Canvas geometry is authored user content. Node positions, sizes, groups, edges and viewport are therefore stored in the Markdown document and exported with the vault.
+
+
