@@ -56,6 +56,7 @@ class FakeRemote {
     this.blobs=new Map();
     this.uploadCount=0;
     this.downloadCount=0;
+    this.beforeNextPush=null;
     this.onPushCommitted=null;
   }
   emit(operationId,deviceId,kind,snapshot){
@@ -100,6 +101,11 @@ class FakeRemote {
     if(existing){
       assert.equal(existing.sha256,sealed.sha256);
       return cloneSnapshot(existing.result);
+    }
+    if(this.beforeNextPush){
+      const hook=this.beforeNextPush;
+      this.beforeNextPush=null;
+      await hook(operation);
     }
     const snapshots=[];
     let through=String(this.events.length);
@@ -268,6 +274,33 @@ test('Phase 15 newer local edit after an old push is not misclassified as remote
   assert.equal((await context.repo.read(note.id)).content.text,'v2 after push');
   assert.equal(summary.conflictsPreserved,0);
   assert.equal(await context.state.count(context.vault.id),0);
+});
+
+test('Phase 15 push-time revision conflict is materialized exactly once when its event is later pulled',async()=>{
+  const driver=new MemoryDriver();
+  const context=await makeCloudVault(driver);
+  const note=await context.repo.createEntry(context.vault.id,null,'Push Race','markdown','base');
+  const remote=new FakeRemote(context.vault.id,context.epoch);
+  const engine=new SyncEngine(remote,context.state,context.replica,context.repo);
+  await engine.sync(context.vault,context.ownerId);
+
+  const current=await context.repo.read(note.id);
+  await context.repo.saveMarkdown(note.id,'local edit',current.entry.localVersion);
+  remote.beforeNextPush=async()=>{ remote.remoteWrite(note.id,'remote won first'); };
+
+  const first=await engine.sync(context.vault,context.ownerId);
+  assert.equal(first.conflictsPreserved,1);
+  assert.equal((await context.repo.read(note.id)).content.text,'remote won first');
+  let entries=await context.repo.listEntries(context.vault.id);
+  let conflicts=entries.filter(entry=>entry.kind==='markdown' && entry.id!==note.id && /conflict/u.test(entry.name));
+  assert.equal(conflicts.length,1);
+  assert.equal((await context.repo.read(conflicts[0].id)).content.text,'local edit');
+
+  const second=await engine.sync(context.vault,context.ownerId);
+  entries=await context.repo.listEntries(context.vault.id);
+  conflicts=entries.filter(entry=>entry.kind==='markdown' && entry.id!==note.id && /conflict/u.test(entry.name));
+  assert.equal(conflicts.length,1);
+  assert.equal(second.conflictsPreserved,0);
 });
 
 test('Phase 15 attachment blob uploads once and downloads onto another clean device',async()=>{
