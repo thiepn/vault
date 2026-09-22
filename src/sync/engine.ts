@@ -119,6 +119,15 @@ export class SyncEngine {
       return;
     }
 
+    const known=await this.state.shadow(event.entryId,ownerId,binding.epoch);
+    if(known && event.snapshot.revision <= known.snapshot.revision){
+      // A push conflict/ack may have already incorporated a newer snapshot than
+      // this historical event. Do not replay the same conflict or downgrade the
+      // remote shadow; cursor advancement still happens in the caller.
+      await this.replica.clearDirtyIfMatched(event.snapshot);
+      return;
+    }
+
     const dirty=await this.state.isDirty(event.entryId);
     if(dirty || pending.length){
       if(await this.replica.matches(event.snapshot)){
