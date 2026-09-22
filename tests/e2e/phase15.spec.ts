@@ -82,6 +82,15 @@ class MockSyncCloud {
         })));
       }
 
+      if(url.pathname==='/rest/v1/rpc/vault_accessible_vaults' && request.method()==='POST'){
+        return json(route,this.adopted?[{
+          id:this.remoteVaultId,account_id:accountId,auth_user_id:userId,
+          owner_account_id:accountId,owner_auth_user_id:userId,access_role:'owner',
+          name:this.remoteVaultName,epoch,protocol_version:1,
+          created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
+        }]:[]);
+      }
+
       if(url.pathname==='/rest/v1/vault_cloud_vaults' && request.method()==='POST'){
         const body=JSON.parse(request.postData()??'{}');
         this.remoteVaultId=body.id;
