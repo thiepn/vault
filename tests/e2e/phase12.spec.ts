@@ -153,7 +153,10 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   await expect(canvas).not.toHaveClass(/expanded/);
 
   await canvas.getByRole('button', { name:'Fit canvas content' }).click();
+  canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
+  await expect(canvas).toBeVisible();
   const header = canvas.locator('[data-canvas-node="text-idea"] .canvas-node-header');
+  await expect(header).toBeVisible();
   const box = await header.boundingBox();
   expect(box).not.toBeNull();
   await page.mouse.move(box!.x + 40, box!.y + 14);
