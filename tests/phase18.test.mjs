@@ -96,6 +96,23 @@ test('Phase 18 viewer replicas are locally read-only and become writable after a
   assert.equal((await repo.read(updated.id)).content.text,'# editor edit');
 });
 
+test('Phase 18 refuses to rebind one local replica across authenticated accounts',async()=>{
+  const driver=new MemoryDriver();
+  const repo=new LocalRepository(driver);
+  const vaultId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await repo.createCloudReplica('Shared',binding(vaultId,'editor'));
+  const otherBinding={
+    ...binding(vaultId,'editor'),
+    accountId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    authUserId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    deviceId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+  };
+  await assert.rejects(
+    ()=>repo.createCloudReplica('Shared',otherBinding),
+    error=>error?.code==='COLLISION' && /another account/u.test(error.message),
+  );
+});
+
 test('Phase 18 viewer sync pulls canonical changes but never pushes',async()=>{
   const driver=new MemoryDriver();
   const repo=new LocalRepository(driver);
