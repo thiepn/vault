@@ -324,6 +324,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const dialogInput = element<HTMLInputElement>('#vault-dialog-input');
   const dialogSelect = element<HTMLSelectElement>('.dialog-select');
   const recoveryDialog = element<HTMLDialogElement>('.recovery-dialog');
+  const migrationDialog = element<HTMLDialogElement>('.migration-dialog');
+  const migrationSummary = element<HTMLElement>('.migration-summary');
+  const migrationDetails = element<HTMLElement>('.migration-details');
+  const migrationVaultName = element<HTMLInputElement>('.migration-vault-name');
   const templateDialog = element<HTMLDialogElement>('.template-dialog');
   const templateDialogSelect = element<HTMLSelectElement>('.template-dialog-select');
   const recoverySelect = element<HTMLSelectElement>('#recovery-select');
@@ -349,6 +353,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const attachmentDetail = element<HTMLElement>('.attachment-detail');
   const attachmentFileInput = element<HTMLInputElement>('.attachment-file-input');
   const archiveRestoreInput = element<HTMLInputElement>('.archive-restore-input');
+  const obsidianZipInput = element<HTMLInputElement>('.obsidian-zip-input');
+  const obsidianFolderInput = element<HTMLInputElement>('.obsidian-folder-input');
   const graphSurface = element<HTMLElement>('.graph-surface');
   const graphCanvas = element<HTMLCanvasElement>('.graph-canvas');
   const graphModeSelect = element<HTMLSelectElement>('.graph-mode');
@@ -495,6 +501,144 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function downloadDraft(): void {
     if (!selected || selected.kind !== 'markdown') return;
     download(selected.name, saver?.draft ?? editor.getText(), 'text/markdown;charset=utf-8');
+  }
+
+  function migrationLine(label: string, value: string): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'migration-line';
+    const key = document.createElement('strong');
+    key.textContent = label;
+    const text = document.createElement('span');
+    text.textContent = value;
+    row.append(key, text);
+    return row;
+  }
+
+  async function confirmMigrationPlan(plan: ObsidianMigrationPlan): Promise<string | null> {
+    migrationSummary.textContent = `${plan.report.markdownNotes} notes · ${plan.report.attachments} attachments · ${plan.report.canvasesConverted} Canvas converted · ${plan.report.directories} folders`;
+    migrationDetails.replaceChildren(
+      migrationLine('Configuration', `${plan.report.ignoredConfiguration} .obsidian files ignored`),
+      migrationLine('System files', `${plan.report.ignoredSystemFiles} ignored`),
+      migrationLine('Renamed paths', String(plan.report.renamedPaths.length)),
+      migrationLine('Links rewritten', `${plan.report.rewrittenWikiLinks} Wiki · ${plan.report.rewrittenMarkdownLinks} Markdown`),
+    );
+    if (plan.report.detectedCommunityPlugins.length) {
+      migrationDetails.append(migrationLine('Detected plugins', plan.report.detectedCommunityPlugins.join(', ')));
+    }
+    if (plan.report.warnings.length) {
+      const warning = document.createElement('details');
+      warning.className = 'migration-warnings';
+      const summary = document.createElement('summary');
+      summary.textContent = `${plan.report.warnings.length} compatibility warning${plan.report.warnings.length === 1 ? '' : 's'}`;
+      const list = document.createElement('ul');
+      for (const message of plan.report.warnings.slice(0, 12)) {
+        const item = document.createElement('li');
+        item.textContent = message;
+        list.append(item);
+      }
+      if (plan.report.warnings.length > 12) {
+        const more = document.createElement('li');
+        more.textContent = `…and ${plan.report.warnings.length - 12} more.`;
+        list.append(more);
+      }
+      warning.append(summary, list);
+      migrationDetails.append(warning);
+    }
+    if (plan.report.renamedPaths.length) {
+      const renamed = document.createElement('details');
+      renamed.className = 'migration-renames';
+      const summary = document.createElement('summary');
+      summary.textContent = 'Show renamed paths';
+      const list = document.createElement('ul');
+      for (const change of plan.report.renamedPaths.slice(0, 12)) {
+        const item = document.createElement('li');
+        item.textContent = `${change.from} → ${change.to}`;
+        list.append(item);
+      }
+      if (plan.report.renamedPaths.length > 12) {
+        const more = document.createElement('li');
+        more.textContent = `…and ${plan.report.renamedPaths.length - 12} more.`;
+        list.append(more);
+      }
+      renamed.append(summary, list);
+      migrationDetails.append(renamed);
+    }
+
+    migrationVaultName.value = plan.suggestedVaultName;
+    migrationDialog.returnValue = '';
+    migrationDialog.showModal();
+    migrationVaultName.focus();
+    migrationVaultName.select();
+
+    return await new Promise(resolve => {
+      migrationDialog.addEventListener('close', () => {
+        if (migrationDialog.returnValue !== 'confirm') {
+          resolve(null);
+          return;
+        }
+        const name = migrationVaultName.value.trim();
+        resolve(name || null);
+      }, { once: true });
+    });
+  }
+
+  async function activateMigratedVault(vaultId: VaultId, summary: string): Promise<void> {
+    await clearSelection();
+    vaults = await repository.listVaults();
+    vault = vaults.find(item => item.id === vaultId);
+    if (!vault) throw new VaultError('CORRUPT', 'Imported Obsidian Vault could not be reopened.');
+    preferencesVaultId = undefined;
+    knowledgeVaultId = undefined;
+    searchVaultId = undefined;
+    showingTrash = false;
+    filterText = '';
+    await refresh();
+    await setting('lastVault', vault.id);
+    element<HTMLElement>('.storage-message').textContent = summary;
+    void requestPersistentStorage();
+  }
+
+  async function runObsidianMigration(plan: ObsidianMigrationPlan): Promise<void> {
+    const name = await confirmMigrationPlan(plan);
+    if (name === null) return;
+    if (saver) await saver.flush();
+    const result = await commitObsidianMigration(db, a2, plan, name);
+    const summary = `Imported ${result.markdownNotes} notes, ${result.attachments} attachments and ${result.directories} folders from Obsidian.${result.canonicalMirrorComplete ? '' : ' Canonical mirror repair is pending.'}`;
+    await activateMigratedVault(result.vaultId, summary);
+  }
+
+  async function buildObsidianExport(): Promise<{ files: ReturnType<typeof vaultFiles>; canvasCount: number; warnings: string[] }> {
+    if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault to export.');
+    if (saver) await saver.flush();
+    const snapshot = await repository.snapshot(vault.id);
+    const tree = new VaultTree(snapshot.entries);
+    const active = new Map(snapshot.entries.filter(entry => entry.deletedAt === null).map(entry => [entry.id, entry]));
+    const markdownByPath = new Map<string, string>();
+    const canvasDocumentsByPath = new Map<string, CanvasDocument[]>();
+    const warnings: string[] = [];
+
+    for (const content of snapshot.contents) {
+      const entry = active.get(content.entryId);
+      if (!entry || entry.kind !== 'markdown') continue;
+      const path = tree.path(entry.id);
+      markdownByPath.set(path, content.text);
+      const documents: CanvasDocument[] = [];
+      for (const fence of parseCanvasFences(content.text)) {
+        try {
+          documents.push(parseCanvasDocument(fence.source));
+        } catch {
+          warnings.push(`Skipped an invalid Vault Canvas block in ${path} while creating Obsidian companions.`);
+        }
+      }
+      if (documents.length) canvasDocumentsByPath.set(path, documents);
+    }
+
+    const interoperable = obsidianExportFiles(vaultFiles(snapshot), markdownByPath, canvasDocumentsByPath);
+    return {
+      files: interoperable.files,
+      canvasCount: interoperable.report.canvasCompanions,
+      warnings: [...warnings, ...interoperable.report.warnings],
+    };
   }
 
   async function attachmentObjectUrl(entryId: EntryId): Promise<string> {
