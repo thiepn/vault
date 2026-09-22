@@ -466,6 +466,95 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       url: await attachmentObjectUrl(entry.id),
     };
   }
+  function resolveCanvasNote(target: string, sourceEntryId: EntryId): CanvasNoteResolution {
+    const resolution = knowledge.resolveRaw(target, sourceEntryId, entries);
+    if (resolution.status !== 'resolved') return { status: resolution.status };
+    const entry = entries.find(item => item.id === resolution.entryId && item.kind === 'markdown' && item.deletedAt === null);
+    if (!entry) return { status: 'unresolved' };
+    return {
+      status: 'resolved',
+      entryId: entry.id,
+      title: entry.name.replace(/\.md$/iu, ''),
+      path: pathOf(entry.id),
+    };
+  }
+
+  async function persistCanvasDocument(sourceEntryId: EntryId, document: CanvasDocument): Promise<void> {
+    const serialized = serializeCanvasDocument(document);
+    const sourceEntry = entries.find(item => item.id === sourceEntryId && item.kind === 'markdown' && item.deletedAt === null);
+    if (!sourceEntry) throw new VaultError('NOT_FOUND', 'The Markdown note containing this Canvas is unavailable.');
+
+    if (selected?.id === sourceEntryId && saver) {
+      await saver.flush();
+      const current = saver.draft;
+      const next = replaceCanvasFenceSource(current, document.id, serialized);
+      if (next === current) return;
+      editor.setText(next);
+      saver.update(next);
+      await saver.flush();
+      await refreshKnowledgeEntry(sourceEntryId);
+    } else {
+      const file = await repository.read(sourceEntryId);
+      if (!file.content || file.entry.kind !== 'markdown' || file.entry.deletedAt !== null) {
+        throw new VaultError('NOT_FOUND', 'The Markdown note containing this Canvas is unavailable.');
+      }
+      const next = replaceCanvasFenceSource(file.content.text, document.id, serialized);
+      if (next === file.content.text) return;
+      const saved = await repository.saveMarkdown(sourceEntryId, next, file.entry.localVersion);
+      await knowledge.upsert(saved, next);
+      const at = entries.findIndex(item => item.id === saved.id);
+      if (at >= 0) entries[at] = saved;
+      dirtyIds.add(saved.id);
+      await refreshSearchEntry(saved.id);
+      invalidateGraphModel();
+      renderTree();
+      renderKnowledgePanels();
+      renderTasks();
+      renderMedia();
+      renderCalendar();
+      if (graphOpen) renderGraph();
+      editor.refreshPreview();
+    }
+
+    if (editorMode === 'reading' && selected?.kind === 'markdown') await renderReadingCurrent();
+  }
+
+  function renderSpatialCanvasBlock(source: string, sourceEntryId?: string): HTMLElement {
+    const document = parseCanvasDocument(source);
+    const owner = sourceEntryId && entries.some(entry => entry.id === sourceEntryId && entry.kind === 'markdown' && entry.deletedAt === null)
+      ? sourceEntryId as EntryId
+      : selected?.kind === 'markdown' && selected.deletedAt === null ? selected.id : undefined;
+    if (!owner) throw new VaultError('NOT_FOUND', 'Canvas owner note is unavailable.');
+
+    const view = new SpatialCanvasView(document, {
+      persist(nextDocument) {
+        return persistCanvasDocument(owner, nextDocument);
+      },
+      resolveNote(target) {
+        return resolveCanvasNote(target, owner);
+      },
+      async loadMedia(target) {
+        const payload = await attachmentRenderPayload(target, owner);
+        return payload ? {
+          entryId: payload.entryId,
+          name: payload.name,
+          mimeType: payload.mimeType,
+          url: payload.url,
+        } : null;
+      },
+      openEntry(entryId) {
+        perform(() => openEntry(entryId));
+      },
+      requestValue(title, label, current = '') {
+        return ask(title, label, current);
+      },
+      onError(error) {
+        showError(error);
+      },
+    });
+    return view.root;
+  }
+
   async function setting(key: string, value?: unknown): Promise<unknown> {
     return transact(db, ['settings'], value === undefined ? 'readonly' : 'readwrite', async tx => {
       if (value !== undefined) { await request(tx.objectStore('settings').put({ key, value })); return value; }
