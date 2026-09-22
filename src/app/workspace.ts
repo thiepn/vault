@@ -6,8 +6,8 @@ import { A2LocalRepository, A2Persistence } from '../storage/a2-persistence.js';
 import { requestPersistentStorage } from '../storage/storage-health.js';
 import { request, transact } from '../storage/idb.js';
 import { SaveCoordinator } from '../services/save-coordinator.js';
-import { vaultFiles, zipStore } from '../services/export.js';
-import { fullVaultArchiveFiles, validateFullVaultArchiveFiles } from '../services/a2-archive.js';
+import { readZipStore, vaultFiles, zipStore } from '../services/export.js';
+import { fullVaultArchiveFiles, restoreFullVaultArchive, validateFullVaultArchiveFiles } from '../services/a2-archive.js';
 import { CommandRegistry } from '../commands/registry.js';
 import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file-tree.js';
 import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
@@ -156,7 +156,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
           <button data-action="trash-view" class="quiet trash-button">Open Trash</button>
           <button data-action="recovery" class="quiet" disabled>Recovery drafts</button>
-          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.archive" disabled>Full Vault archive</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
+          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.archive" disabled>Full Vault archive</button><button data-command="vault.restore">Restore Vault archive</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
         </section>
         <section class="sidebar-panel search-panel" data-panel="search" hidden>
           <div class="section-heading"><span>VAULT SEARCH</span><button data-action="rebuild-search" aria-label="Rebuild search index">\u21bb</button></div>
@@ -247,14 +247,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <section class="empty-state">
           <p class="eyebrow">VAULT \u00b7 PHASE 12</p><h1>Arrange knowledge spatially without leaving Markdown.</h1>
           <p>Build movable note, text and media cards, connect ideas, group regions, and preserve the entire spatial document inside the vault.</p>
-          <button data-command="vault.create" class="primary">Create a vault</button>
+          <button data-command="vault.create" class="primary">Create a vault</button><button data-command="vault.restore" class="quiet">Restore Vault archive</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
         <div id="vault-editor" class="editor-host" hidden aria-label="Markdown source editor"></div>
         <article class="reading-view" hidden aria-label="Rendered Markdown"></article>
         <section class="attachment-view" hidden aria-label="Attachment preview"><div class="attachment-preview"></div><div class="attachment-meta"><h2 class="attachment-title"></h2><p class="attachment-detail"></p><button type="button" data-action="attachment-download">Download</button></div></section>
         <div class="folder-message" hidden></div>
-        <input class="attachment-file-input" type="file" multiple hidden />
+        <input class="attachment-file-input" type="file" multiple hidden /><input class="archive-restore-input" type="file" accept=".zip,.vault.zip,application/zip" hidden />
       </main>
       <aside class="inspector" aria-label="Knowledge and storage information"><button type="button" class="inspector-close" data-action="knowledge-panel" aria-label="Close knowledge panel">\u00d7</button>
         <p class="label">FILE INFORMATION</p><dl class="file-info"></dl>
@@ -266,6 +266,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">DATA OWNERSHIP</p>
         <button data-command="vault.export" disabled>Markdown ZIP</button>
         <button data-command="vault.archive" disabled>Full Vault archive</button>
+        <button data-command="vault.restore">Restore Vault archive</button>
         <button data-command="vault.backup" disabled>Recovery backup</button>
         <p class="fineprint">Markdown ZIP maximizes interoperability. Full Vault archive adds stable IDs and structured A2 metadata. Recovery backup preserves the legacy recovery snapshot.</p>
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
@@ -330,6 +331,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const attachmentTitle = element<HTMLElement>('.attachment-title');
   const attachmentDetail = element<HTMLElement>('.attachment-detail');
   const attachmentFileInput = element<HTMLInputElement>('.attachment-file-input');
+  const archiveRestoreInput = element<HTMLInputElement>('.archive-restore-input');
   const graphSurface = element<HTMLElement>('.graph-surface');
   const graphCanvas = element<HTMLCanvasElement>('.graph-canvas');
   const graphModeSelect = element<HTMLSelectElement>('.graph-mode');
@@ -3047,6 +3049,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     showingTrash = false; await refresh(); await openEntry(entry.id);
     if (kind === 'markdown') editor.focus();
   } });
+  registry.register({ id: 'vault.restore', label: 'Restore full Vault archive', run: async () => {
+    archiveRestoreInput.click();
+  } });
   registry.register({ id: 'vault.export', label: 'Export active vault ZIP', enabled: () => !!vault, run: async () => {
     if (!vault) return; if (saver) await saver.flush();
     const bytes = zipStore(vaultFiles(await repository.snapshot(vault.id)));
@@ -3597,6 +3602,27 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       } finally {
         if (!success || role !== 'value') renderPropertiesPanel();
       }
+    });
+  }, { signal: abort.signal });
+
+  archiveRestoreInput.addEventListener('change', () => {
+    const file = archiveRestoreInput.files?.[0];
+    archiveRestoreInput.value = '';
+    if (!file) return;
+    perform(async () => {
+      if (saver) await saver.flush();
+      const files = readZipStore(new Uint8Array(await file.arrayBuffer()));
+      const restoredVaultId = await restoreFullVaultArchive(db, files);
+      await a2.syncVaultTree(restoredVaultId);
+      await clearSelection();
+      vaults = await repository.listVaults();
+      vault = vaults.find(item => item.id === restoredVaultId);
+      if (!vault) throw new VaultError('CORRUPT', 'Restored Vault could not be reopened.');
+      preferencesVaultId = undefined;
+      showingTrash = false;
+      filterText = '';
+      await refresh();
+      await setting('lastVault', vault.id);
     });
   }, { signal: abort.signal });
 
