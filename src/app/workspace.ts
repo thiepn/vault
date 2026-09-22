@@ -27,11 +27,14 @@ import { updateAttachmentLinksAfterMove } from '../media/link-updater.js';
 import { buildKnowledgeGraph, filterKnowledgeGraph, graphStats, localKnowledgeGraph, type GraphGroupMode, type GraphNode, type KnowledgeGraph } from '../graph/model.js';
 import { GraphCanvasView } from '../graph/canvas-view.js';
 import { boardFieldLabel, parseBoard, runBoard, type BoardCard, type BoardColumn, type BoardPlan } from '../boards/kanban.js';
+import { emptyCanvasDocument, parseCanvasDocument, serializeCanvasDocument, type CanvasDocument } from '../canvas/model.js';
+import { replaceCanvasFenceSource } from '../canvas/fences.js';
+import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-view.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 11 browser workspace: Markdown-native Kanban boards on the accepted Phase 1-10 foundation. */
+/** Phase 12 browser workspace: Markdown-backed spatial canvases on the accepted Phase 1-11 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const repository = new LocalRepository(db);
@@ -130,7 +133,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 11 \u00b7 Boards</span>
+        <span class="stage">Phase 12 \u00b7 Canvas</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -208,7 +211,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
           <button data-action="export-draft" disabled>Export draft .md</button><button data-action="checkpoint" disabled>Checkpoint</button>
         </div>
-        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="insert-board" title="Insert Kanban board">Board</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
+        <div class="editor-toolbar" aria-label="Markdown formatting" hidden><button type="button" data-editor-command="heading" title="Heading">H</button><button type="button" data-editor-command="bold" title="Bold (Ctrl/Cmd+B)"><strong>B</strong></button><button type="button" data-editor-command="italic" title="Italic (Ctrl/Cmd+I)"><em>I</em></button><button type="button" data-editor-command="link" title="Link (Ctrl/Cmd+K)">Link</button><button type="button" data-editor-command="task">Task</button><button type="button" data-editor-command="bullet">List</button><button type="button" data-editor-command="inline-code">Code</button><button type="button" data-editor-command="code-block">Block</button><button type="button" data-editor-command="math-block">Math</button><button type="button" data-editor-command="callout">Callout</button><button type="button" data-editor-command="table">Table</button><button type="button" data-editor-command="wiki-link" title="Internal link">[[ ]]</button><button type="button" data-action="insert-template">Template</button><button type="button" data-action="insert-query" title="Insert dynamic query">Query</button><button type="button" data-action="insert-board" title="Insert Kanban board">Board</button><button type="button" data-action="insert-canvas" title="Insert spatial canvas">Canvas</button><button type="button" data-action="attachment-upload" title="Attach file">Media</button><button type="button" data-editor-action="search">Find</button><button type="button" data-editor-action="line-numbers" aria-pressed="false">Lines</button><button type="button" data-action="knowledge-panel" class="knowledge-toggle">Details</button></div>
         <div class="error" role="alert" hidden></div>
         <div class="recovery-actions"><button data-action="retry-save" hidden>Retry local save</button><button data-action="reopen" hidden>Preserve draft and reopen saved version</button></div>
         <section class="graph-surface" hidden aria-label="Knowledge graph">
@@ -234,8 +237,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           </div>
         </section>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 11</p><h1>Turn note properties into working boards.</h1>
-          <p>Keep projects as Markdown notes, then organize them into live Kanban lanes without creating a second task database.</p>
+          <p class="eyebrow">VAULT \u00b7 PHASE 12</p><h1>Arrange knowledge spatially without leaving Markdown.</h1>
+          <p>Build movable note, text and media cards, connect ideas, group regions, and preserve the entire spatial document inside the vault.</p>
           <button data-command="vault.create" class="primary">Create a vault</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
@@ -396,6 +399,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     board: {
       render(source) {
         return renderBoardBlock(source, selected?.id);
+      },
+    },
+    canvas: {
+      render(source) {
+        return renderSpatialCanvasBlock(source, selected?.id);
       },
     },
     onChange(text) { saver?.update(text); updateCounts(); schedulePropertiesRender(text); },
