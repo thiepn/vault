@@ -634,9 +634,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       schedulePropertiesRender(canonicalText);
     },
     onStats(stats) {
+      const fingerprintChanged = editorStats.documentFingerprint !== stats.documentFingerprint;
       editorStats = stats;
       updateCounts();
       highlightCurrentOutline();
+      if (fingerprintChanged) queueMicrotask(() => {
+        if (!disposed) renderRemoteCollaborationCursors();
+      });
       if (selected?.kind === 'markdown' && editorMode !== 'reading' && collaborationStatus === 'connected') {
         collaboration?.publishCursor({
           entryId: selected.id,
