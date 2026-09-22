@@ -2,6 +2,7 @@ import { VaultError } from '../domain/errors.js';
 import { assertMarkdownContent, nextVersion } from '../domain/integrity.js';
 import type {
   AttachmentContent,
+  CloudVaultBinding,
   DirtyEntry,
   Entry,
   EntryId,
