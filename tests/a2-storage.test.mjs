@@ -1,0 +1,130 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { SCHEMA_VERSION, STORES } from '../build/core/storage/database.js';
+import { sha256Hex } from '../build/core/storage/blob-store.js';
+import {
+  ensureTaskIdentityMarkers,
+  parseTaskLine,
+  taskIdentityFromRaw,
+  updateTaskMarkdown,
+} from '../build/core/tasks/markdown.js';
+import {
+  fullVaultArchiveFiles,
+  validateFullVaultArchiveFiles,
+} from '../build/core/services/a2-archive.js';
+
+const ids = [
+  '019c0000-0000-7000-8000-000000000001',
+  '019c0000-0000-7000-8000-000000000002',
+  '019c0000-0000-7000-8000-000000000003',
+  '019c0000-0000-7000-8000-000000000004',
+];
+
+test('A2 schema adds canonical entity, note-body, blob and migration stores', () => {
+  assert.equal(SCHEMA_VERSION, 4);
+  for (const store of ['entities','noteBodies','blobPayloads','migrationState']) {
+    assert.ok(STORES.includes(store), store);
+  }
+});
+
+test('A2 task adoption adds stable hidden IDs only to real Markdown tasks', () => {
+  let index = 0;
+  const source = [
+    '- [ ] First',
+    '~~~md',
+    '- [ ] ignored',
+    '~~~',
+    '- [ ] Last',
+  ].join('\n');
+
+  const completeOnly = ensureTaskIdentityMarkers(source, {
+    completeLinesOnly: true,
+    idFactory: () => ids[index++],
+  });
+  assert.match(completeOnly.text.split('\n')[0], /vault:task=019c0000-0000-7000-8000-000000000001/u);
+  assert.equal(completeOnly.text.includes('ignored <!--'), false);
+  assert.equal(completeOnly.text.split('\n').at(-1), '- [ ] Last');
+
+  const finalized = ensureTaskIdentityMarkers(completeOnly.text, {
+    idFactory: () => ids[index++],
+  });
+  assert.match(finalized.text.split('\n').at(-1), /vault:task=019c0000-0000-7000-8000-000000000002/u);
+
+  const parsed = parseTaskLine(finalized.text.split('\n')[0]);
+  assert.ok(parsed);
+  assert.equal(parsed.text, 'First');
+  assert.equal(taskIdentityFromRaw(parsed.raw), ids[0]);
+});
+
+test('A2 recurring tasks preserve completed identity and allocate a new next-occurrence identity', () => {
+  const source = '- [ ] Review @due(2026-09-22) @repeat(weekly) <!-- vault:task=' + ids[0] + ' -->\n';
+  const parsed = parseTaskLine(source.trimEnd(), 0);
+  assert.ok(parsed);
+  const mutation = updateTaskMarkdown(source, parsed, { completed: true }, new Date(2026, 8, 22, 12));
+  const lines = mutation.text.trimEnd().split('\n');
+  assert.equal(taskIdentityFromRaw(lines[0]), ids[0]);
+  const nextId = taskIdentityFromRaw(lines[1]);
+  assert.ok(nextId);
+  assert.notEqual(nextId, ids[0]);
+  assert.match(nextId, /^[0-9a-f]{8}-[0-9a-f]{4}-7/u);
+});
+
+test('A2 rekey operation does not clone task identity', () => {
+  let index = 1;
+  const source = '- [ ] One <!-- vault:task=' + ids[0] + ' -->\n- [ ] Two\n';
+  const result = ensureTaskIdentityMarkers(source, { rekey: true, idFactory: () => ids[index++] });
+  assert.equal(result.changed, true);
+  const lines = result.text.trimEnd().split('\n');
+  assert.equal(taskIdentityFromRaw(lines[0]), ids[1]);
+  assert.equal(taskIdentityFromRaw(lines[1]), ids[2]);
+  assert.notEqual(taskIdentityFromRaw(lines[0]), ids[0]);
+});
+
+test('A2 SHA-256 content addressing is deterministic', async () => {
+  assert.equal(
+    await sha256Hex(new Uint8Array()),
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+  );
+});
+
+test('A2 full archive includes stable metadata and validates checksums', async () => {
+  const vaultId = '11111111-1111-4111-8111-111111111111';
+  const noteId = '22222222-2222-4222-8222-222222222222';
+  const now = '2026-09-22T02:00:00.000Z';
+  const snapshot = {
+    format: 'vault-local-backup',
+    version: 2,
+    exportedAt: now,
+    vault: { id:vaultId, name:'Archive', createdAt:now, updatedAt:now, mode:'local' },
+    entries: [{
+      id:noteId, vaultId, parentId:null, name:'Note.md', kind:'markdown',
+      createdAt:now, updatedAt:now, localVersion:1, deletedAt:null,
+      deletionBatch:null, activeKey:vaultId + '/root/note.md',
+    }],
+    contents: [{ entryId:noteId, text:'# Exact\n', localVersion:1 }],
+    attachments: [],
+    recoveryDrafts: [],
+    revisions: [],
+  };
+  const entities = [{
+    id:vaultId, entityType:'vault', name:'Archive', schemaVersion:1, revision:1,
+    createdAt:now, updatedAt:now, deletedAt:null, properties:{},
+  }, {
+    id:noteId, entityType:'note', vaultId, title:'Note', folderId:null, aliases:[],
+    noteKind:'standard', schemaVersion:1, revision:1, createdAt:now, updatedAt:now,
+    deletedAt:null, properties:{}, bodyStore:'noteBodies',
+  }];
+  const bodies = [{ noteId, vaultId, revision:1, text:'# Exact\n' }];
+
+  const files = await fullVaultArchiveFiles(snapshot, entities, bodies);
+  assert.ok(files.some(file => file.path === 'Note.md'));
+  assert.ok(files.some(file => file.path === '.vault/manifest.json'));
+  assert.ok(files.some(file => file.path === '.vault/entities.json'));
+  assert.ok(files.some(file => file.path === '.vault/checksums.json'));
+  await assert.doesNotReject(() => validateFullVaultArchiveFiles(files));
+
+  const note = files.find(file => file.path === 'Note.md');
+  assert.ok(note);
+  note.bytes = new TextEncoder().encode('# Tampered\n');
+  await assert.rejects(() => validateFullVaultArchiveFiles(files), /checksum mismatch/u);
+});
