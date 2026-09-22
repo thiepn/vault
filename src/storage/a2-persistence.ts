@@ -387,7 +387,7 @@ export class A2Persistence {
 
     const reconciled = rekey
       ? rekeyTaskIdentityMarkers(source.content.text)
-      : ensureTaskIdentityMarkers(source.content.text, { usedIds });
+      : ensureTaskIdentityMarkers(source.content.text, usedIds ? { usedIds } : {});
     if (!reconciled.changed) return source.entry;
 
     return this.driver.transaction(

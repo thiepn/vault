@@ -18,10 +18,11 @@ The repository currently includes browser-certified:
 - **Phase 10 — Graph View & Knowledge Visualization**
 - **Phase 11 — Kanban & Structured Board Views**
 - **Phase 12 — Canvas & Spatial Knowledge Workspace**
+- **Phase 13 — Obsidian Import, Migration & Interoperability**
 
 ## Permanent architecture program
 
-The Phase 1–12 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–13 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
@@ -37,7 +38,7 @@ The Phase 1–12 product now runs on the **A1/A2 permanent local foundation**.
 - persistent-storage requests and quota/health support
 - full-fidelity Vault archives with checksums
 - service-worker application-shell caching and cold offline PWA startup
-- compatibility mirroring so Phase 1–12 behavior remains available during the canonical-storage transition
+- compatibility mirroring so Phase 1–13 behavior remains available during the canonical-storage transition
 
 See `docs/A1_DOMAIN_MODEL.md`, `docs/A2_STORAGE_ARCHITECTURE.md`, and the ADRs under `docs/adr/`.
 
@@ -327,6 +328,45 @@ Supported workflows include:
 
 Individual browser-stored attachments are currently limited to 128 MB. The existing in-memory ZIP exporter remains capped at 512 MB.
 
+### Obsidian Import, Migration & Interoperability
+
+Vault can migrate an external Obsidian-style vault without making external files a second source of truth.
+
+Import workflows:
+
+- **Import Obsidian ZIP** — accepts standard ZIP STORE and DEFLATE entries
+- **Import Obsidian folder** — uses browser folder selection and preserves the external tree
+- import always creates a **new local Vault**; existing Vaults are never merged or overwritten
+- migration preview reports notes, attachments, folders, converted Canvas files, ignored config, renamed paths and compatibility warnings before commit
+- `.obsidian` configuration is detected/reported but not imported as executable configuration
+- community plugin names are detected when available and shown in the report
+- `.git`, `.trash`, `__MACOSX` and common system files are excluded
+- invalid `.canvas` files are preserved as ordinary attachments instead of discarded
+
+Migration behavior:
+
+- Markdown/frontmatter source remains text
+- attachments preserve exact bytes
+- non-portable filenames are repaired deterministically
+- case/name collisions receive stable suffixes rather than overwriting files
+- Wiki links and standard Markdown links are rewritten when a migrated path changes
+- relative `.` / `..` Markdown paths are normalized only when they stay inside the imported vault
+- imported Markdown tasks gain Vault's hidden stable task IDs
+- the whole external tree commits as one new-vault IndexedDB transaction
+- after commit, A2 canonical mirrors are rebuilt from the imported canonical files
+
+Obsidian JSON Canvas files are converted into ordinary Markdown notes containing `vault-canvas` documents:
+
+- text cards map to Vault text cards
+- file-note cards map to Vault note cards
+- attachment cards map to media cards
+- groups map to visual groups
+- supported directed edges and labels are preserved
+- web-link/unsupported cards are preserved as readable text with explicit migration warnings
+
+**Export Obsidian-compatible ZIP** keeps the canonical Markdown/attachment tree and additionally emits `.canvas` companion files for valid Vault Canvas blocks. Vault-only query/board fences remain readable Markdown code because Obsidian has no native equivalent.
+
+The interoperability layer has explicit safety limits: 20,000 ZIP entries, 512 MB archive/expanded content, 128 MB per file and no encrypted/multi-disk/ZIP64 imports in this release.
 ## Canonical data
 
 ```text
@@ -357,7 +397,6 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 ## Not implemented yet
 
 - cloud accounts and cross-device sync
-- external Markdown/Obsidian import
 
 ## Development
 
@@ -367,17 +406,18 @@ Requires Node 22.12+.
 npm ci
 npm test
 npm run benchmark:search
+npm run benchmark:interop
 npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts, the 10k search benchmark, production Vite build and real Chromium desktop/mobile acceptance.
+CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration performance gates, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.12.0-phase12**
+- Current package version: **0.13.0-phase13**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.

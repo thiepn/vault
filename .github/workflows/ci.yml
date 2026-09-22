@@ -34,6 +34,8 @@ jobs:
         run: npm run benchmark:board
       - name: Maximum-size Canvas benchmark
         run: npm run benchmark:canvas
+      - name: 10k Obsidian migration benchmark
+        run: npm run benchmark:interop
       - name: Production build
         run: npm run build
       - name: Install Chromium

@@ -571,3 +571,27 @@ body.vault-canvas-expanded{overflow:hidden}
   .canvas-toolbar{gap:3px}
   .canvas-toolbar button{min-width:40px;padding-inline:6px}
 }
+
+
+/* Phase 13 — Obsidian migration & interoperability */
+.migration-dialog{width:min(680px,calc(100vw - 28px));max-height:min(82vh,760px);padding:0;border:1px solid var(--line);border-radius:9px}
+.migration-dialog form{display:grid;gap:12px;padding:18px}
+.migration-dialog h2{margin:0;font-size:18px}
+.migration-summary{margin:0;padding:9px 10px;border:1px solid #dbe5df;border-radius:6px;background:#f4f8f5;font-size:11px;font-weight:650;line-height:1.5}
+.migration-details{display:grid;gap:6px;max-height:42vh;overflow:auto;padding-right:3px}
+.migration-line{display:grid;grid-template-columns:130px minmax(0,1fr);gap:10px;align-items:start;padding:6px 0;border-bottom:1px solid #edf1ee;font-size:10px;line-height:1.45}
+.migration-line strong{color:#465a52}
+.migration-line span{min-width:0;color:var(--muted);overflow-wrap:anywhere}
+.migration-warnings,.migration-renames{border:1px solid #e1e7e3;border-radius:6px;background:#fbfcfb}
+.migration-warnings summary,.migration-renames summary{cursor:pointer;padding:7px 9px;font-size:10px;font-weight:650}
+.migration-warnings ul,.migration-renames ul{display:grid;gap:4px;margin:0;padding:0 22px 9px 28px;color:var(--muted);font-size:9px;line-height:1.45}
+.migration-dialog label{font-size:9px;font-weight:700;letter-spacing:.5px;color:var(--muted)}
+.migration-vault-name{min-height:38px;border:1px solid var(--line);border-radius:5px;padding:7px 9px;font-size:13px}
+.migration-note{margin:0}
+@media(max-width:640px){
+  .migration-dialog{width:calc(100vw - 12px);max-height:92vh}
+  .migration-dialog form{padding:13px;gap:10px}
+  .migration-details{max-height:48vh}
+  .migration-line{grid-template-columns:1fr;gap:2px;font-size:11px}
+  .migration-vault-name{min-height:44px;font-size:16px}
+}

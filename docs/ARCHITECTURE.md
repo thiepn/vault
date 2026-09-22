@@ -387,6 +387,99 @@ Canvas source remains ordinary Markdown text, so existing Markdown ZIP and recov
 Future sync should synchronize the Markdown containing the Canvas. It must not introduce a second whiteboard database or separately synchronized geometry record.
 
 
+## Phase 13 — Obsidian migration & interoperability boundary
+
+External vaults are migration inputs, not mounted canonical storage.
+
+```text
+Obsidian ZIP / browser folder selection
+        ↓
+safe archive/folder ingestion
+        ↓
+migration planner + compatibility report
+        ├── portable path mapping
+        ├── Wiki/Markdown link rewriting
+        ├── JSON Canvas conversion
+        └── warnings / ignored configuration
+        ↓
+single new-Vault local transaction
+        ↓
+legacy compatibility stores
+        ↓
+A2 canonical mirror rebuild
+```
+
+### Source isolation
+
+Migration always creates a new Vault identity. Phase 13 does not merge an external folder into an existing Vault and does not retain a live filesystem mount.
+
+This is deliberate:
+
+- existing local Vaults cannot be overwritten by import
+- imported file/path identity cannot collide with current Vault identity
+- external changes after import cannot mutate canonical local data implicitly
+- migration can fail before commit without leaving a half-imported Vault
+
+### ZIP trust boundary
+
+The general migration ZIP reader is separate from the stricter Vault-archive restore reader.
+
+Migration ZIP supports:
+
+- normal STORE entries
+- DEFLATE entries through the browser `DecompressionStream`
+- UTF-8 names, with explicit fallback warning for archives that omit the UTF-8 flag
+
+It rejects path traversal, absolute paths, duplicate/case-colliding paths, encrypted entries, multi-disk ZIPs, ZIP64, unsupported compression methods, CRC mismatch and central/local-header disagreement.
+
+Current migration limits are 20,000 entries, 512 MB archive bytes, 512 MB total expanded bytes and 128 MB per file.
+
+### Portable path planning
+
+External paths are planned before local storage is mutated.
+
+For each path segment Vault preserves portable NFC-normalized names, repairs unsupported names deterministically, resolves case-insensitive sibling collisions with numeric suffixes, builds a complete source-path → target-path map, then rewrites resolvable Wiki and Markdown links against that map.
+
+Relative Markdown links normalize `.` and `..` only while remaining inside the imported root. Ambiguous basename references remain unchanged rather than being guessed.
+
+Link fallback lookup uses prebuilt filename/note-stem indexes, avoiding a full-path scan per link on large imports.
+
+### Configuration and plugins
+
+`.obsidian` is not copied into the canonical Vault as executable application configuration. The migration report records ignored configuration files and lists detected community plugin IDs when `community-plugins.json` is present.
+
+Plugin-specific syntax inside Markdown is preserved as source. Dataview fences remain readable text but Vault does not execute the Obsidian plugin runtime.
+
+### JSON Canvas conversion
+
+Valid `.canvas` JSON documents are converted to Markdown notes containing canonical `vault-canvas` YAML.
+
+Supported mappings include text node → text card, Markdown file node → note card, attachment file node → media card, group node → Canvas group, supported directed edge → Vault edge, and edge label → Vault edge label.
+
+Unsupported/link-only constructs are preserved as readable text where possible and reported as compatibility warnings. Invalid JSON Canvas files remain attachment files instead of being discarded.
+
+### Atomic commit
+
+`commitObsidianMigration` constructs fresh Vault/Entry IDs and all compatibility records before opening one read-write transaction across the local Vault stores.
+
+The transaction writes the new Vault, directory/file entries, Markdown contents, attachment payloads and dirty/local-change records. If any write fails, the transaction rolls back as one unit.
+
+Imported Markdown task lines are reconciled with one shared Task-ID set so existing unique Vault task IDs can survive while collisions/new tasks receive stable IDs.
+
+After the interoperable file transaction succeeds, A2 canonical stores are rebuilt from the new Vault tree. A mirror failure marks A2 repair-needed without corrupting the already-durable interoperable source files.
+
+### Obsidian-oriented export
+
+Normal Vault Markdown export remains unchanged. The explicit Obsidian export exports the active Markdown/attachment tree, parses valid `vault-canvas` fences, emits adjacent JSON `.canvas` companion files, and leaves the original Markdown source unchanged.
+
+Vault-specific query/board fences have no native Obsidian equivalent and therefore remain Markdown code instead of being silently transformed.
+
+### Performance boundary
+
+CI includes a 10,000-source-file migration-planning benchmark containing 8,000 Markdown notes, 1,800 attachments, 200 JSON Canvas files, 8,000 Wiki-link rewrites and 8,000 Markdown-link rewrites.
+
+The benchmark certifies planning/conversion independently from browser IndexedDB write throughput.
+
 ## Knowledge index
 
 The derived knowledge record stores aliases, headings, block IDs, links, tags, properties and parsed task projections. Its version advances when parser semantics change; it remains reconstructable from Markdown.

@@ -214,18 +214,19 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
   await expect(canvas.locator('.canvas-group')).toHaveCount(2);
 
-  const beforeZoomSource = await sourceText(page);
-  const beforeZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(beforeZoomSource);
-  expect(beforeZoomMatch).not.toBeNull();
-  const beforeZoom = Number(beforeZoomMatch![1]);
+  const liveZoom = async (): Promise<number> => {
+    const value = await canvas.getAttribute('data-zoom');
+    return Number(value);
+  };
+  const beforeZoom = await liveZoom();
+  expect(Number.isFinite(beforeZoom)).toBe(true);
 
-  await returnLive(page);
-  canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
-  await expect(canvas).toBeVisible();
   await canvas.getByRole('button', { name:'Zoom in' }).click();
+  await expect.poll(liveZoom).toBeGreaterThan(beforeZoom);
+  const expectedZoom = await liveZoom();
 
-  // Canvas persistence and navigation share Vault's serialized action queue.
-  // Opening Alpha cannot run until the zoom write has durably completed.
+  // Opening another note is queued after the Canvas persistence action, so the
+  // source we reopen must contain the same zoom the user actually saw.
   await canvas.locator('[data-canvas-node="note-alpha"] .canvas-open-button').click();
   await expect(page.locator('.breadcrumb')).toContainText('Alpha.md');
 
@@ -233,7 +234,7 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   const afterZoomSource = await sourceText(page);
   const afterZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(afterZoomSource);
   expect(afterZoomMatch).not.toBeNull();
-  expect(Number(afterZoomMatch![1])).toBeGreaterThan(beforeZoom);
+  expect(Number(afterZoomMatch![1])).toBeCloseTo(expectedZoom, 3);
   await page.locator('[data-editor-mode="reading"]').click();
   const readingCanvas = page.locator('.reading-view .canvas-workspace');
   await expect(readingCanvas).toBeVisible();
@@ -246,7 +247,7 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   const reloadedSource = await sourceText(page);
   const reloadedZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(reloadedSource);
   expect(reloadedZoomMatch).not.toBeNull();
-  expect(Number(reloadedZoomMatch![1])).toBeGreaterThan(beforeZoom);
+  expect(Number(reloadedZoomMatch![1])).toBeCloseTo(expectedZoom, 3);
   await page.locator('[data-editor-mode="reading"]').click();
   await expect(page.locator('.reading-view .canvas-node-text').filter({ hasText:'New spatial idea' })).toBeVisible();
   await expect(page.locator('.reading-view .canvas-edge-line')).toHaveCount(2);

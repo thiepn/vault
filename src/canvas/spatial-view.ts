@@ -160,6 +160,7 @@ export class SpatialCanvasView {
 
   private applyViewport(): void {
     const viewport = this.document.viewport;
+    this.root.dataset.zoom = String(viewport.zoom);
     this.world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
   }
 

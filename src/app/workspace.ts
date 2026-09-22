@@ -32,13 +32,16 @@ import { buildKnowledgeGraph, filterKnowledgeGraph, graphStats, localKnowledgeGr
 import { GraphCanvasView } from '../graph/canvas-view.js';
 import { boardFieldLabel, parseBoard, runBoard, type BoardCard, type BoardColumn, type BoardPlan } from '../boards/kanban.js';
 import { emptyCanvasDocument, parseCanvasDocument, serializeCanvasDocument, type CanvasDocument } from '../canvas/model.js';
-import { replaceCanvasFenceSource } from '../canvas/fences.js';
+import { parseCanvasFences, replaceCanvasFenceSource } from '../canvas/fences.js';
+import { readZipArchive } from '../interoperability/zip.js';
+import { browserFilesToArchiveFiles, obsidianExportFiles, planObsidianMigration, type ObsidianMigrationPlan } from '../interoperability/obsidian.js';
+import { commitObsidianMigration } from '../interoperability/importer.js';
 import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-view.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 12 browser workspace: Markdown-backed spatial canvases on the accepted Phase 1-11 + A1/A2 foundation. */
+/** Phase 13 browser workspace: Obsidian migration and interoperability on the accepted Phase 1-12 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -143,7 +146,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 12 · Canvas · A2 persistence</span>
+        <span class="stage">Phase 13 · Interop · A2 persistence</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -158,7 +161,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
           <button data-action="trash-view" class="quiet trash-button">Open Trash</button>
           <button data-action="recovery" class="quiet" disabled>Recovery drafts</button>
-          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.archive" disabled>Full Vault archive</button><button data-command="vault.restore">Restore Vault archive</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
+          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.export-obsidian" disabled>Obsidian ZIP</button><button data-command="vault.archive" disabled>Full Vault archive</button><button data-command="vault.restore">Restore Vault archive</button><button data-command="vault.import-obsidian-zip">Import Obsidian ZIP</button><button data-command="vault.import-obsidian-folder">Import Obsidian folder</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
         </section>
         <section class="sidebar-panel search-panel" data-panel="search" hidden>
           <div class="section-heading"><span>VAULT SEARCH</span><button data-action="rebuild-search" aria-label="Rebuild search index">\u21bb</button></div>
@@ -247,16 +250,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           </div>
         </section>
         <section class="empty-state">
-          <p class="eyebrow">VAULT \u00b7 PHASE 12</p><h1>Arrange knowledge spatially without leaving Markdown.</h1>
-          <p>Build movable note, text and media cards, connect ideas, group regions, and preserve the entire spatial document inside the vault.</p>
-          <button data-command="vault.create" class="primary">Create a vault</button><button data-command="vault.restore" class="quiet">Restore Vault archive</button>
+          <p class="eyebrow">VAULT \u00b7 PHASE 13</p><h1>Bring an Obsidian vault without surrendering your files.</h1>
+          <p>Import Markdown, attachments and JSON Canvas into a new local Vault, review migration changes first, and export back to an Obsidian-friendly ZIP.</p>
+          <button data-command="vault.create" class="primary">Create a vault</button><button data-command="vault.import-obsidian-zip" class="quiet">Import Obsidian ZIP</button><button data-command="vault.restore" class="quiet">Restore Vault archive</button>
           <p class="fineprint">Cloud synchronization remains deliberately inactive. Phase 2 changes the editor and renderer, not the Phase 1 durability model.</p>
         </section>
         <div id="vault-editor" class="editor-host" hidden aria-label="Markdown source editor"></div>
         <article class="reading-view" hidden aria-label="Rendered Markdown"></article>
         <section class="attachment-view" hidden aria-label="Attachment preview"><div class="attachment-preview"></div><div class="attachment-meta"><h2 class="attachment-title"></h2><p class="attachment-detail"></p><button type="button" data-action="attachment-download">Download</button></div></section>
         <div class="folder-message" hidden></div>
-        <input class="attachment-file-input" type="file" multiple hidden /><input class="archive-restore-input" type="file" accept=".zip,.vault.zip,application/zip" hidden />
+        <input class="attachment-file-input" type="file" multiple hidden /><input class="archive-restore-input" type="file" accept=".zip,.vault.zip,application/zip" hidden /><input class="obsidian-zip-input" type="file" accept=".zip,application/zip" hidden /><input class="obsidian-folder-input" type="file" multiple webkitdirectory hidden />
       </main>
       <aside class="inspector" aria-label="Knowledge and storage information"><button type="button" class="inspector-close" data-action="knowledge-panel" aria-label="Close knowledge panel">\u00d7</button>
         <p class="label">FILE INFORMATION</p><dl class="file-info"></dl>
@@ -267,8 +270,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <label class="knowledge-setting"><input class="auto-update-links" type="checkbox" checked /> Update links on rename/move</label>
         <div class="rule"></div><p class="label">DATA OWNERSHIP</p>
         <button data-command="vault.export" disabled>Markdown ZIP</button>
+        <button data-command="vault.export-obsidian" disabled>Obsidian ZIP</button>
         <button data-command="vault.archive" disabled>Full Vault archive</button>
         <button data-command="vault.restore">Restore Vault archive</button>
+        <button data-command="vault.import-obsidian-zip">Import Obsidian ZIP</button>
+        <button data-command="vault.import-obsidian-folder">Import Obsidian folder</button>
         <button data-command="vault.backup" disabled>Recovery backup</button>
         <p class="fineprint">Markdown ZIP maximizes interoperability. Full Vault archive adds stable IDs and structured A2 metadata. Recovery backup preserves the legacy recovery snapshot.</p>
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
@@ -284,6 +290,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     <dialog class="template-dialog" aria-labelledby="template-dialog-title"><form method="dialog"><h2 id="template-dialog-title">Choose template</h2><select class="template-dialog-select" aria-label="Template"></select><p class="template-dialog-help fineprint"></p><div class="dialog-buttons"><button value="cancel">Cancel</button><button value="confirm" class="primary">Use template</button></div></form></dialog>
     <dialog class="quick-switcher-dialog" aria-labelledby="quick-switcher-title">
       <div class="quick-switcher-shell"><h2 id="quick-switcher-title">Quick Switcher</h2><input class="quick-switcher-input" type="search" placeholder="Open a note\u2026" aria-label="Quick switcher" autocomplete="off" /><div class="quick-switcher-results" role="listbox" aria-label="Matching notes"></div><p class="quick-switcher-help">\u2191\u2193 navigate \u00b7 Enter open \u00b7 Esc close</p></div>
+    </dialog>
+    <dialog class="migration-dialog" aria-labelledby="migration-title">
+      <form method="dialog"><h2 id="migration-title">Import Obsidian vault</h2>
+        <p class="migration-summary"></p>
+        <div class="migration-details"></div>
+        <label for="migration-vault-name">New Vault name</label><input id="migration-vault-name" class="migration-vault-name" required />
+        <p class="migration-note fineprint">Import creates a separate local Vault. Existing Vaults are never merged or overwritten.</p>
+        <div class="dialog-buttons"><button value="cancel">Cancel</button><button value="confirm" class="primary">Import as new Vault</button></div>
+      </form>
     </dialog>
     <dialog class="recovery-dialog" aria-labelledby="recovery-title">
       <form method="dialog"><h2 id="recovery-title">Recovery drafts</h2>
@@ -309,6 +324,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const dialogInput = element<HTMLInputElement>('#vault-dialog-input');
   const dialogSelect = element<HTMLSelectElement>('.dialog-select');
   const recoveryDialog = element<HTMLDialogElement>('.recovery-dialog');
+  const migrationDialog = element<HTMLDialogElement>('.migration-dialog');
+  const migrationSummary = element<HTMLElement>('.migration-summary');
+  const migrationDetails = element<HTMLElement>('.migration-details');
+  const migrationVaultName = element<HTMLInputElement>('.migration-vault-name');
   const templateDialog = element<HTMLDialogElement>('.template-dialog');
   const templateDialogSelect = element<HTMLSelectElement>('.template-dialog-select');
   const recoverySelect = element<HTMLSelectElement>('#recovery-select');
@@ -334,6 +353,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const attachmentDetail = element<HTMLElement>('.attachment-detail');
   const attachmentFileInput = element<HTMLInputElement>('.attachment-file-input');
   const archiveRestoreInput = element<HTMLInputElement>('.archive-restore-input');
+  const obsidianZipInput = element<HTMLInputElement>('.obsidian-zip-input');
+  const obsidianFolderInput = element<HTMLInputElement>('.obsidian-folder-input');
   const graphSurface = element<HTMLElement>('.graph-surface');
   const graphCanvas = element<HTMLCanvasElement>('.graph-canvas');
   const graphModeSelect = element<HTMLSelectElement>('.graph-mode');
@@ -480,6 +501,144 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function downloadDraft(): void {
     if (!selected || selected.kind !== 'markdown') return;
     download(selected.name, saver?.draft ?? editor.getText(), 'text/markdown;charset=utf-8');
+  }
+
+  function migrationLine(label: string, value: string): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'migration-line';
+    const key = document.createElement('strong');
+    key.textContent = label;
+    const text = document.createElement('span');
+    text.textContent = value;
+    row.append(key, text);
+    return row;
+  }
+
+  async function confirmMigrationPlan(plan: ObsidianMigrationPlan): Promise<string | null> {
+    migrationSummary.textContent = `${plan.report.markdownNotes} notes · ${plan.report.attachments} attachments · ${plan.report.canvasesConverted} Canvas converted · ${plan.report.directories} folders`;
+    migrationDetails.replaceChildren(
+      migrationLine('Configuration', `${plan.report.ignoredConfiguration} .obsidian files ignored`),
+      migrationLine('System files', `${plan.report.ignoredSystemFiles} ignored`),
+      migrationLine('Renamed paths', String(plan.report.renamedPaths.length)),
+      migrationLine('Links rewritten', `${plan.report.rewrittenWikiLinks} Wiki · ${plan.report.rewrittenMarkdownLinks} Markdown`),
+    );
+    if (plan.report.detectedCommunityPlugins.length) {
+      migrationDetails.append(migrationLine('Detected plugins', plan.report.detectedCommunityPlugins.join(', ')));
+    }
+    if (plan.report.warnings.length) {
+      const warning = document.createElement('details');
+      warning.className = 'migration-warnings';
+      const summary = document.createElement('summary');
+      summary.textContent = `${plan.report.warnings.length} compatibility warning${plan.report.warnings.length === 1 ? '' : 's'}`;
+      const list = document.createElement('ul');
+      for (const message of plan.report.warnings.slice(0, 12)) {
+        const item = document.createElement('li');
+        item.textContent = message;
+        list.append(item);
+      }
+      if (plan.report.warnings.length > 12) {
+        const more = document.createElement('li');
+        more.textContent = `…and ${plan.report.warnings.length - 12} more.`;
+        list.append(more);
+      }
+      warning.append(summary, list);
+      migrationDetails.append(warning);
+    }
+    if (plan.report.renamedPaths.length) {
+      const renamed = document.createElement('details');
+      renamed.className = 'migration-renames';
+      const summary = document.createElement('summary');
+      summary.textContent = 'Show renamed paths';
+      const list = document.createElement('ul');
+      for (const change of plan.report.renamedPaths.slice(0, 12)) {
+        const item = document.createElement('li');
+        item.textContent = `${change.from} → ${change.to}`;
+        list.append(item);
+      }
+      if (plan.report.renamedPaths.length > 12) {
+        const more = document.createElement('li');
+        more.textContent = `…and ${plan.report.renamedPaths.length - 12} more.`;
+        list.append(more);
+      }
+      renamed.append(summary, list);
+      migrationDetails.append(renamed);
+    }
+
+    migrationVaultName.value = plan.suggestedVaultName;
+    migrationDialog.returnValue = '';
+    migrationDialog.showModal();
+    migrationVaultName.focus();
+    migrationVaultName.select();
+
+    return await new Promise(resolve => {
+      migrationDialog.addEventListener('close', () => {
+        if (migrationDialog.returnValue !== 'confirm') {
+          resolve(null);
+          return;
+        }
+        const name = migrationVaultName.value.trim();
+        resolve(name || null);
+      }, { once: true });
+    });
+  }
+
+  async function activateMigratedVault(vaultId: VaultId, summary: string): Promise<void> {
+    await clearSelection();
+    vaults = await repository.listVaults();
+    vault = vaults.find(item => item.id === vaultId);
+    if (!vault) throw new VaultError('CORRUPT', 'Imported Obsidian Vault could not be reopened.');
+    preferencesVaultId = undefined;
+    knowledgeVaultId = undefined;
+    searchVaultId = undefined;
+    showingTrash = false;
+    filterText = '';
+    await refresh();
+    await setting('lastVault', vault.id);
+    element<HTMLElement>('.storage-message').textContent = summary;
+    void requestPersistentStorage();
+  }
+
+  async function runObsidianMigration(plan: ObsidianMigrationPlan): Promise<void> {
+    const name = await confirmMigrationPlan(plan);
+    if (name === null) return;
+    if (saver) await saver.flush();
+    const result = await commitObsidianMigration(db, a2, plan, name);
+    const summary = `Imported ${result.markdownNotes} notes, ${result.attachments} attachments and ${result.directories} folders from Obsidian.${result.canonicalMirrorComplete ? '' : ' Canonical mirror repair is pending.'}`;
+    await activateMigratedVault(result.vaultId, summary);
+  }
+
+  async function buildObsidianExport(): Promise<{ files: ReturnType<typeof vaultFiles>; canvasCount: number; warnings: string[] }> {
+    if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault to export.');
+    if (saver) await saver.flush();
+    const snapshot = await repository.snapshot(vault.id);
+    const tree = new VaultTree(snapshot.entries);
+    const active = new Map(snapshot.entries.filter(entry => entry.deletedAt === null).map(entry => [entry.id, entry]));
+    const markdownByPath = new Map<string, string>();
+    const canvasDocumentsByPath = new Map<string, CanvasDocument[]>();
+    const warnings: string[] = [];
+
+    for (const content of snapshot.contents) {
+      const entry = active.get(content.entryId);
+      if (!entry || entry.kind !== 'markdown') continue;
+      const path = tree.path(entry.id);
+      markdownByPath.set(path, content.text);
+      const documents: CanvasDocument[] = [];
+      for (const fence of parseCanvasFences(content.text)) {
+        try {
+          documents.push(parseCanvasDocument(fence.source));
+        } catch {
+          warnings.push(`Skipped an invalid Vault Canvas block in ${path} while creating Obsidian companions.`);
+        }
+      }
+      if (documents.length) canvasDocumentsByPath.set(path, documents);
+    }
+
+    const interoperable = obsidianExportFiles(vaultFiles(snapshot), markdownByPath, canvasDocumentsByPath);
+    return {
+      files: interoperable.files,
+      canvasCount: interoperable.report.canvasCompanions,
+      warnings: [...warnings, ...interoperable.report.warnings],
+    };
   }
 
   async function attachmentObjectUrl(entryId: EntryId): Promise<string> {
@@ -1943,7 +2102,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchStatus.textContent = 'No vault open.';
       fileFilter.value = '';
     }
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.export-obsidian"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
     renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts();
     if (graphOpen) renderGraph();
@@ -3071,10 +3230,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   registry.register({ id: 'vault.restore', label: 'Restore full Vault archive', run: async () => {
     archiveRestoreInput.click();
   } });
+  registry.register({ id: 'vault.import-obsidian-zip', label: 'Import Obsidian ZIP', run: async () => {
+    obsidianZipInput.click();
+  } });
+  registry.register({ id: 'vault.import-obsidian-folder', label: 'Import Obsidian folder', run: async () => {
+    obsidianFolderInput.click();
+  } });
   registry.register({ id: 'vault.export', label: 'Export active vault ZIP', enabled: () => !!vault, run: async () => {
     if (!vault) return; if (saver) await saver.flush();
     const bytes = zipStore(vaultFiles(await repository.snapshot(vault.id)));
     download(`${vault.name}.zip`, new Uint8Array(bytes).buffer, 'application/zip');
+  } });
+  registry.register({ id: 'vault.export-obsidian', label: 'Export Obsidian-compatible ZIP', enabled: () => !!vault, run: async () => {
+    if (!vault) return;
+    const result = await buildObsidianExport();
+    const bytes = zipStore(result.files);
+    download(`${vault.name}-obsidian.zip`, new Uint8Array(bytes).buffer, 'application/zip');
+    element<HTMLElement>('.storage-message').textContent = `Obsidian export created ${result.canvasCount} Canvas companion${result.canvasCount === 1 ? '' : 's'}.${result.warnings.length ? ' ' + result.warnings.length + ' compatibility warning(s).' : ''}`;
   } });
   registry.register({ id: 'vault.archive', label: 'Export full Vault archive', enabled: () => !!vault, run: async () => {
     if (!vault) return;
@@ -3627,6 +3799,31 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       } finally {
         if (!success || role !== 'value') renderPropertiesPanel();
       }
+    });
+  }, { signal: abort.signal });
+
+  obsidianZipInput.addEventListener('change', () => {
+    const file = obsidianZipInput.files?.[0];
+    obsidianZipInput.value = '';
+    if (!file) return;
+    perform(async () => {
+      const archive = await readZipArchive(new Uint8Array(await file.arrayBuffer()));
+      const plan = planObsidianMigration(archive.files, file.name, archive.warnings);
+      await runObsidianMigration(plan);
+    });
+  }, { signal: abort.signal });
+
+  obsidianFolderInput.addEventListener('change', () => {
+    const selectedFiles = [...(obsidianFolderInput.files ?? [])];
+    obsidianFolderInput.value = '';
+    if (!selectedFiles.length) return;
+    perform(async () => {
+      const browserFiles = await browserFilesToArchiveFiles(selectedFiles);
+      const plan = planObsidianMigration(
+        browserFiles.files,
+        browserFiles.rootName ?? selectedFiles[0]?.name ?? 'Obsidian vault',
+      );
+      await runObsidianMigration(plan);
     });
   }, { signal: abort.signal });
 

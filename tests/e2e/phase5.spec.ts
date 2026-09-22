@@ -111,7 +111,10 @@ test('Phase 5 visual properties edit canonical frontmatter and reindex search', 
 
   const priorityName = page.locator('.property-row[data-property-name="priority"] .property-name');
   await priorityName.fill('importance');
-  await priorityName.blur();
+  // Click a stable surface: if the original input still owns focus this triggers
+  // its native blur/change; if fill already committed and rerendered the row,
+  // the stable click avoids acting on a detached locator.
+  await page.locator('.properties-panel .panel-heading').click();
   await expect(page.locator('.property-row[data-property-name="importance"]')).toBeVisible();
 
   await page.locator('.property-row[data-property-name="status"] .property-delete').click();
