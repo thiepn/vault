@@ -463,6 +463,17 @@ export class A2Persistence {
     await this.syncVaultTree(root.vaultId);
   }
 
+  async taskIdsOutsideNote(noteId: EntryId): Promise<Set<string>> {
+    return this.driver.transaction(['entities'], 'readonly', async tx => {
+      const tasks = await tx.store('entities').allFromIndex<TaskEntity>('entityType', 'task');
+      return new Set(
+        tasks
+          .filter(task => task.sourceNoteId !== asCanonicalId('note', noteId))
+          .map(task => task.id as string),
+      );
+    });
+  }
+
   async canonicalEntities(vaultId: VaultId): Promise<StoredEntity[]> {
     return this.driver.transaction(['entities'], 'readonly', async tx => {
       const scoped = await tx.store('entities').allFromIndex<StoredEntity>('vaultId', vaultId);
