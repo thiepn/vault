@@ -212,6 +212,8 @@ export class A2Persistence {
 
   async repairAll(): Promise<void> {
     await withVaultExclusiveLock('a2-migration', async () => {
+      const previous = await this.state();
+      if (previous?.status === 'complete') return;
       const startedAt = now();
       let state: A2MigrationState = {
         id: A2_MIGRATION_ID,
