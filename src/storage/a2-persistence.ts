@@ -469,6 +469,27 @@ export class A2Persistence {
       tx => tx.store('noteBodies').allFromIndex<NoteBodyRecord>('vaultId', vaultId),
     );
   }
+
+  async readAttachmentBlob(entryId: EntryId): Promise<AttachmentContent | null> {
+    const entity = await this.driver.transaction(
+      ['entities'],
+      'readonly',
+      tx => tx.store('entities').get<AttachmentEntity>(entryId),
+    );
+    if (!entity || entity.entityType !== 'attachment' || entity.deletedAt !== null) return null;
+    const bytes = await this.blobStore.read(entity.checksumSha256);
+    if (!bytes) return null;
+    if (bytes.byteLength !== entity.size) throw new VaultError('CORRUPT', 'A2 attachment blob size does not match canonical metadata.');
+    const actual = await sha256Hex(bytes);
+    if (actual !== entity.checksumSha256) throw new VaultError('CORRUPT', 'A2 attachment blob checksum does not match canonical metadata.');
+    return {
+      entryId: entity.id as unknown as EntryId,
+      vaultId: entity.vaultId as unknown as VaultId,
+      mimeType: entity.mediaType,
+      size: entity.size,
+      bytes,
+    };
+  }
 }
 
 export class A2LocalRepository extends LocalRepository {
@@ -482,6 +503,11 @@ export class A2LocalRepository extends LocalRepository {
     } catch (error) {
       await this.a2.markRepairNeeded(error).catch(() => undefined);
     }
+  }
+
+  override async readAttachment(entryId: EntryId): Promise<AttachmentContent> {
+    const canonical = await this.a2.readAttachmentBlob(entryId);
+    return canonical ?? super.readAttachment(entryId);
   }
 
   override async createVault(raw: string): Promise<Vault> {
