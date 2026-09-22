@@ -17,7 +17,8 @@
     "benchmark:search": "npm run build:core && node scripts/benchmark-phase4.mjs",
     "benchmark:graph": "npm run build:core && node scripts/benchmark-phase10.mjs",
     "benchmark:board": "npm run build:core && node scripts/benchmark-phase11.mjs",
-    "benchmark:canvas": "npm run build:core && node scripts/benchmark-phase12.mjs"
+    "benchmark:canvas": "npm run build:core && node scripts/benchmark-phase12.mjs",
+    "benchmark:interop": "npm run build:core && node scripts/benchmark-phase13.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
