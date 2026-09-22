@@ -1,7 +1,8 @@
 import * as Y from 'yjs';
+import type { EntryId } from '../domain/model.js';
 
 export interface CrdtBaseSnapshot {
-  entryId:string;
+  entryId:EntryId;
   revision:number;
   fingerprint:string;
   text:string;
