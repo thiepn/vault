@@ -7,6 +7,7 @@ import { requestPersistentStorage } from '../storage/storage-health.js';
 import { request, transact } from '../storage/idb.js';
 import { SaveCoordinator } from '../services/save-coordinator.js';
 import { vaultFiles, zipStore } from '../services/export.js';
+import { fullVaultArchiveFiles, validateFullVaultArchiveFiles } from '../services/a2-archive.js';
 import { CommandRegistry } from '../commands/registry.js';
 import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file-tree.js';
 import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
@@ -136,7 +137,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 11 \u00b7 Boards</span>
+        <span class="stage">Phase 11 · A2 persistence</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -151,7 +152,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="file-tree" role="tree" aria-label="Folders and notes" tabindex="0"></div>
           <button data-action="trash-view" class="quiet trash-button">Open Trash</button>
           <button data-action="recovery" class="quiet" disabled>Recovery drafts</button>
-          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
+          <div class="mobile-exports"><button data-command="vault.export" disabled>Markdown ZIP</button><button data-command="vault.archive" disabled>Full Vault archive</button><button data-command="vault.backup" disabled>Recovery backup</button></div>
         </section>
         <section class="sidebar-panel search-panel" data-panel="search" hidden>
           <div class="section-heading"><span>VAULT SEARCH</span><button data-action="rebuild-search" aria-label="Rebuild search index">\u21bb</button></div>
@@ -260,12 +261,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <label class="knowledge-setting"><input class="auto-update-links" type="checkbox" checked /> Update links on rename/move</label>
         <div class="rule"></div><p class="label">DATA OWNERSHIP</p>
         <button data-command="vault.export" disabled>Markdown ZIP</button>
+        <button data-command="vault.archive" disabled>Full Vault archive</button>
         <button data-command="vault.backup" disabled>Recovery backup</button>
-        <p class="fineprint">ZIP exports active files and empty folders. Recovery backup also includes Trash, checkpoints and stored recovery drafts.</p>
+        <p class="fineprint">Markdown ZIP maximizes interoperability. Full Vault archive adds stable IDs and structured A2 metadata. Recovery backup preserves the legacy recovery snapshot.</p>
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB \u00b7 schema 3</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB · schema 4</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
@@ -1782,7 +1784,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchStatus.textContent = 'No vault open.';
       fileFilter.value = '';
     }
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
     renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts();
     if (graphOpen) renderGraph();
@@ -2903,6 +2905,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!vault) return; if (saver) await saver.flush();
     const bytes = zipStore(vaultFiles(await repository.snapshot(vault.id)));
     download(`${vault.name}.zip`, new Uint8Array(bytes).buffer, 'application/zip');
+  } });
+  registry.register({ id: 'vault.archive', label: 'Export full Vault archive', enabled: () => !!vault, run: async () => {
+    if (!vault) return;
+    if (saver) await saver.flush();
+    await a2.syncVaultTree(vault.id);
+    const snapshot = await repository.snapshot(vault.id);
+    const files = await fullVaultArchiveFiles(
+      snapshot,
+      await a2.canonicalEntities(vault.id),
+      await a2.noteBodies(vault.id),
+    );
+    await validateFullVaultArchiveFiles(files);
+    const bytes = zipStore(files);
+    download(`${vault.name}.vault.zip`, new Uint8Array(bytes).buffer, 'application/zip');
   } });
   registry.register({ id: 'vault.backup', label: 'Export recovery backup', enabled: () => !!vault, run: async () => {
     if (!vault) return;
