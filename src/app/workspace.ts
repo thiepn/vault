@@ -1171,6 +1171,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!owner) throw new VaultError('NOT_FOUND', 'Canvas owner note is unavailable.');
 
     const view = new SpatialCanvasView(document, {
+      readOnly: !currentVaultWritable(),
       persist(nextDocument) {
         return perform(() => persistCanvasDocument(owner, nextDocument));
       },
