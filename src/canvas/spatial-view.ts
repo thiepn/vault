@@ -589,22 +589,45 @@ export class SpatialCanvasView {
     const rect = this.stage.getBoundingClientRect();
     const start = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
     const origin = { x: item.x, y: item.y };
+    let finished = false;
 
-    const move = (moveEvent: PointerEvent): void => {
-      if (moveEvent.pointerId !== pointerId) return;
-      moveEvent.preventDefault();
-      this.updateMovedItem(item, kind, origin, start, moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
+    const apply = (clientX: number, clientY: number, altKey: boolean): void => {
+      this.updateMovedItem(item, kind, origin, start, clientX, clientY, altKey);
     };
-    const finish = (upEvent: PointerEvent): void => {
-      if (upEvent.pointerId !== pointerId) return;
-      window.removeEventListener('pointermove', move, true);
-      window.removeEventListener('pointerup', finish, true);
-      window.removeEventListener('pointercancel', finish, true);
+    const movePointer = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== pointerId || finished) return;
+      moveEvent.preventDefault();
+      apply(moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
+    };
+    const moveMouse = (moveEvent: MouseEvent): void => {
+      if (finished || moveEvent.buttons !== 1) return;
+      moveEvent.preventDefault();
+      apply(moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
+    };
+    const cleanup = (): void => {
+      window.removeEventListener('pointermove', movePointer, true);
+      window.removeEventListener('pointerup', finishPointer, true);
+      window.removeEventListener('pointercancel', finishPointer, true);
+      window.removeEventListener('mousemove', moveMouse, true);
+      window.removeEventListener('mouseup', finishMouse, true);
+    };
+    const finishNow = (): void => {
+      if (finished) return;
+      finished = true;
+      cleanup();
       void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
     };
-    window.addEventListener('pointermove', move, { capture: true, signal: this.abort.signal });
-    window.addEventListener('pointerup', finish, { capture: true, signal: this.abort.signal });
-    window.addEventListener('pointercancel', finish, { capture: true, signal: this.abort.signal });
+    const finishPointer = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== pointerId) return;
+      finishNow();
+    };
+    const finishMouse = (): void => finishNow();
+
+    window.addEventListener('pointermove', movePointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointerup', finishPointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointercancel', finishPointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mousemove', moveMouse, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mouseup', finishMouse, { capture: true, signal: this.abort.signal });
   }
 
   private beginCapturedResize(event: PointerEvent, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
@@ -612,22 +635,45 @@ export class SpatialCanvasView {
     event.stopPropagation();
     const pointerId = event.pointerId;
     const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
+    let finished = false;
 
-    const move = (moveEvent: PointerEvent): void => {
-      if (moveEvent.pointerId !== pointerId) return;
-      moveEvent.preventDefault();
-      this.updateResizedItem(item, kind, start, moveEvent.clientX, moveEvent.clientY);
+    const apply = (clientX: number, clientY: number): void => {
+      this.updateResizedItem(item, kind, start, clientX, clientY);
     };
-    const finish = (upEvent: PointerEvent): void => {
-      if (upEvent.pointerId !== pointerId) return;
-      window.removeEventListener('pointermove', move, true);
-      window.removeEventListener('pointerup', finish, true);
-      window.removeEventListener('pointercancel', finish, true);
+    const movePointer = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== pointerId || finished) return;
+      moveEvent.preventDefault();
+      apply(moveEvent.clientX, moveEvent.clientY);
+    };
+    const moveMouse = (moveEvent: MouseEvent): void => {
+      if (finished || moveEvent.buttons !== 1) return;
+      moveEvent.preventDefault();
+      apply(moveEvent.clientX, moveEvent.clientY);
+    };
+    const cleanup = (): void => {
+      window.removeEventListener('pointermove', movePointer, true);
+      window.removeEventListener('pointerup', finishPointer, true);
+      window.removeEventListener('pointercancel', finishPointer, true);
+      window.removeEventListener('mousemove', moveMouse, true);
+      window.removeEventListener('mouseup', finishMouse, true);
+    };
+    const finishNow = (): void => {
+      if (finished) return;
+      finished = true;
+      cleanup();
       void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
     };
-    window.addEventListener('pointermove', move, { capture: true, signal: this.abort.signal });
-    window.addEventListener('pointerup', finish, { capture: true, signal: this.abort.signal });
-    window.addEventListener('pointercancel', finish, { capture: true, signal: this.abort.signal });
+    const finishPointer = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== pointerId) return;
+      finishNow();
+    };
+    const finishMouse = (): void => finishNow();
+
+    window.addEventListener('pointermove', movePointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointerup', finishPointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointercancel', finishPointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mousemove', moveMouse, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mouseup', finishMouse, { capture: true, signal: this.abort.signal });
   }
 
   private beginCapturedPan(event: PointerEvent): void {
@@ -635,23 +681,47 @@ export class SpatialCanvasView {
     event.stopPropagation();
     const pointerId = event.pointerId;
     const start = { x: event.clientX, y: event.clientY, panX: this.document.viewport.x, panY: this.document.viewport.y };
-    const move = (moveEvent: PointerEvent): void => {
-      if (moveEvent.pointerId !== pointerId) return;
-      moveEvent.preventDefault();
-      this.document.viewport.x = start.panX + moveEvent.clientX - start.x;
-      this.document.viewport.y = start.panY + moveEvent.clientY - start.y;
+    let finished = false;
+
+    const apply = (clientX: number, clientY: number): void => {
+      this.document.viewport.x = start.panX + clientX - start.x;
+      this.document.viewport.y = start.panY + clientY - start.y;
       this.applyViewport();
     };
-    const finish = (upEvent: PointerEvent): void => {
-      if (upEvent.pointerId !== pointerId) return;
-      window.removeEventListener('pointermove', move, true);
-      window.removeEventListener('pointerup', finish, true);
-      window.removeEventListener('pointercancel', finish, true);
+    const movePointer = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== pointerId || finished) return;
+      moveEvent.preventDefault();
+      apply(moveEvent.clientX, moveEvent.clientY);
+    };
+    const moveMouse = (moveEvent: MouseEvent): void => {
+      if (finished || moveEvent.buttons !== 1) return;
+      moveEvent.preventDefault();
+      apply(moveEvent.clientX, moveEvent.clientY);
+    };
+    const cleanup = (): void => {
+      window.removeEventListener('pointermove', movePointer, true);
+      window.removeEventListener('pointerup', finishPointer, true);
+      window.removeEventListener('pointercancel', finishPointer, true);
+      window.removeEventListener('mousemove', moveMouse, true);
+      window.removeEventListener('mouseup', finishMouse, true);
+    };
+    const finishNow = (): void => {
+      if (finished) return;
+      finished = true;
+      cleanup();
       void this.persistViewport();
     };
-    window.addEventListener('pointermove', move, { capture: true, signal: this.abort.signal });
-    window.addEventListener('pointerup', finish, { capture: true, signal: this.abort.signal });
-    window.addEventListener('pointercancel', finish, { capture: true, signal: this.abort.signal });
+    const finishPointer = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== pointerId) return;
+      finishNow();
+    };
+    const finishMouse = (): void => finishNow();
+
+    window.addEventListener('pointermove', movePointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointerup', finishPointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('pointercancel', finishPointer, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mousemove', moveMouse, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mouseup', finishMouse, { capture: true, signal: this.abort.signal });
   }
 
   private readonly onGlobalPointerDown = (event: PointerEvent): void => {
