@@ -100,7 +100,7 @@ export class SpatialCanvasView {
     this.stage.setAttribute('aria-label', 'Spatial canvas. Drag empty space to pan; wheel to zoom; drag card headers to move.');
     this.world = documentElement('div', 'canvas-world');
     this.groupLayer = documentElement('div', 'canvas-group-layer');
-    this.edgeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    this.edgeLayer = globalThis.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     this.edgeLayer.classList.add('canvas-edge-layer');
     this.edgeLayer.setAttribute('aria-hidden', 'true');
     this.nodeLayer = documentElement('div', 'canvas-node-layer');
