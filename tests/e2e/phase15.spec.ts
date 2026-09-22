@@ -240,10 +240,12 @@ async function signIn(page:Page){
   const dialog=page.locator('.cloud-dialog');
   await page.locator('[data-action="cloud-open"]').click();
   await expect(dialog).toBeVisible();
+  const signedIn=dialog.locator('.cloud-signed-in');
+  if (await signedIn.isVisible()) return dialog;
   await dialog.locator('.cloud-email').fill('sync@example.test');
   await dialog.locator('.cloud-password').fill('x'.repeat(16));
   await dialog.locator('[data-cloud-action="sign-in"]').click();
-  await expect(dialog.locator('.cloud-signed-in')).toBeVisible();
+  await expect(signedIn).toBeVisible();
   return dialog;
 }
 async function syncNow(dialog){
