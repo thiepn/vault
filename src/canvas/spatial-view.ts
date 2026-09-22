@@ -67,6 +67,7 @@ export class SpatialCanvasView {
   private selection: Selection = null;
   private connectSourceId: string | null = null;
   private connectAwaitingFirst = false;
+  private activeGesture = false;
   private destroyed = false;
   private detachObserver: MutationObserver | null = null;
   private persistChain: Promise<void> = Promise.resolve();
@@ -124,6 +125,7 @@ export class SpatialCanvasView {
 
     this.stage.addEventListener('wheel', event => this.onWheel(event), { passive: false, signal: this.abort.signal });
     window.addEventListener('pointerdown', this.onGlobalPointerDown, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mousedown', this.onGlobalMouseDown, { capture: true, signal: this.abort.signal });
     this.stage.addEventListener('keydown', event => this.onKeyDown(event), { signal: this.abort.signal });
 
     this.render();
@@ -583,6 +585,7 @@ export class SpatialCanvasView {
   }
 
   private beginCapturedMove(event: PointerEvent, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
+    this.activeGesture = true;
     event.preventDefault();
     event.stopPropagation();
     const pointerId = event.pointerId;
@@ -614,6 +617,7 @@ export class SpatialCanvasView {
     const finishNow = (): void => {
       if (finished) return;
       finished = true;
+      this.activeGesture = false;
       cleanup();
       void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
     };
@@ -631,6 +635,7 @@ export class SpatialCanvasView {
   }
 
   private beginCapturedResize(event: PointerEvent, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
+    this.activeGesture = true;
     event.preventDefault();
     event.stopPropagation();
     const pointerId = event.pointerId;
@@ -660,6 +665,7 @@ export class SpatialCanvasView {
     const finishNow = (): void => {
       if (finished) return;
       finished = true;
+      this.activeGesture = false;
       cleanup();
       void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
     };
@@ -677,6 +683,7 @@ export class SpatialCanvasView {
   }
 
   private beginCapturedPan(event: PointerEvent): void {
+    this.activeGesture = true;
     event.preventDefault();
     event.stopPropagation();
     const pointerId = event.pointerId;
@@ -708,6 +715,7 @@ export class SpatialCanvasView {
     const finishNow = (): void => {
       if (finished) return;
       finished = true;
+      this.activeGesture = false;
       cleanup();
       void this.persistViewport();
     };
@@ -724,8 +732,134 @@ export class SpatialCanvasView {
     window.addEventListener('mouseup', finishMouse, { capture: true, signal: this.abort.signal });
   }
 
+  private beginMouseMove(event: MouseEvent, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
+    this.activeGesture = true;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = this.stage.getBoundingClientRect();
+    const start = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+    const origin = { x: item.x, y: item.y };
+    let finished = false;
+
+    const move = (moveEvent: MouseEvent): void => {
+      if (finished || moveEvent.buttons !== 1) return;
+      moveEvent.preventDefault();
+      this.updateMovedItem(item, kind, origin, start, moveEvent.clientX, moveEvent.clientY, moveEvent.altKey);
+    };
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
+      this.activeGesture = false;
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', finish, true);
+      void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
+    };
+    window.addEventListener('mousemove', move, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mouseup', finish, { capture: true, signal: this.abort.signal });
+  }
+
+  private beginMouseResize(event: MouseEvent, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
+    this.activeGesture = true;
+    event.preventDefault();
+    event.stopPropagation();
+    const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
+    let finished = false;
+
+    const move = (moveEvent: MouseEvent): void => {
+      if (finished || moveEvent.buttons !== 1) return;
+      moveEvent.preventDefault();
+      this.updateResizedItem(item, kind, start, moveEvent.clientX, moveEvent.clientY);
+    };
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
+      this.activeGesture = false;
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', finish, true);
+      void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
+    };
+    window.addEventListener('mousemove', move, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mouseup', finish, { capture: true, signal: this.abort.signal });
+  }
+
+  private beginMousePan(event: MouseEvent): void {
+    this.activeGesture = true;
+    event.preventDefault();
+    event.stopPropagation();
+    const start = { x: event.clientX, y: event.clientY, panX: this.document.viewport.x, panY: this.document.viewport.y };
+    let finished = false;
+
+    const move = (moveEvent: MouseEvent): void => {
+      if (finished || moveEvent.buttons !== 1) return;
+      moveEvent.preventDefault();
+      this.document.viewport.x = start.panX + moveEvent.clientX - start.x;
+      this.document.viewport.y = start.panY + moveEvent.clientY - start.y;
+      this.applyViewport();
+    };
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
+      this.activeGesture = false;
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', finish, true);
+      void this.persistViewport();
+    };
+    window.addEventListener('mousemove', move, { capture: true, signal: this.abort.signal });
+    window.addEventListener('mouseup', finish, { capture: true, signal: this.abort.signal });
+  }
+
+  private readonly onGlobalMouseDown = (event: MouseEvent): void => {
+    if (this.destroyed || this.activeGesture || event.button !== 0) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !this.root.contains(target)) return;
+
+    const resizeHandle = target.closest<HTMLElement>('.canvas-resize-handle');
+    if (resizeHandle) {
+      const nodeElement = resizeHandle.closest<HTMLElement>('[data-canvas-node]');
+      if (nodeElement?.dataset.canvasNode) {
+        const node = this.document.nodes.find(item => item.id === nodeElement.dataset.canvasNode);
+        if (node) this.beginMouseResize(event, node, 'node');
+        return;
+      }
+      const groupElement = resizeHandle.closest<HTMLElement>('[data-canvas-group]');
+      if (groupElement?.dataset.canvasGroup) {
+        const group = this.document.groups.find(item => item.id === groupElement.dataset.canvasGroup);
+        if (group) this.beginMouseResize(event, group, 'group');
+        return;
+      }
+    }
+
+    const nodeHeader = target.closest<HTMLElement>('.canvas-node-header');
+    const nodeElement = nodeHeader?.closest<HTMLElement>('[data-canvas-node]');
+    if (nodeHeader && nodeElement?.dataset.canvasNode) {
+      const node = this.document.nodes.find(item => item.id === nodeElement.dataset.canvasNode);
+      if (node) {
+        this.selection = { kind: 'node', id: node.id };
+        this.renderInspector();
+        this.beginMouseMove(event, node, 'node');
+      }
+      return;
+    }
+
+    const groupHeader = target.closest<HTMLElement>('.canvas-group-title');
+    const groupElement = groupHeader?.closest<HTMLElement>('[data-canvas-group]');
+    if (groupHeader && groupElement?.dataset.canvasGroup) {
+      const group = this.document.groups.find(item => item.id === groupElement.dataset.canvasGroup);
+      if (group) {
+        this.selection = { kind: 'group', id: group.id };
+        this.renderInspector();
+        this.beginMouseMove(event, group, 'group');
+      }
+      return;
+    }
+
+    if (this.stage.contains(target) && !target.closest('.canvas-node,.canvas-group,.canvas-inspector,.canvas-toolbar')) {
+      this.beginMousePan(event);
+    }
+  };
+
   private readonly onGlobalPointerDown = (event: PointerEvent): void => {
-    if (this.destroyed || event.button !== 0) return;
+    if (this.destroyed || this.activeGesture || event.button !== 0) return;
     const target = event.target;
     if (!(target instanceof Element) || !this.root.contains(target)) return;
 
