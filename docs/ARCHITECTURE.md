@@ -587,6 +587,131 @@ The outbox/cursor layer does not upload content in Phase 14; it exists so Phase 
 
 The deployable Supabase schema is retained in `backend/supabase/phase14_cloud_foundation.sql`. The live THIEPN Core project has the Phase 14 tables, RLS policies, immutability triggers and foreign-key covering indexes applied.
 
+## Phase 15 — Remote replication & conflict boundary
+
+Phase 15 synchronizes only canonical authored/file state. Derived indexes and views remain local rebuildable projections.
+
+```text
+local canonical change
+        ↓
+legacy/A2 local persistence + dirty marker
+        ↓
+operation synthesis against last remote shadow
+        ↓
+immutable outbox envelope + SHA-256
+        ↓
+pull remote ordered events first
+        ↓
+authenticated push RPC
+        ↓
+remote revision snapshot + ordered event
+        ↓
+pull/apply/advance local cursor
+```
+
+### Server authority
+
+The live THIEPN Core Phase 15 backend contains:
+
+- `vault_sync_entries` — current per-entry remote snapshot/revision
+- `vault_sync_operations` — exact immutable accepted operation envelopes/results
+- `vault_sync_events` — append-only ordered Vault event stream
+- `vault_sync_counters` — per-Vault sequence allocator
+- private Storage bucket `vault-sync` — content-addressed attachment bytes
+
+Direct browser access to the four synchronization tables is revoked and RLS policies deny direct authenticated table access. Browser replication uses only the explicitly granted authenticated RPC surface plus private Storage object policies.
+
+`vault_sync_pull` and `vault_sync_push` are intentionally `SECURITY DEFINER` functions. They use an empty `search_path`, are revoked from `public`/`anon`, granted only to `authenticated`, and independently verify `auth.uid()`, provider-independent account mapping, Vault ownership/epoch/protocol state, and non-revoked DeviceId before reading or mutating replication state.
+
+The Supabase security advisor therefore reports the generic warning that authenticated users can execute these two SECURITY DEFINER functions. This is the intended API design rather than accidental table privilege escalation; direct content tables remain inaccessible.
+
+### Remote revision model
+
+Every remote entry snapshot contains stable Entry/Vault identity, parent/name/kind, monotonically increasing integer revision, deleted state, updater DeviceId and canonical content metadata.
+
+For Markdown, the snapshot contains exact Markdown text. For attachments it contains SHA-256, MIME type and byte length; binary data remains in the private content-addressed Storage bucket.
+
+Server mutations are revision checked:
+
+- `create` requires a previously unused entry identity/path
+- `write`, `move`, `trash`, and `restore` require the exact current `baseRevision`
+- accepted mutation increments the remote revision and emits exactly one ordered event
+- operation ID reuse with identical wire/hash returns the original result
+- operation ID reuse with different bytes fails
+
+### Pull-before-push client algorithm
+
+A manual Phase 15 sync run performs:
+
+1. validate account/Vault/epoch/device binding and pending-operation ownership
+2. pull and fully validate ordered pages until the local cursor reaches the high-water mark
+3. apply clean remote snapshots and materialize conflicts conservatively
+4. synthesize immutable operations from local dirty state versus remote shadows
+5. upload required attachment blobs before their create operation
+6. push eligible outbox operations
+7. pull their ordered server events and acknowledge only after observing them
+8. repeat synthesis/push/pull once to capture edits/conflict copies created during the first pass
+
+Every page is validated before application for protocol/vault/epoch identity, strictly contiguous event sequence, cursor consistency, snapshot identity and revision consistency.
+
+### Remote shadows
+
+`remoteShadows` store the last accepted remote snapshot for each local Entry. They are owner/epoch bound and are used to distinguish:
+
+- a true remote concurrent change
+- the ordered event for this device's own just-pushed operation
+- an older historical event already subsumed by a newer acknowledged snapshot
+- a local dirty entry that has converged exactly to remote state
+
+Remote shadows are synchronization metadata, not authored truth.
+
+### Conflict preservation
+
+Phase 15 never silently resolves two divergent Markdown bodies.
+
+When a remote snapshot arrives while the same local entry is dirty/pending and the states do not match, Vault preserves one side as a separate conflict copy and makes the ordered remote snapshot canonical at the original stable Entry ID.
+
+A local-delete/remote-edit race restores/applies the remote canonical entry, preserves it as a conflict copy, then reapplies the local delete intent against the new remote base.
+
+Path collisions fail closed with `COLLISION`; the user must choose a rename. Phase 15 deliberately does not invent names for remote canonical entries.
+
+Phase 15 uses conservative whole-file conflict preservation rather than diff3. Automatic non-overlapping text merge is intentionally deferred.
+
+### Attachment replication
+
+Attachment create operations reference `{sha256, mimeType, size}` rather than carrying bytes inside the JSON operation.
+
+Before the create operation is accepted:
+
+1. the browser hashes local bytes
+2. uploads them to `vault-sync/<auth-user-id>/<vault-id>/<sha256>`
+3. server RPC verifies that object exists
+4. remote entry snapshot records the immutable blob metadata
+
+On another device, Vault downloads only when local bytes for that hash are absent/different, then verifies exact SHA-256 and byte length before committing them locally.
+
+Already-synchronized attachment byte mutation is rejected locally. A changed binary should be duplicated as a new attachment identity so both versions remain explicit.
+
+### Local-first failure boundary
+
+- network failure never blocks ordinary local editing
+- only explicitly adopted cloud Vaults participate
+- account/device/epoch mismatch stops sync before mutation
+- outbox retry uses exact immutable bytes
+- cursor only advances after each remote event is durably applied
+- A2 mirror failure marks repair-needed without discarding the compatibility-store canonical content
+- signing out keeps local canonical content and cloud binding intact
+
+Phase 15 synchronization is explicit/manual (`Sync now`). Background scheduling/realtime notifications and richer merge UX are later phases.
+
+### Backend implementation source
+
+Deployable SQL is retained in:
+
+- `backend/supabase/phase15_remote_replication.sql`
+- `backend/supabase/phase15_remote_replication_hardening.sql`
+
+THIEPN Core has both Phase 15 migrations applied, the private `vault-sync` bucket configured, authenticated-only RPC execution grants, RLS/direct-access denial on replication tables, and owner/Vault-scoped Storage policies.
 ## Knowledge index
 
 The derived knowledge record stores aliases, headings, block IDs, links, tags, properties and parsed task projections. Its version advances when parser semantics change; it remains reconstructable from Markdown.
@@ -615,4 +740,4 @@ Paths are not permanent identity. Files/folders use immutable UUIDs.
 
 ## Sync boundary
 
-Phase 14 activates cloud account/device/Vault identity and local replication state, but remote note/attachment content replication remains inactive. Phase 15 must synchronize canonical Markdown, stable entry metadata and attachment payloads—not derived task/search/calendar/query/graph/board projections—and must preserve the explicit account/epoch/outbox/cursor boundaries above.
+Phase 15 synchronizes canonical Markdown, stable file metadata and attachment payloads through the explicit Phase 14 account/device/Vault boundary. Derived task/search/calendar/query/graph/board projections remain local rebuildable state and are never replicated as authoritative records.
