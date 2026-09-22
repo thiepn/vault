@@ -106,7 +106,12 @@ async function signIn(page: Page) {
   await dialog.locator('.cloud-email').fill('cloud@example.test');
   await dialog.locator('.cloud-password').fill('x'.repeat(16));
   await dialog.locator('[data-cloud-action="sign-in"]').click();
-  await expect(dialog.locator('.cloud-signed-in')).toBeVisible();
+  await expect.poll(async()=>{
+    if(await dialog.locator('.cloud-signed-in').isVisible()) return 'signed';
+    const cloudMessage=(await dialog.locator('.cloud-message').textContent())?.trim();
+    const globalError=(await page.locator('.error').textContent())?.trim();
+    return [cloudMessage,globalError].filter(Boolean).join(' | ') || 'pending';
+  }).toBe('signed');
   await expect(dialog.locator('.cloud-identity')).toContainText('cloud@example.test');
   return dialog;
 }
