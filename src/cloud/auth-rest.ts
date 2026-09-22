@@ -64,7 +64,7 @@ export class SupabaseRestAuth implements AuthService {
   constructor(
     private readonly config: PublicBackendConfig,
     private readonly storage: KeyValueStorage,
-    private readonly request: FetchLike = fetch,
+    private readonly request: FetchLike = (input, init) => fetch(input, init),
   ) {
     this.key = sessionStorageKey(config);
   }
