@@ -186,15 +186,16 @@ async function readLegacyEntry(
 export class A2Persistence {
   readonly blobStore: BlobStore;
   private readonly driver: LocalStorageDriver;
-  private readonly broadcast = new VaultBroadcast();
+  private readonly broadcast: VaultBroadcast;
 
-  private constructor(readonly database: IDBDatabase, blobStore: BlobStore) {
+  private constructor(readonly database: IDBDatabase, blobStore: BlobStore, sourceId?: string) {
     this.driver = storageDriver(database);
     this.blobStore = blobStore;
+    this.broadcast = new VaultBroadcast('vault:storage', undefined, sourceId);
   }
 
-  static async create(database: IDBDatabase): Promise<A2Persistence> {
-    return new A2Persistence(database, await createPreferredBlobStore(database));
+  static async create(database: IDBDatabase, sourceId?: string): Promise<A2Persistence> {
+    return new A2Persistence(database, await createPreferredBlobStore(database), sourceId);
   }
 
   close(): void {
