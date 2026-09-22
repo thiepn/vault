@@ -124,7 +124,9 @@ export class SyncEngine {
       // A push conflict/ack may have already incorporated a newer snapshot than
       // this historical event. Do not replay the same conflict or downgrade the
       // remote shadow; cursor advancement still happens in the caller.
-      await this.replica.clearDirtyIfMatched(event.snapshot);
+      if(event.snapshot.revision===known.snapshot.revision){
+        await this.replica.clearDirtyIfMatched(event.snapshot);
+      }
       return;
     }
 
