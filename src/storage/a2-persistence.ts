@@ -68,7 +68,7 @@ export interface A2MigrationState {
   processedEntries: number;
 }
 
-type StoredEntity = VaultEntity | FolderEntity | StoredNoteHeader | TaskEntity | AttachmentEntity;
+export type StoredEntity = VaultEntity | FolderEntity | StoredNoteHeader | TaskEntity | AttachmentEntity;
 
 const now = (): string => new Date().toISOString();
 const titleFromName = (name: string): string => name.replace(/\.md$/iu, '');
