@@ -16,6 +16,7 @@ The repository currently includes browser-certified:
 - **Phase 8 — Queries & Dynamic Views**
 - **Phase 9 — Attachments, Images & Media**
 - **Phase 10 — Graph View & Knowledge Visualization**
+- **Phase 11 — Kanban & Structured Board Views**
 
 ## Current capabilities
 
@@ -181,6 +182,43 @@ Graph capabilities include:
 
 Graph coordinates, grouping and filter state are presentation-only. Relationships are recomputed from Markdown references and attachment paths.
 
+### Kanban & Structured Board Views
+
+Boards are saved as ordinary fenced Markdown definitions and project cards remain ordinary Markdown notes.
+
+```vault-board
+title: Project board
+query: tag:#project
+group-by: property:status
+columns: backlog=Backlog, todo=To do, doing=Doing, done=Done
+card-fields: tags, property:priority, updated
+sort: updated desc
+limit: 200
+exclude-self: true
+```
+
+Board capabilities include:
+
+- existing Boolean/tag/property/task query grammar
+- property-backed Kanban lanes
+- configured lane order and labels
+- automatically surfaced unexpected property values
+- optional uncategorized lane
+- card metadata fields
+- deterministic card sorting
+- Live Preview board widgets
+- Reading-mode board rendering
+- desktop drag/drop lane moves
+- touch/keyboard lane selectors
+- click-to-open cards
+- compact board layout
+- responsive horizontal lanes
+- version-checked YAML updates on card movement
+- safe handling when the moved card is the currently open note
+- 10,000-card projection benchmark
+
+Moving a card changes the configured frontmatter property on the underlying note. The board itself stores no card positions, copies, or proprietary task records.
+
 ### Attachments, Images & Media
 
 Attachments are first-class local vault entries with stable IDs and binary payloads stored separately from note text.
@@ -229,7 +267,8 @@ Markdown
    ├─→ calendar projection
    ├─→ task projection
    ├─→ dynamic query projection
-   └─→ knowledge graph projection
+   ├─→ knowledge graph projection
+   └─→ Kanban board projection
 ```
 
 Tasks, Daily Notes, templates and query definitions remain file/text concepts. Attachment bytes are stored as separate local binary records keyed by stable vault entry IDs; Markdown contains readable attachment paths. Query results remain disposable projections.
@@ -237,7 +276,6 @@ Tasks, Daily Notes, templates and query definitions remain file/text concepts. A
 ## Not implemented yet
 
 - cloud accounts and cross-device sync
-- Kanban
 - Canvas
 - PWA cold-start/offline shell
 - external Markdown/Obsidian import
@@ -261,6 +299,6 @@ CI runs strict TypeScript, all core contracts, the 10k search benchmark, product
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.10.0-phase10**
+- Current package version: **0.11.0-phase11**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
