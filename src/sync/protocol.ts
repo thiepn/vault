@@ -150,7 +150,7 @@ export async function sealOperation(operation: Operation): Promise<SealedOperati
 }
 
 export function assertOwner(operation: SealedOperation, authenticatedUserId: string): void {
-  if (operation.ownerId !== authenticatedUserId) throw new VaultError('ACCOUNT_MISMATCH', 'This queued operation belongs to a different authenticated actor. It will not be uploaded.');
+  if (operation.ownerId !== authenticatedUserId) throw new VaultError('ACCOUNT_MISMATCH', 'This queued operation belongs to a different account or authenticated actor. It will not be uploaded.');
 }
 
 export function retryDelay(attempt: number, random: number): number {
