@@ -715,6 +715,133 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
   }
 
+  function activeCollaborationRole(): CollaborationRole | null {
+    if (!vault || vault.mode !== 'cloud' || !vault.cloud) return null;
+    const role = effectiveCloudRole(vault.cloud);
+    return role === 'owner' || role === 'editor' || role === 'viewer' ? role : null;
+  }
+
+  function currentCollaborationMode(): CollaborationMode {
+    if (!selected) return 'none';
+    if (selected.kind === 'markdown') return editorMode;
+    if (selected.kind === 'attachment') return 'attachment';
+    return 'folder';
+  }
+
+  function collaborationStatusLabel(): string {
+    if (collaborationStatus === 'connected') return 'Presence connected';
+    if (collaborationStatus === 'connecting') return 'Presence connecting';
+    if (collaborationStatus === 'retrying') return 'Presence reconnecting';
+    if (collaborationStatus === 'unauthenticated') return 'Presence signed out';
+    return 'Presence idle';
+  }
+
+  function renderCollaborationState(): void {
+    const eligible = !!collaboration
+      && !!vault?.cloud
+      && currentVaultReadable()
+      && !!activeCollaborationRole()
+      && cloudStatus.signedIn
+      && cloudStatus.identity?.userId === vault.cloud.authUserId;
+
+    if (!eligible) {
+      collaborationPresence.replaceChildren();
+      collaborationPresence.hidden = true;
+      collaborationStatusElement.hidden = true;
+      editor.setRemoteCursors([]);
+      return;
+    }
+
+    const others = collaborationParticipants.filter(participant => participant.sessionId !== storageSessionId);
+    const sameEntry = selected
+      ? others.filter(participant => participant.entryId === selected!.id)
+      : [];
+
+    const unique = new Map<string, { participant: CollaborationPresence; sessions: number }>();
+    for (const participant of sameEntry) {
+      const prior = unique.get(participant.userId);
+      if (prior) prior.sessions++;
+      else unique.set(participant.userId, { participant, sessions: 1 });
+    }
+
+    collaborationPresence.replaceChildren();
+    for (const { participant, sessions } of [...unique.values()].slice(0, 4)) {
+      const chip = document.createElement('span');
+      chip.className = 'collaboration-chip';
+      const role = participant.role[0]!.toUpperCase() + participant.role.slice(1);
+      chip.textContent = `${role} · ${participant.userId.slice(0, 4)}`;
+      chip.title = `${role} collaborator · ${sessions} active session${sessions === 1 ? '' : 's'} on this item`;
+      collaborationPresence.append(chip);
+    }
+    if (unique.size > 4) {
+      const more = document.createElement('span');
+      more.className = 'collaboration-chip collaboration-chip-more';
+      more.textContent = `+${unique.size - 4}`;
+      more.title = `${unique.size - 4} more collaborators on this item`;
+      collaborationPresence.append(more);
+    }
+    collaborationPresence.hidden = unique.size === 0;
+
+    collaborationStatusElement.hidden = false;
+    const connectedOthers = new Set(others.map(participant => participant.userId)).size;
+    collaborationStatusElement.textContent = `${collaborationStatusLabel()}${connectedOthers ? ` · ${connectedOthers} other${connectedOthers === 1 ? '' : 's'} online` : ''}`;
+  }
+
+  function renderRemoteCollaborationCursors(): void {
+    if (!selected || selected.kind !== 'markdown' || editorMode === 'reading' || collaborationStatus !== 'connected') {
+      editor.setRemoteCursors([]);
+      return;
+    }
+    const participants = new Map(collaborationParticipants.map(participant => [participant.sessionId, participant]));
+    const cutoff = Date.now() - 8_000;
+    const markers: RemoteCursorMarker[] = [];
+    for (const cursor of collaborationCursors.values()) {
+      if (cursor.entryId !== selected.id || Date.parse(cursor.at) < cutoff) continue;
+      const participant = participants.get(cursor.sessionId);
+      if (!participant
+        || participant.sessionId === storageSessionId
+        || participant.entryId !== selected.id
+        || participant.userId !== cursor.userId
+        || participant.deviceId !== cursor.deviceId
+        || participant.mode === 'reading') continue;
+      const role = participant.role[0]!.toUpperCase() + participant.role.slice(1);
+      markers.push({
+        id: cursor.sessionId,
+        position: cursor.position,
+        from: cursor.from,
+        to: cursor.to,
+        label: `${role} ${participant.userId.slice(0, 4)}`,
+      });
+    }
+    editor.setRemoteCursors(markers);
+  }
+
+  async function refreshCollaborationSubscription(): Promise<void> {
+    const role = activeCollaborationRole();
+    if (!collaboration || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
+      || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud) || !role) {
+      collaboration?.stop();
+      collaborationStatus = collaboration?.currentStatus ?? 'idle';
+      collaborationParticipants = [];
+      collaborationCursors.clear();
+      renderCollaborationState();
+      return;
+    }
+    await collaboration.subscribe({
+      vaultId: vault.id,
+      epoch: vault.cloud.epoch,
+      userId: cloudStatus.identity.userId,
+      deviceId: vault.cloud.deviceId,
+      sessionId: storageSessionId,
+      role,
+      entryId: selected?.id ?? null,
+      mode: currentCollaborationMode(),
+    });
+    collaborationStatus = collaboration.currentStatus;
+    renderCollaborationState();
+    renderRemoteCollaborationCursors();
+  }
+
   function renderCloudIndicator(): void {
     const button = element<HTMLButtonElement>('[data-action="cloud-open"]');
     const adopted = vault?.mode === 'cloud';
