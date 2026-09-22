@@ -1,4 +1,4 @@
-const CACHE = 'vault-shell-a2-v2';
+const CACHE = 'vault-shell-a2-v3';
 
 async function cacheDocumentShell(cache, root) {
   const response = await fetch(root, { cache: 'reload' });
@@ -66,8 +66,8 @@ self.addEventListener('fetch', event => {
         if (response.ok) await (await caches.open(CACHE)).put(event.request, response.clone());
         return response;
       } catch {
-        const cached = await caches.match(event.request)
-          ?? await caches.match(new URL('./', self.registration.scope).href);
+        const cached = await caches.match(event.request, { ignoreVary: true })
+          ?? await caches.match(new URL('./', self.registration.scope).href, { ignoreVary: true });
         return cached ?? new Response('Vault is offline and its application shell has not been cached yet.', {
           status: 503,
           headers: { 'Content-Type': 'text/plain; charset=utf-8' },
@@ -78,7 +78,7 @@ self.addEventListener('fetch', event => {
   }
 
   event.respondWith((async () => {
-    const cached = await caches.match(event.request);
+    const cached = await caches.match(event.request, { ignoreVary: true });
     if (cached) {
       event.waitUntil(fetch(event.request).then(async response => {
         if (response.ok) await (await caches.open(CACHE)).put(event.request, response.clone());
