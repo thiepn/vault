@@ -455,11 +455,11 @@ export class A2Persistence {
   }
 
   async canonicalEntities(vaultId: VaultId): Promise<StoredEntity[]> {
-    return this.driver.transaction(
-      ['entities'],
-      'readonly',
-      tx => tx.store('entities').allFromIndex<StoredEntity>('vaultId', vaultId),
-    );
+    return this.driver.transaction(['entities'], 'readonly', async tx => {
+      const scoped = await tx.store('entities').allFromIndex<StoredEntity>('vaultId', vaultId);
+      const vault = await tx.store('entities').get<StoredEntity>(vaultId);
+      return vault ? [vault, ...scoped] : scoped;
+    });
   }
 
   async noteBodies(vaultId: VaultId): Promise<NoteBodyRecord[]> {
