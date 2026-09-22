@@ -145,7 +145,7 @@ test('Phase 13 imports an Obsidian ZIP into a new Vault and preserves interopera
   await expect(canvas.locator('.canvas-note-title')).toHaveText('Bad-Name');
 
   const downloadPromise = page.waitForEvent('download');
-  await page.locator('[data-command="vault.export-obsidian"]').first().click();
+  await page.locator('.inspector [data-command="vault.export-obsidian"]').click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('Imported Obsidian-obsidian.zip');
 
