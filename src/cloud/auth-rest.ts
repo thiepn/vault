@@ -106,7 +106,12 @@ export class SupabaseRestAuth implements AuthService {
       body: JSON.stringify(body),
     });
     const payload = await responseJson(response);
-    if (!response.ok) throw new VaultError('CONFIGURATION', parseErrorPayload(payload, 'Supabase authentication failed.'));
+    if (!response.ok) {
+      const code = grant === 'refresh_token' && (response.status === 400 || response.status === 401)
+        ? 'ACCOUNT_MISMATCH'
+        : 'CONFIGURATION';
+      throw new VaultError(code, parseErrorPayload(payload, 'Supabase authentication failed.'));
+    }
     const session = tokenSession(payload);
     if (!session) throw new VaultError('PROTOCOL', 'Supabase returned an invalid authentication session.');
     this.writeSession(session);
@@ -120,7 +125,9 @@ export class SupabaseRestAuth implements AuthService {
     try {
       return await this.tokenRequest('refresh_token', { refresh_token: current.refreshToken });
     } catch (error) {
-      this.writeSession(null);
+      // Only an explicit refresh-token rejection invalidates the durable browser
+      // session. Offline/network/5xx failures must not sign a local-first user out.
+      if (error instanceof VaultError && error.code === 'ACCOUNT_MISMATCH') this.writeSession(null);
       throw error;
     }
   }
@@ -196,16 +203,20 @@ export class SupabaseRestAuth implements AuthService {
 
   async signOut(): Promise<void> {
     const session = this.readSession();
-    if (session) {
-      const response = await this.request(`${this.config.url}/auth/v1/logout?scope=local`, {
-        method: 'POST',
-        headers: this.headers(session.accessToken),
-      });
-      if (!response.ok && response.status !== 401) {
-        const payload = await responseJson(response);
-        throw new VaultError('CONFIGURATION', parseErrorPayload(payload, 'Supabase sign-out failed.'));
+    try {
+      if (session) {
+        const response = await this.request(`${this.config.url}/auth/v1/logout?scope=local`, {
+          method: 'POST',
+          headers: this.headers(session.accessToken),
+        });
+        // Local sign-out is intentionally best-effort remotely. A browser that is
+        // offline must still be able to forget its local refresh/access tokens.
+        if (!response.ok && response.status !== 401) await responseJson(response);
       }
+    } catch {
+      // Network failure cannot prevent local sign-out.
+    } finally {
+      this.writeSession(null);
     }
-    this.writeSession(null);
   }
 }
