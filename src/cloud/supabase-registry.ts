@@ -137,7 +137,7 @@ export class SupabaseCloudRegistry {
   }
 
   async registerDevice(account: CloudAccount, deviceId: DeviceId, label: string, platform='web'): Promise<CloudDevice> {
-    const response=await this.request(this.url('vault_cloud_devices?on_conflict=id'),{
+    const response=await this.request(this.url('vault_cloud_devices?on_conflict=account_id,id'),{
       method:'POST',
       headers:await this.headers('resolution=merge-duplicates,return=representation'),
       body:JSON.stringify({
