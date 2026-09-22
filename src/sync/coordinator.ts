@@ -1,7 +1,7 @@
 import { VaultError } from '../domain/errors.js';
 import { retryDelay } from './protocol.js';
 
-export type SyncTrigger = 'manual' | 'startup' | 'interval' | 'online' | 'focus' | 'visibility' | 'local-change' | 'peer';
+export type SyncTrigger = 'manual' | 'startup' | 'interval' | 'online' | 'focus' | 'visibility' | 'local-change' | 'peer' | 'realtime';
 
 export type SyncLockResult<T> =
   | { acquired: false }

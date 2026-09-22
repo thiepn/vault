@@ -22,10 +22,11 @@ The repository currently includes browser-certified:
 - **Phase 14 — Cloud Accounts, Device Identity & Sync Foundation**
 - **Phase 15 — Remote Replication, Conflict Resolution & Attachment Sync**
 - **Phase 16 — Continuous/Background Sync, Advanced Conflict Resolution & Sync Hardening**
+- **Phase 17 — Realtime Sync Wakeups & Connection Resilience**
 
 ## Permanent architecture program
 
-The Phase 1–16 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–17 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
@@ -486,6 +487,22 @@ Browser background execution remains best-effort. Timers may be throttled or sus
 
 See docs/PHASE16_SYNC_HARDENING.md.
 
+### Realtime Sync Wakeups & Connection Resilience
+
+Phase 17 adds a private authenticated Supabase Realtime wake path on top of the existing canonical event log.
+
+- every committed `vault_sync_events` row emits a tiny database-originated `sync_event` Broadcast
+- channel topics include both Vault ID and synchronization epoch
+- Realtime RLS permits only the owning authenticated account to receive that Vault/epoch topic
+- the browser validates protocol/topic/payload before waking the Phase 16 coordinator
+- Realtime carries only event identity metadata; Markdown text, paths and attachment bytes stay on the normal RPC/Storage path
+- WebSocket heartbeat, token refresh and bounded reconnect are handled without making Realtime authoritative
+- the 30-second scheduler, focus/reconnect wakeups and **Sync now** remain complete fallbacks if the socket is unavailable
+
+This gives near-immediate cross-device convergence while Vault is open without introducing a second data model or live collaborative editing semantics.
+
+See docs/PHASE17_REALTIME_WAKEUPS.md.
+
 ## Canonical data
 
 ```text
@@ -515,7 +532,7 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 ## Not implemented yet
 
-- server-push/WebSocket real-time collaboration or presence
+- multi-user shared Vault permissions, live co-editing or presence
 - guaranteed closed-app service-worker replication
 - semantic/block-aware interactive conflict resolution
 
@@ -531,6 +548,7 @@ npm run benchmark:interop
 npm run benchmark:sync-foundation
 npm run benchmark:replication
 npm run benchmark:sync-hardening
+npm run benchmark:realtime-wakeup
 npm run build
 npm run test:e2e
 ```
@@ -542,6 +560,6 @@ CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidia
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.16.0-phase16**
+- Current package version: **0.17.0-phase17**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.

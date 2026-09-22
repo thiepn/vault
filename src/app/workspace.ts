@@ -46,11 +46,12 @@ import { SupabaseSyncTransport } from '../sync/transport.js';
 import { SyncReplicaStore } from '../sync/replica-store.js';
 import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
 import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
+import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realtime-wakeup.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 16 browser workspace: continuous hardened replication on the accepted Phase 1-15 + A1/A2 foundation. */
+/** Phase 17 browser workspace: realtime wakeups on the accepted Phase 1-16 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -62,12 +63,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudConfig = browserCloudConfiguration();
   const syncState = new SyncLocalState(db);
   let cloud: CloudFoundation | null = null;
+  let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
   let syncCoordinator: SyncCoordinator | null = null;
+  let realtimeWake: SupabaseRealtimeWakeup | null = null;
+  let realtimeStatus: RealtimeWakeStatus = 'idle';
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
     const auth = new SupabaseRestAuth(cloudConfig, window.localStorage);
+    cloudAuth = auth;
     const registry = new SupabaseCloudRegistry(cloudConfig, () => auth.accessToken());
     const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
     const syncReplica = new SyncReplicaStore(db, a2);
@@ -355,7 +360,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 16 continuously synchronizes adopted Vaults while the app is open, resumes after reconnect/focus, and auto-merges clearly independent Markdown edits. Sync now remains available for explicit control. Search, tasks, calendar, queries, graph and boards are rebuilt locally rather than uploaded.</p>
+          <p class="cloud-phase-note">Phase 17 adds private authenticated Realtime wakeups so remote commits trigger the existing pull/merge/push protocol immediately while Vault is open. Polling, reconnect/focus wakeups and Sync now remain as fallbacks. Search, tasks, calendar, queries, graph and boards are rebuilt locally rather than uploaded.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
           <div class="cloud-section-heading">DEVICES</div>
@@ -410,6 +415,27 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudSyncDetail = element<HTMLElement>('.cloud-sync-detail');
   const cloudRemoteVaults = element<HTMLElement>('.cloud-remote-vaults');
   const cloudDevices = element<HTMLElement>('.cloud-devices');
+
+  if (cloudAuth) {
+    realtimeWake = new SupabaseRealtimeWakeup(
+      cloudConfig,
+      () => cloudAuth!.accessToken(),
+      {
+        onWake(event) {
+          if (vault?.id === event.vaultId) syncCoordinator?.wake('realtime');
+        },
+        onStatus(status) {
+          realtimeStatus = status;
+          if (disposed) return;
+          void refreshCloudSyncDetail()
+            .then(() => {
+              if (cloudDialog.open && cloudStatus.signedIn) cloudSyncDetail.textContent = cachedSyncDetail;
+            })
+            .catch(() => undefined);
+        },
+      },
+    );
+  }
   const migrationDialog = element<HTMLDialogElement>('.migration-dialog');
   const migrationSummary = element<HTMLElement>('.migration-summary');
   const migrationDetails = element<HTMLElement>('.migration-details');
@@ -710,6 +736,26 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
   let cachedSyncDetail = '';
 
+  function realtimeLabel(): string {
+    if (!realtimeWake) return 'Realtime unavailable';
+    if (realtimeStatus === 'connected') return 'Realtime connected';
+    if (realtimeStatus === 'connecting') return 'Realtime connecting';
+    if (realtimeStatus === 'retrying') return 'Realtime reconnecting · polling fallback';
+    if (realtimeStatus === 'unauthenticated') return 'Realtime signed out · polling fallback';
+    return 'Realtime idle · polling fallback';
+  }
+
+  async function refreshRealtimeSubscription(): Promise<void> {
+    if (!realtimeWake || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
+      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      realtimeWake?.stop();
+      realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
+      return;
+    }
+    await realtimeWake.subscribe(vault.id, vault.cloud.epoch);
+    realtimeStatus = realtimeWake.currentStatus;
+  }
+
   async function refreshCloudSyncDetail(): Promise<void> {
     if (!vault || vault.mode !== 'cloud' || !vault.cloud || !cloudStatus.identity
       || vault.cloud.authUserId !== cloudStatus.identity.userId) {
@@ -720,8 +766,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const queued = await syncState.count(vault.id);
     const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
     cachedSyncDetail = latest
-      ? `Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
-      : `Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
+      ? `${realtimeLabel()} · Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
+      : `${realtimeLabel()} · Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
   }
 
   async function runCurrentCloudSync(background = false, _trigger: SyncTrigger = 'manual'): Promise<SyncRunSummary> {
@@ -768,7 +814,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   syncCoordinator = new SyncCoordinator({
     eligible: () => !!syncEngine && !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
       && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId
-      && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus(),
+      && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus() && !cloudDialog.open,
     key: () => {
       if (!cloudStatus.identity || !vault?.cloud) return null;
       return `${cloudStatus.identity.userId}:${vault.id}:${vault.cloud.epoch}`;
@@ -791,12 +837,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     try {
       cloudStatus = await cloud.status();
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+      await refreshRealtimeSubscription();
       await refreshCloudSyncDetail();
       renderCloudDialog(message);
       syncCoordinator?.wake('startup');
     } catch (error) {
       cloudStatus = cloudEmptyStatus();
       awaitableDevicesCache = [];
+      realtimeWake?.stop();
+      realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
       renderCloudDialog(error instanceof Error ? error.message : 'Cloud status could not be loaded.');
     }
   }
@@ -3588,6 +3637,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           cloudStatus = await cloud.signIn(cloudEmail.value, cloudPassword.value);
           cloudPassword.value = '';
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+          await refreshRealtimeSubscription();
+          await refreshCloudSyncDetail();
           renderCloudDialog('Signed in. Local Vaults remain local until explicitly adopted.');
           return;
         }
@@ -3597,6 +3648,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           cloudStatus = result.status;
           cloudPassword.value = '';
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+          await refreshRealtimeSubscription();
+          await refreshCloudSyncDetail();
           renderCloudDialog(result.result.signedIn ? 'Account created and signed in.' : 'Account created. Check your email to confirm it, then sign in.');
           return;
         }
@@ -3614,6 +3667,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           cloudStatus = await cloud.status();
           awaitableDevicesCache = await cloud.listDevices();
           lastSyncSummary = null;
+          await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Cloud sync enabled. Nothing is uploaded until you press Sync now.');
           renderCloudIndicator();
@@ -3643,6 +3697,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refresh();
           cloudStatus = await cloud.status();
           awaitableDevicesCache = await cloud.listDevices();
+          await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
           renderCloudIndicator();
@@ -3656,6 +3711,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           awaitableDevicesCache = [];
           lastSyncSummary = null;
           cachedSyncDetail = '';
+          realtimeWake?.stop();
+          realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
           renderCloudDialog('Signed out on this device. Local Vault data was kept.');
           renderCloudIndicator();
           return;
@@ -4363,7 +4420,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const id = vaultSelect.value;
     perform(async () => {
       try { await clearSelection(); } catch (error) { vaultSelect.value = vault?.id ?? ''; throw error; }
-      vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); syncCoordinator?.wake('focus');
+      vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); await refreshRealtimeSubscription(); await refreshCloudSyncDetail(); syncCoordinator?.wake('focus');
     });
   }, { signal: abort.signal });
   window.addEventListener('beforeunload', event => { if (saver?.hasUnsavedChanges) { event.preventDefault(); event.returnValue = ''; } }, { signal: abort.signal });
@@ -4449,6 +4506,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (templateDialog.open) templateDialog.close('cancel');
     searchIndex.close();
     syncCoordinator?.stop();
+    realtimeWake?.stop();
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
     graphCanvasView.destroy();
