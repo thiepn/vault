@@ -1834,6 +1834,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     check.checked = item.task.completed;
     check.dataset.taskRole = 'completed';
     check.setAttribute('aria-label', `Complete task: ${item.task.text}`);
+    check.disabled = !currentVaultWritable();
 
     const title = document.createElement('input');
     title.type = 'text';
@@ -1841,6 +1842,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     title.value = item.task.text;
     title.dataset.taskRole = 'text';
     title.setAttribute('aria-label', 'Task text');
+    title.disabled = !currentVaultWritable();
 
     const source = document.createElement('button');
     source.type = 'button';
@@ -1862,6 +1864,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     scheduled.dataset.taskRole = 'scheduled';
     scheduled.title = 'Scheduled date';
     scheduled.setAttribute('aria-label', 'Scheduled date');
+    scheduled.disabled = !currentVaultWritable();
 
     const due = document.createElement('input');
     due.type = 'date';
@@ -1870,6 +1873,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     due.dataset.taskRole = 'due';
     due.title = 'Due date';
     due.setAttribute('aria-label', 'Due date');
+    due.disabled = !currentVaultWritable();
 
     const priority = document.createElement('select');
     priority.className = 'task-priority-input';
@@ -1880,6 +1884,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     priority.add(new Option('Medium', 'medium'));
     priority.add(new Option('Low', 'low'));
     priority.value = item.task.priority ?? '';
+    priority.disabled = !currentVaultWritable();
 
     const recurrence = document.createElement('input');
     recurrence.type = 'text';
@@ -1889,6 +1894,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     recurrence.placeholder = 'repeat';
     recurrence.title = 'daily, weekly, monthly, yearly, every 2w…';
     recurrence.setAttribute('aria-label', 'Task recurrence');
+    recurrence.disabled = !currentVaultWritable();
 
     metadata.append(scheduled, due, priority, recurrence);
     card.append(metadata);
@@ -1909,7 +1915,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const overdue = open.filter(item => taskDateState(item.task) === 'overdue').length;
     const today = open.filter(item => taskDateState(item.task) === 'today').length;
     taskSummary.textContent = `${open.length} open · ${overdue} overdue · ${today} today · ${all.length} total`;
-    element<HTMLButtonElement>('[data-task-action="add"]').disabled = !selected || selected.kind !== 'markdown' || selected.deletedAt !== null;
+    element<HTMLButtonElement>('[data-task-action="add"]').disabled = !selected || selected.kind !== 'markdown' || selected.deletedAt !== null || !currentVaultWritable();
 
     const query = taskFilterText.trim().normalize('NFC').toLocaleLowerCase();
     const filtered = all.filter(item => {
@@ -2729,7 +2735,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
 
     sourceButton.disabled = false;
-    add.disabled = selected.deletedAt !== null;
+    add.disabled = selected.deletedAt !== null || !currentVaultWritable();
 
     const view = inspectFrontmatter(source);
     if (view.status === 'invalid' || view.status === 'unsupported-root') {
@@ -2742,6 +2748,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     status.classList.remove('properties-warning');
     if (selected.deletedAt !== null) {
       status.textContent = 'This note is in Trash. Properties are read only.';
+    } else if (!currentVaultWritable()) {
+      status.textContent = 'Viewer access · properties are read only.';
     } else {
       status.textContent = view.properties.length
         ? `${view.properties.length} ${view.properties.length === 1 ? 'property' : 'properties'} · stored in YAML frontmatter`
@@ -2758,7 +2766,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       name.value = property.name;
       name.setAttribute('aria-label', `Property name: ${property.name}`);
       name.dataset.propertyRole = 'name';
-      name.disabled = selected.deletedAt !== null;
+      name.disabled = selected.deletedAt !== null || !currentVaultWritable();
 
       const type = document.createElement('select');
       type.className = 'property-type';
@@ -2773,7 +2781,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (value === 'unsupported' && property.kind !== 'unsupported') option.disabled = true;
         type.add(option);
       }
-      type.disabled = selected.deletedAt !== null || !property.editable;
+      type.disabled = selected.deletedAt !== null || !currentVaultWritable() || !property.editable;
 
       const valueWrap = document.createElement('div');
       valueWrap.className = 'property-value-wrap';
@@ -2783,7 +2791,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         input.className = 'property-value property-checkbox';
         input.dataset.propertyRole = 'value';
         input.checked = property.value === true;
-        input.disabled = selected.deletedAt !== null;
+        input.disabled = selected.deletedAt !== null || !currentVaultWritable();
         input.setAttribute('aria-label', `Property value: ${property.name}`);
         valueWrap.append(input);
       } else if (property.kind === 'unsupported') {
@@ -2802,7 +2810,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         input.dataset.propertyRole = 'value';
         input.type = property.kind === 'number' ? 'number' : property.kind === 'date' ? 'date' : 'text';
         input.value = rawValueForProperty(property);
-        input.disabled = selected.deletedAt !== null;
+        input.disabled = selected.deletedAt !== null || !currentVaultWritable();
         input.setAttribute('aria-label', `Property value: ${property.name}`);
         if (property.kind === 'list') input.placeholder = 'value 1, value 2';
         if (property.kind === 'tags') input.placeholder = 'tag, nested/tag';
@@ -2816,7 +2824,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       remove.textContent = '×';
       remove.title = `Delete ${property.name}`;
       remove.setAttribute('aria-label', `Delete property ${property.name}`);
-      remove.disabled = selected.deletedAt !== null;
+      remove.disabled = selected.deletedAt !== null || !currentVaultWritable();
 
       row.append(name, type, valueWrap, remove);
       list.append(row);
@@ -3206,7 +3214,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cards.className = 'board-card-list';
       cards.dataset.boardDrop = column.value ?? '';
       cards.addEventListener('dragover', event => {
-        if (!event.dataTransfer?.types.includes('application/x-vault-board-entry')) return;
+        if (!currentVaultWritable() || !event.dataTransfer?.types.includes('application/x-vault-board-entry')) return;
         event.preventDefault();
         if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
         cards.classList.add('drop-target');
@@ -3215,6 +3223,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (!cards.contains(event.relatedTarget as Node | null)) cards.classList.remove('drop-target');
       });
       cards.addEventListener('drop', event => {
+        if (!currentVaultWritable()) return;
         const raw = event.dataTransfer?.getData('application/x-vault-board-entry');
         cards.classList.remove('drop-target');
         if (!raw) return;
@@ -3226,8 +3235,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         const article = document.createElement('article');
         article.className = 'board-card';
         article.dataset.boardCard = card.entryId;
-        article.draggable = true;
+        article.draggable = currentVaultWritable();
         article.addEventListener('dragstart', event => {
+          if (!currentVaultWritable()) { event.preventDefault(); return; }
           event.dataTransfer?.setData('application/x-vault-board-entry', card.entryId);
           if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
           article.classList.add('dragging');
@@ -3432,6 +3442,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       checkbox.checked = row.task.completed;
       checkbox.dataset.taskRole = 'completed';
       checkbox.setAttribute('aria-label', `Complete task: ${row.task.text}`);
+      checkbox.disabled = !currentVaultWritable();
 
       const body = document.createElement('div');
       body.className = 'query-task-body';
@@ -3567,7 +3578,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('.breadcrumb').textContent = targetPath;
     element<HTMLElement>('.save-status').textContent = selected.deletedAt ? 'In Trash \u00b7 read only' : 'Saved locally \u00b7 not synced';
     for (const action of ['rename', 'move', 'duplicate', 'delete']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = selected.deletedAt !== null || !currentVaultWritable();
-    element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null;
+    element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null || !currentVaultWritable();
     element<HTMLButtonElement>('[data-action="export-draft"]').disabled = selected.kind !== 'markdown';
     element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null || !currentVaultWritable();
     if (selected.kind !== 'markdown') renderPropertiesPanel(null);
@@ -3639,7 +3650,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const name = await ask('Create a vault', 'Vault name'); if (name === null) return;
     await clearSelection(); vault = await repository.createVault(name); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh(); await setting('lastVault', vault.id); void requestPersistentStorage();
   } });
-  for (const kind of ['markdown', 'directory'] as const) registry.register({ id: kind === 'markdown' ? 'file.create' : 'folder.create', label: kind === 'markdown' ? 'Create Markdown note' : 'Create folder', enabled: () => !!vault, run: async () => {
+  for (const kind of ['markdown', 'directory'] as const) registry.register({ id: kind === 'markdown' ? 'file.create' : 'folder.create', label: kind === 'markdown' ? 'Create Markdown note' : 'Create folder', enabled: () => !!vault && currentVaultWritable(), run: async () => {
     if (!vault) return;
     const name = await ask(kind === 'markdown' ? 'Create a Markdown note' : 'Create a folder', 'Name'); if (name === null) return;
     if (saver) await saver.flush();
