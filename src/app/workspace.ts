@@ -2102,7 +2102,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       searchStatus.textContent = 'No vault open.';
       fileFilter.value = '';
     }
-    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.export-obsidian"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
     renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts();
     if (graphOpen) renderGraph();
@@ -3230,10 +3230,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   registry.register({ id: 'vault.restore', label: 'Restore full Vault archive', run: async () => {
     archiveRestoreInput.click();
   } });
+  registry.register({ id: 'vault.import-obsidian-zip', label: 'Import Obsidian ZIP', run: async () => {
+    obsidianZipInput.click();
+  } });
+  registry.register({ id: 'vault.import-obsidian-folder', label: 'Import Obsidian folder', run: async () => {
+    obsidianFolderInput.click();
+  } });
   registry.register({ id: 'vault.export', label: 'Export active vault ZIP', enabled: () => !!vault, run: async () => {
     if (!vault) return; if (saver) await saver.flush();
     const bytes = zipStore(vaultFiles(await repository.snapshot(vault.id)));
     download(`${vault.name}.zip`, new Uint8Array(bytes).buffer, 'application/zip');
+  } });
+  registry.register({ id: 'vault.export-obsidian', label: 'Export Obsidian-compatible ZIP', enabled: () => !!vault, run: async () => {
+    if (!vault) return;
+    const result = await buildObsidianExport();
+    const bytes = zipStore(result.files);
+    download(`${vault.name}-obsidian.zip`, new Uint8Array(bytes).buffer, 'application/zip');
+    element<HTMLElement>('.storage-message').textContent = `Obsidian export created ${result.canvasCount} Canvas companion${result.canvasCount === 1 ? '' : 's'}.${result.warnings.length ? ' ' + result.warnings.length + ' compatibility warning(s).' : ''}`;
   } });
   registry.register({ id: 'vault.archive', label: 'Export full Vault archive', enabled: () => !!vault, run: async () => {
     if (!vault) return;
@@ -3786,6 +3799,31 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       } finally {
         if (!success || role !== 'value') renderPropertiesPanel();
       }
+    });
+  }, { signal: abort.signal });
+
+  obsidianZipInput.addEventListener('change', () => {
+    const file = obsidianZipInput.files?.[0];
+    obsidianZipInput.value = '';
+    if (!file) return;
+    perform(async () => {
+      const archive = await readZipArchive(new Uint8Array(await file.arrayBuffer()));
+      const plan = planObsidianMigration(archive.files, file.name, archive.warnings);
+      await runObsidianMigration(plan);
+    });
+  }, { signal: abort.signal });
+
+  obsidianFolderInput.addEventListener('change', () => {
+    const selectedFiles = [...(obsidianFolderInput.files ?? [])];
+    obsidianFolderInput.value = '';
+    if (!selectedFiles.length) return;
+    perform(async () => {
+      const browserFiles = await browserFilesToArchiveFiles(selectedFiles);
+      const plan = planObsidianMigration(
+        browserFiles.files,
+        browserFiles.rootName ?? selectedFiles[0]?.name ?? 'Obsidian vault',
+      );
+      await runObsidianMigration(plan);
     });
   }, { signal: abort.signal });
 
