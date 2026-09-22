@@ -83,6 +83,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let crdtBase: CrdtBaseSnapshot | null = null;
   let crdtLocalDirty = false;
   let crdtLeaderSession: string | null = null;
+  let crdtRecoveryTimer: number | undefined;
+  let crdtRecoveryText: string | null = null;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
@@ -899,6 +901,57 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     collaborationStatus = collaboration.currentStatus;
     renderCollaborationState();
     renderRemoteCollaborationCursors();
+  }
+
+  function crdtRecoveryDraftId(entryId: EntryId): string | null {
+    const userId=cloudStatus.identity?.userId;
+    return userId ? `crdt:${entryId}:${userId}` : null;
+  }
+
+  async function persistCrdtRecoveryNow(): Promise<void> {
+    if(crdtRecoveryTimer!==undefined){
+      window.clearTimeout(crdtRecoveryTimer);
+      crdtRecoveryTimer=undefined;
+    }
+    const text=crdtRecoveryText;
+    crdtRecoveryText=null;
+    if(text===null || !selected || selected.kind!=='markdown' || !vault || !saver) return;
+    const id=crdtRecoveryDraftId(selected.id);
+    if(!id) return;
+    await repository.preserveDraft({
+      id,
+      entryId:selected.id,
+      vaultId:vault.id,
+      baseVersion:saver.savedVersion,
+      text,
+    });
+  }
+
+  function queueCrdtRecovery(text:string): void {
+    crdtRecoveryText=text;
+    if(crdtRecoveryTimer!==undefined) return;
+    crdtRecoveryTimer=window.setTimeout(()=>{
+      crdtRecoveryTimer=undefined;
+      void persistCrdtRecoveryNow().catch(showError);
+    },300);
+  }
+
+  async function clearCrdtRecoveryDraft(entryId:EntryId): Promise<void> {
+    if(crdtRecoveryTimer!==undefined){
+      window.clearTimeout(crdtRecoveryTimer);
+      crdtRecoveryTimer=undefined;
+    }
+    crdtRecoveryText=null;
+    const id=crdtRecoveryDraftId(entryId);
+    if(id) await repository.discardRecoveryDraft(id);
+  }
+
+  async function clearCrdtRecoveryIfCanonical(entryId:EntryId,text:string): Promise<void> {
+    if(!vault) return;
+    const id=crdtRecoveryDraftId(entryId);
+    if(!id) return;
+    const draft=(await repository.listRecoveryDrafts(vault.id)).find(item=>item.id===id);
+    if(draft?.text===text) await repository.discardRecoveryDraft(id);
   }
 
   function activeCrdtRole(): CrdtEditorRole | null {
