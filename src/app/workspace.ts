@@ -2297,7 +2297,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.export-obsidian"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator();
     if (graphOpen) renderGraph();
   }
   function updateVaultCounts(): void {
@@ -2620,9 +2620,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   function renderInfo(): void {
     const info = element<HTMLElement>('.file-info'); info.replaceChildren();
+    const cloudLabel = vault?.mode === 'cloud' ? 'Cloud foundation enabled' : 'Local only';
     const data = selected
-      ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : selected.kind === 'attachment' ? 'Attachment' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', 'This browser only'], ['File ID', selected.id]]
-      : [['Notes', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Attachments', String(entries.filter(entry => entry.kind === 'attachment' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud sync', 'Not active']];
+      ? [['Format', selected.kind === 'markdown' ? 'Markdown (.md)' : selected.kind === 'attachment' ? 'Attachment' : 'Folder'], ['Local version', String(selected.localVersion)], ['Storage', vault?.mode === 'cloud' ? 'Local-first · cloud adopted' : 'This browser only'], ['File ID', selected.id]]
+      : [['Notes', String(entries.filter(entry => entry.kind === 'markdown' && !entry.deletedAt).length)], ['Attachments', String(entries.filter(entry => entry.kind === 'attachment' && !entry.deletedAt).length)], ['Folders', String(entries.filter(entry => entry.kind === 'directory' && !entry.deletedAt).length)], ['Cloud', cloudLabel]];
     element<HTMLButtonElement>('[data-action="graph-local"]').disabled = !selected || selected.deletedAt !== null || selected.kind === 'directory';
     for (const [key, value] of data) { const dt = document.createElement('dt'); dt.textContent = key!; const dd = document.createElement('dd'); dd.textContent = value!; info.append(dt, dd); }
   }
@@ -3463,6 +3464,66 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   } });
 
   root.addEventListener('click', event => {
+    const cloudAction = (event.target as Element).closest<HTMLButtonElement>('[data-cloud-action]');
+    if (cloudAction?.dataset.cloudAction) {
+      const action = cloudAction.dataset.cloudAction;
+      perform(async () => {
+        if (!cloud) throw new VaultError('CONFIGURATION', cloudBootstrapError || 'Cloud foundation is unavailable.');
+        if (action === 'sign-in') {
+          cloudMessage.textContent = 'Signing in…';
+          cloudStatus = await cloud.signIn(cloudEmail.value, cloudPassword.value);
+          cloudPassword.value = '';
+          awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+          renderCloudDialog('Signed in. Local Vaults remain local until explicitly adopted.');
+          return;
+        }
+        if (action === 'sign-up') {
+          cloudMessage.textContent = 'Creating account…';
+          const result = await cloud.signUp(cloudEmail.value, cloudPassword.value);
+          cloudStatus = result.status;
+          cloudPassword.value = '';
+          awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+          renderCloudDialog(result.result.signedIn ? 'Account created and signed in.' : 'Account created. Check your email to confirm it, then sign in.');
+          return;
+        }
+        if (action === 'google') {
+          const redirect = new URL(window.location.href);
+          redirect.hash = '';
+          window.location.assign(cloud.googleAuthorizeUrl(redirect.toString()));
+          return;
+        }
+        if (action === 'adopt') {
+          if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud foundation.');
+          if (saver) await saver.flush();
+          vault = await cloud.adoptVault(vault);
+          vaults = await repository.listVaults();
+          cloudStatus = await cloud.status();
+          awaitableDevicesCache = await cloud.listDevices();
+          renderCloudDialog('Cloud foundation enabled. Phase 14 has not uploaded note or attachment contents.');
+          renderCloudIndicator();
+          renderInfo();
+          return;
+        }
+        if (action === 'sign-out') {
+          if (saver) await saver.flush();
+          await cloud.signOut();
+          cloudStatus = cloudEmptyStatus();
+          awaitableDevicesCache = [];
+          renderCloudDialog('Signed out on this device. Local Vault data was kept.');
+          renderCloudIndicator();
+          return;
+        }
+        if (action === 'revoke-device') {
+          const raw = cloudAction.dataset.deviceId;
+          if (!raw) return;
+          await cloud.revokeDevice(raw as DeviceId);
+          await refreshCloudStatus('Device revoked. Revocation cannot be silently reversed.');
+          return;
+        }
+      });
+      return;
+    }
+
     const taskAction = (event.target as Element).closest<HTMLButtonElement>('[data-task-action]');
     if (taskAction?.dataset.taskAction) {
       const action = taskAction.dataset.taskAction;
@@ -3674,6 +3735,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if (action === 'quick-switcher') { void openQuickSwitcher().catch(showError); return; }
+    if (action === 'cloud-open') { void openCloudDialog().catch(showError); return; }
     if (action === 'graph-open') { perform(() => openGraph('full')); return; }
     if (action === 'graph-local') { perform(() => openGraph('local')); return; }
     if (action === 'graph-close') { closeGraph(); return; }
@@ -4168,7 +4230,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }, { signal: abort.signal });
   window.addEventListener('keydown', event => {
     if (quickDialog.open) return;
-    if (dialog.open || recoveryDialog.open) return;
+    if (dialog.open || recoveryDialog.open || cloudDialog.open || migrationDialog.open || templateDialog.open) return;
     if (graphOpen && event.key === 'Escape') {
       event.preventDefault();
       closeGraph();
@@ -4216,6 +4278,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     disposed = true;
     abort.abort();
     if (dialog.open) dialog.close('cancel');
+    if (cloudDialog.open) cloudDialog.close('close');
+    if (migrationDialog.open) migrationDialog.close('cancel');
     if (recoveryDialog.open) recoveryDialog.close();
     if (quickDialog.open) quickDialog.close();
     if (templateDialog.open) templateDialog.close('cancel');
