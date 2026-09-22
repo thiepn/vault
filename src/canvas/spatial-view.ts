@@ -66,7 +66,9 @@ export class SpatialCanvasView {
   private document: CanvasDocument;
   private selection: Selection = null;
   private connectSourceId: string | null = null;
+  private connectAwaitingFirst = false;
   private destroyed = false;
+  private detachObserver: MutationObserver | null = null;
   private persistChain: Promise<void> = Promise.resolve();
   private viewportTimer: number | undefined;
   private expanded = false;
@@ -125,12 +127,21 @@ export class SpatialCanvasView {
     this.stage.addEventListener('keydown', event => this.onKeyDown(event), { signal: this.abort.signal });
 
     this.render();
+    queueMicrotask(() => {
+      if (this.destroyed || !this.root.isConnected) return;
+      this.detachObserver = new MutationObserver(() => {
+        if (!this.root.isConnected) this.destroy();
+      });
+      this.detachObserver.observe(globalThis.document.documentElement, { childList: true, subtree: true });
+    });
   }
 
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
     this.abort.abort();
+    this.detachObserver?.disconnect();
+    this.detachObserver = null;
     if (this.viewportTimer !== undefined) window.clearTimeout(this.viewportTimer);
     this.root.classList.remove('expanded');
     document.body.classList.remove('vault-canvas-expanded');
@@ -206,6 +217,14 @@ export class SpatialCanvasView {
 
       element.addEventListener('click', event => {
         event.stopPropagation();
+        if (this.connectAwaitingFirst) {
+          this.connectAwaitingFirst = false;
+          this.connectSourceId = node.id;
+          this.renderNodes();
+          this.renderInspector();
+          this.updateStatus();
+          return;
+        }
         if (this.connectSourceId !== null) {
           void this.handleConnectClick(node.id);
           return;
@@ -373,9 +392,14 @@ export class SpatialCanvasView {
   }
 
   private updateStatus(message?: string): void {
-    this.status.textContent = message ?? (this.connectSourceId ? 'Connect: choose second card' : `${Math.round(this.document.viewport.zoom * 100)}%`);
-    this.connectButton.classList.toggle('active', this.connectSourceId !== null);
-    this.connectButton.setAttribute('aria-pressed', String(this.connectSourceId !== null));
+    this.status.textContent = message ?? (
+      this.connectAwaitingFirst ? 'Connect: choose first card' :
+      this.connectSourceId ? 'Connect: choose second card' :
+      `${Math.round(this.document.viewport.zoom * 100)}%`
+    );
+    const connecting = this.connectAwaitingFirst || this.connectSourceId !== null;
+    this.connectButton.classList.toggle('active', connecting);
+    this.connectButton.setAttribute('aria-pressed', String(connecting));
   }
 
   private worldCenter(): Point {
@@ -437,20 +461,19 @@ export class SpatialCanvasView {
   }
 
   private toggleConnectMode(): void {
-    this.connectSourceId = null;
-    this.updateStatus('Connect: choose first card');
-    this.connectButton.classList.add('active');
-    const chooseFirst = (event: Event): void => {
-      const node = (event.target as Element).closest<HTMLElement>('[data-canvas-node]');
-      if (!node?.dataset.canvasNode) return;
-      event.stopPropagation();
-      this.connectSourceId = node.dataset.canvasNode;
-      this.root.removeEventListener('click', chooseFirst, true);
+    if (this.connectAwaitingFirst || this.connectSourceId !== null) {
+      this.connectAwaitingFirst = false;
+      this.connectSourceId = null;
       this.renderNodes();
       this.renderInspector();
-      this.updateStatus();
-    };
-    this.root.addEventListener('click', chooseFirst, true);
+      this.updateStatus('Connect cancelled');
+      return;
+    }
+    this.connectAwaitingFirst = true;
+    this.connectSourceId = null;
+    this.renderNodes();
+    this.renderInspector();
+    this.updateStatus();
   }
 
   private async handleConnectClick(nodeId: string): Promise<void> {
@@ -468,6 +491,7 @@ export class SpatialCanvasView {
     }
     const next = cloneCanvasDocument(this.document);
     next.edges.push({ id: canvasObjectId('edge'), from: sourceId, to: nodeId, label: null });
+    this.connectAwaitingFirst = false;
     this.connectSourceId = null;
     await this.commit(next, 'Connection added');
   }
