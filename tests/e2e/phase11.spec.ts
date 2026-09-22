@@ -80,7 +80,7 @@ test('Phase 11 Live Preview drag/drop and Reading board moves update canonical Y
   await createNote(page, 'Alpha', [
     '---',
     'tags: [project]',
-    'status: todo',
+    'Status: todo',
     'priority: high',
     '---',
     '# Alpha',
@@ -127,8 +127,9 @@ test('Phase 11 Live Preview drag/drop and Reading board moves update canonical Y
 
   await quickOpen(page, 'Alpha');
   let source = await sourceText(page);
-  expect(source).toContain('status: doing');
-  expect(source).not.toContain('status: todo');
+  expect(source).toContain('Status: doing');
+  expect(source).not.toContain('status: doing');
+  expect(source).not.toContain('Status: todo');
 
   await quickOpen(page, 'Dashboard');
   await page.locator('[data-editor-mode="reading"]').click();
@@ -142,7 +143,8 @@ test('Phase 11 Live Preview drag/drop and Reading board moves update canonical Y
 
   await quickOpen(page, 'Alpha');
   source = await sourceText(page);
-  expect(source).toContain('status: done');
+  expect(source).toContain('Status: done');
+  expect(source).not.toContain('status: done');
 
   await page.reload();
   await quickOpen(page, 'Dashboard');
