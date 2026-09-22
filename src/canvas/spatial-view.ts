@@ -568,8 +568,9 @@ export class SpatialCanvasView {
   }
 
   private attachMoveGesture(handle: HTMLElement, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
+    let activePointerId: number | null = null;
     const beginMouse = (event: MouseEvent): void => {
-      if (event.button !== 0) return;
+      if (activePointerId !== null || event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
       const rect = this.stage.getBoundingClientRect();
@@ -589,10 +590,11 @@ export class SpatialCanvasView {
     };
 
     const beginPointer = (event: PointerEvent): void => {
-      if (event.pointerType === 'mouse' || event.button !== 0) return;
+      if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
       const pointerId = event.pointerId;
+      activePointerId = pointerId;
       const rect = this.stage.getBoundingClientRect();
       const start = this.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
       const origin = { x: item.x, y: item.y };
@@ -606,6 +608,7 @@ export class SpatialCanvasView {
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', finish);
         window.removeEventListener('pointercancel', finish);
+        activePointerId = null;
         void this.commit(cloneCanvasDocument(this.document), 'Position saved', false);
       };
       window.addEventListener('pointermove', move, { signal: this.abort.signal });
@@ -637,8 +640,9 @@ export class SpatialCanvasView {
   }
 
   private attachResizeGesture(handle: HTMLElement, item: CanvasNode | CanvasGroup, kind: 'node' | 'group'): void {
+    let activePointerId: number | null = null;
     const beginMouse = (event: MouseEvent): void => {
-      if (event.button !== 0) return;
+      if (activePointerId !== null || event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
       const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
@@ -653,10 +657,11 @@ export class SpatialCanvasView {
     };
 
     const beginPointer = (event: PointerEvent): void => {
-      if (event.pointerType === 'mouse' || event.button !== 0) return;
+      if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
       const pointerId = event.pointerId;
+      activePointerId = pointerId;
       const start = { x: event.clientX, y: event.clientY, width: item.width, height: item.height };
       const move = (moveEvent: PointerEvent): void => {
         if (moveEvent.pointerId !== pointerId) return;
@@ -667,6 +672,7 @@ export class SpatialCanvasView {
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', finish);
         window.removeEventListener('pointercancel', finish);
+        activePointerId = null;
         void this.commit(cloneCanvasDocument(this.document), 'Size saved', false);
       };
       window.addEventListener('pointermove', move, { signal: this.abort.signal });
