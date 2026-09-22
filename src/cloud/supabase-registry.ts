@@ -98,7 +98,7 @@ export class SupabaseCloudRegistry {
   constructor(
     private readonly config: PublicBackendConfig,
     private readonly token: () => Promise<string|null>,
-    private readonly request: FetchLike = fetch,
+    private readonly request: FetchLike = (input, init) => fetch(input, init),
   ) {}
 
   private async headers(prefer?: string): Promise<HeadersInit> {
