@@ -218,7 +218,7 @@ function uniqueName(parent: string, desired: string, used: Map<string, Set<strin
 function commonTopLevel(files: readonly ArchiveFile[]): string | null {
   const relevant = files.filter(file => {
     const trimmed = file.path.replace(/\/$/u, '');
-    return trimmed && !trimmed.startsWith('__MACOSX/');
+    return !file.directory && trimmed && !trimmed.startsWith('__MACOSX/');
   });
   if (!relevant.length) return null;
   let candidate: string | null = null;
@@ -645,7 +645,14 @@ export function planObsidianMigration(
         kind: 'markdown',
         sourcePath: item.sourcePath,
         path: target,
-        text: `# ${stripExtension(basename(item.sourcePath), /\.canvas$/iu)}\n\n```vault-canvas\n${serializeCanvasDocument(document)}\n```\n`,
+        text: [
+          `# ${stripExtension(basename(item.sourcePath), /\.canvas$/iu)}`,
+          '',
+          '```vault-canvas',
+          serializeCanvasDocument(document),
+          '```',
+          '',
+        ].join('\n'),
         modifiedAt: item.modifiedAt,
         sourceKind: 'canvas',
       });
