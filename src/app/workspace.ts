@@ -4255,7 +4255,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
     const name = await ask('Create a vault', 'Vault name'); if (name === null) return;
-    await clearSelection(); vault = await repository.createVault(name); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh(); await setting('lastVault', vault.id); await refreshCollaborationSubscription(); void requestPersistentStorage();
+    await clearSelection(); vault = await repository.createVault(name); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh(); await setting('lastVault', vault.id); await refreshCollaborationSubscription(); await refreshCrdtSession(); void requestPersistentStorage();
   } });
   for (const kind of ['markdown', 'directory'] as const) registry.register({ id: kind === 'markdown' ? 'file.create' : 'folder.create', label: kind === 'markdown' ? 'Create Markdown note' : 'Create folder', enabled: () => !!vault && currentVaultWritable(), run: async () => {
     if (!vault) return;
@@ -4326,6 +4326,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCollaborationSubscription();
+          await refreshCrdtSession();
           await refreshCloudSyncDetail();
           renderCloudDialog('Signed in. Local Vaults remain local until explicitly adopted.');
           return;
@@ -4340,6 +4341,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCollaborationSubscription();
+          await refreshCrdtSession();
           await refreshCloudSyncDetail();
           renderCloudDialog(result.result.signedIn ? 'Account created and signed in.' : 'Account created. Check your email to confirm it, then sign in.');
           return;
@@ -4403,6 +4405,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           lastSyncSummary = null;
           await refreshRealtimeSubscription();
           await refreshCollaborationSubscription();
+          await refreshCrdtSession();
           await refreshCloudSyncDetail();
           renderCloudDialog('Cloud sync enabled. Nothing is uploaded until you press Sync now.');
           renderCloudIndicator();
@@ -4436,6 +4439,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCollaborationSubscription();
+          await refreshCrdtSession();
           await refreshCloudSyncDetail();
           renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
           renderCloudIndicator();
