@@ -1,4 +1,5 @@
 import { VaultError } from '../domain/errors.js';
+import { newCanonicalId } from '../domain/canonical.js';
 
 export type TaskPriority = 'high' | 'medium' | 'low';
 
@@ -31,6 +32,120 @@ export interface TaskMutation {
 
 const tokenPattern = /@(due|scheduled|priority|repeat|done)\(([^)\r\n]+)\)/giu;
 const datePattern = /^\d{4}-\d{2}-\d{2}$/u;
+const taskIdentityPattern = /\s*<!--\s*vault:task=([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->\s*$/iu;
+
+export function taskIdentityFromRaw(raw: string): string | null {
+  return taskIdentityPattern.exec(raw)?.[1]?.toLowerCase() ?? null;
+}
+
+function stripTaskIdentity(body: string): string {
+  return body.replace(taskIdentityPattern, '').trimEnd();
+}
+
+export interface TaskIdentityReconciliation {
+  text: string;
+  changed: boolean;
+  taskIds: string[];
+}
+
+export function ensureTaskIdentityMarkers(
+  source: string,
+  options: { completeLinesOnly?: boolean; rekey?: boolean; idFactory?: () => string } = {},
+): TaskIdentityReconciliation {
+  const completeLinesOnly = options.completeLinesOnly ?? false;
+  const rekey = options.rekey ?? false;
+  const idFactory = options.idFactory ?? (() => newCanonicalId('task'));
+  const output: string[] = [];
+  const taskIds: string[] = [];
+  let cursor = 0;
+  let inFrontmatter = source.startsWith('---\n') || source.startsWith('---\r\n');
+  let frontmatterFirst = inFrontmatter;
+  let fence: { char: '`' | '~'; size: number } | null = null;
+
+  while (cursor < source.length) {
+    const newline = source.indexOf('\n', cursor);
+    const ended = newline >= 0;
+    const end = ended ? newline : source.length;
+    const rawSlice = source.slice(cursor, end);
+    const cr = rawSlice.endsWith('\r') ? '\r' : '';
+    const line = cr ? rawSlice.slice(0, -1) : rawSlice;
+    let nextLine = line;
+
+    if (inFrontmatter) {
+      if (frontmatterFirst) {
+        frontmatterFirst = false;
+      } else if (line === '---') {
+        inFrontmatter = false;
+      }
+    } else {
+      const fenceToken = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (fence) {
+        const close = new RegExp(`^ {0,3}${fence.char}{${fence.size},}\\s*import { VaultError } from '../domain/errors.js';
+import { newCanonicalId } from '../domain/canonical.js';
+
+export type TaskPriority = 'high' | 'medium' | 'low';
+
+export interface ParsedTaskLine {
+  raw: string;
+  text: string;
+  completed: boolean;
+  from: number;
+  to: number;
+  due: string | null;
+  scheduled: string | null;
+  priority: TaskPriority | null;
+  recurrence: string | null;
+  completedOn: string | null;
+}
+
+export interface TaskPatch {
+  text?: string;
+  completed?: boolean;
+  due?: string | null;
+  scheduled?: string | null;
+  priority?: TaskPriority | null;
+  recurrence?: string | null;
+}
+
+export interface TaskMutation {
+  text: string;
+  recurringTaskInserted: boolean;
+}
+
+).exec(line);
+        if (close) fence = null;
+      } else if (fenceToken) {
+        fence = { char: fenceToken[1]![0] as '`' | '~', size: fenceToken[1]!.length };
+      } else if (!completeLinesOnly || ended) {
+        const parsed = parseTaskLine(line);
+        if (parsed) {
+          const existing = taskIdentityFromRaw(line);
+          const identity = rekey || !existing ? idFactory() : existing;
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(identity)) {
+            throw new VaultError('CORRUPT', 'Task identity factory returned an invalid UUID.');
+          }
+          taskIds.push(identity.toLowerCase());
+          if (rekey || !existing) {
+            const trailing = /[ \t]*$/u.exec(existing ? line.replace(taskIdentityPattern, '') : line)?.[0] ?? '';
+            const base = (existing ? line.replace(taskIdentityPattern, '') : line).slice(0, trailing.length ? -trailing.length : undefined);
+            nextLine = `${base} <!-- vault:task=${identity.toLowerCase()} -->${trailing}`;
+          }
+        }
+      }
+    }
+
+    output.push(nextLine, cr, ended ? '\n' : '');
+    cursor = ended ? newline + 1 : source.length;
+  }
+
+  if (source.length === 0) return { text: source, changed: false, taskIds };
+  const text = output.join('');
+  return { text, changed: text !== source, taskIds };
+}
+
+export function rekeyTaskIdentityMarkers(source: string): TaskIdentityReconciliation {
+  return ensureTaskIdentityMarkers(source, { rekey: true });
+}
 
 function localDateKey(date: Date): string {
   const pad = (value: number): string => String(value).padStart(2, '0');
@@ -75,7 +190,7 @@ function metadataFromBody(body: string): {
   let recurrence: string | null = null;
   let completedOn: string | null = null;
 
-  const text = body.replace(tokenPattern, (whole, rawName: string, rawValue: string) => {
+  const text = stripTaskIdentity(body).replace(tokenPattern, (whole, rawName: string, rawValue: string) => {
     const name = rawName.toLocaleLowerCase();
     const value = rawValue.trim();
     if (name === 'due' && isTaskDate(value)) { due = value; return ''; }
@@ -127,6 +242,7 @@ function formatTask(
     recurrence: string | null;
     completedOn: string | null;
   },
+  taskId: string | null = taskIdentityFromRaw(source.raw),
 ): string {
   const prefix = taskPrefix(source.raw);
   const tokens: string[] = [];
@@ -136,7 +252,8 @@ function formatTask(
   if (values.recurrence) tokens.push(`@repeat(${values.recurrence})`);
   if (values.completedOn) tokens.push(`@done(${values.completedOn})`);
   const body = [values.text.trim(), ...tokens].filter(Boolean).join(' ');
-  return `${prefix.before}${values.completed ? 'x' : ' '}${prefix.after}${body}`;
+  const identity = taskId ? ` <!-- vault:task=${taskId} -->` : '';
+  return `${prefix.before}${values.completed ? 'x' : ' '}${prefix.after}${body}${identity}`;
 }
 
 function daysInMonth(year: number, month: number): number {
@@ -241,13 +358,14 @@ export function updateTaskMarkdown(
   let recurringTaskInserted = false;
 
   if (newlyCompleted && recurrence) {
+    const inheritedIdentity = taskIdentityFromRaw(current.raw);
     const nextLine = formatTask(current, {
       ...values,
       completed: false,
       completedOn: null,
       due: advanceDate(due, recurrence),
       scheduled: advanceDate(scheduled, recurrence),
-    });
+    }, inheritedIdentity ? newCanonicalId('task') : null);
     const lineEnding = source.includes('\r\n') ? '\r\n' : '\n';
     replacement = formatted + lineEnding + nextLine;
     recurringTaskInserted = true;
