@@ -9,6 +9,7 @@
 - template configuration = stable IDs/settings only
 - knowledge/search indexes = rebuildable acceleration
 - calendar/tasks/query/graph/board views = derived projections
+- Canvas geometry = authored Markdown content, not a derived projection
 - attachment store = local binary payload truth keyed by stable entry ID
 - future cloud database = synchronization/remote identity truth
 
@@ -242,6 +243,103 @@ In Reading mode, the fence is first compiled and sanitized as ordinary code. Vau
 Board projection reuses the indexed knowledge records and dynamic-query engine. CI includes a 10,000-note board projection benchmark with a bounded result limit to prevent a single view from rendering an unbounded number of cards.
 
 Board lanes, rendered cards, drag state and scroll position are presentation state only. Future sync must continue to synchronize canonical Markdown/frontmatter, not board projections.
+
+## Phase 12 — Spatial Canvas document boundary
+
+Canvas is intentionally different from the derived Graph.
+
+Graph layout is disposable presentation state. A Canvas is an authored spatial document, so its geometry and relationships are part of the Markdown note.
+
+```text
+vault-canvas fenced YAML
+        ↓
+strict Canvas parser
+        ↓
+stable node / edge / group ids
+        ↓
+DOM + SVG spatial workspace
+        ↓
+gesture/edit mutation
+        ↓
+replace only this Canvas fence
+        ↓
+SaveCoordinator / version-checked repository write
+```
+
+### Canonical document
+
+Format version 1 stores:
+
+- Canvas id
+- persisted viewport x/y/zoom
+- note, text and media cards
+- card x/y/width/height
+- directed labeled edges
+- visual groups and group geometry
+
+The parser fails closed for malformed YAML, duplicate ids, invalid geometry, missing edge targets, self-edges, oversized documents and unsupported format versions.
+
+Current safety limits:
+
+- 1,000 nodes
+- 2,500 edges
+- 250 groups
+- 2 MB Canvas source
+- bounded coordinates and object dimensions
+- viewport zoom 0.1–4
+
+### References
+
+Note cards contain vault note targets and resolve using the existing Wiki-note resolver.
+
+Media cards contain vault attachment targets and resolve through the existing attachment subsystem. Binary bytes remain in the Phase 9 attachment store and are not copied into Canvas YAML.
+
+Text cards store plain text inside the Canvas document.
+
+### Persistence
+
+Every Canvas has a stable id. Mutations replace only the YAML body of the matching `vault-canvas` fence.
+
+For the currently open note, persistence goes through the active `SaveCoordinator`. For an embedded Canvas owned by another note, Vault performs a version-checked `saveMarkdown(expectedVersion)`.
+
+Live Preview widgets preserve their DOM across their own canonical source saves, keyed by stable Canvas id. This avoids tearing down an in-progress gesture when geometry is persisted.
+
+Gesture persistence is enqueued immediately before later navigation/mode-switch actions, so a completed drag cannot be lost when the widget detaches.
+
+### Rendering
+
+Live Preview recognizes only explicit `vault-canvas` fences.
+
+Reading mode first renders and sanitizes the fence as code. Only sanitized `language-vault-canvas` blocks are then replaced with controlled DOM/SVG.
+
+No Canvas YAML is executed as HTML or JavaScript.
+
+### Interaction
+
+The spatial engine uses native DOM/SVG rather than a third-party whiteboard framework.
+
+Supported interaction includes:
+
+- card/group move
+- card/group resize
+- empty-space pan
+- wheel/button zoom
+- Fit
+- keyboard pan/zoom
+- desktop classic-mouse fallback
+- Pointer Events for mouse/touch/pen
+- grid snapping
+- fullscreen expansion
+- note/attachment open navigation
+- connection creation/edit/delete
+
+The classic mouse path and Pointer Events path share the same geometry/persistence model and are guarded against double-starts.
+
+### Export/sync boundary
+
+Canvas source remains ordinary Markdown text, so existing Markdown ZIP and recovery export automatically preserve Canvas documents.
+
+Future sync should synchronize the Markdown containing the Canvas. It must not introduce a second whiteboard database or separately synchronized geometry record.
 
 ## Knowledge index
 
