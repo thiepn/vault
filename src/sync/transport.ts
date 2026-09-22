@@ -2,6 +2,7 @@ import { VaultError } from '../domain/errors.js';
 import type { VaultId } from '../domain/model.js';
 import type { PublicBackendConfig } from '../services/runtime-config.js';
 import type { Cursor, SealedOperation } from './protocol.js';
+import { sha256Hex } from '../storage/blob-store.js';
 import { validatePushResult, validateRemotePage, type RemotePushResult, type RemoteReplicationPage } from './remote-types.js';
 
 type FetchLike=typeof fetch;
@@ -77,7 +78,7 @@ export class SupabaseSyncTransport {
     if(response.ok) return;
     if(response.status===400||response.status===409){
       const existing=await this.downloadBlob(userId,vaultId,sha256);
-      if(existing.byteLength===bytes.byteLength) return;
+      if(existing.byteLength===bytes.byteLength && await sha256Hex(existing)===sha256) return;
     }
     const parsed=await body(response);
     throw new VaultError(response.status===401||response.status===403?'ACCOUNT_MISMATCH':'CONFIGURATION',message(parsed,'Attachment upload failed.'));
