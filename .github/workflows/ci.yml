@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, phase-12-spatial-canvas-cert]
   pull_request:
 
 permissions:
