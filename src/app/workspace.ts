@@ -160,7 +160,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const pendingCursorOffsets = new Map<EntryId, number>();
   let editorMode: EditorMode = 'live';
   let lineNumbers = false;
-  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0, selectionFrom: 0, selectionTo: 0 };
+  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0, selectionFrom: 0, selectionTo: 0, documentFingerprint: '00000000' };
   let renderGeneration = 0;
   let propertyRenderTimer: number | undefined;
   let templatesFolderId: EntryId | null = null;
@@ -643,6 +643,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           position: stats.position,
           from: stats.selectionFrom,
           to: stats.selectionTo,
+          documentFingerprint: stats.documentFingerprint,
         });
       }
     },
@@ -813,7 +814,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const cutoff = Date.now() - 8_000;
     const markers: RemoteCursorMarker[] = [];
     for (const cursor of collaborationCursors.values()) {
-      if (cursor.entryId !== selected.id || Date.parse(cursor.at) < cutoff) continue;
+      if (cursor.entryId !== selected.id || cursor.documentFingerprint !== editorStats.documentFingerprint || Date.parse(cursor.at) < cutoff) continue;
       const participant = participants.get(cursor.sessionId);
       if (!participant
         || participant.sessionId === storageSessionId
