@@ -189,6 +189,9 @@ test('Phase 19 shows private collaborator presence/cursors and hides stale offse
   await expect(page.locator('.cm-remote-cursor-label')).toHaveText('Editor 6666');
   await expect(page.locator('.cm-remote-selection')).toHaveCount(1);
 
+  await cloud.locator('button[value="close"]').click();
+  await expect(cloud).not.toBeVisible();
+
   await editor.click();
   await page.keyboard.press('End');
   await page.keyboard.type('!');
