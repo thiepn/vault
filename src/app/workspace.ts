@@ -838,7 +838,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!syncEngine || !cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
       throw new VaultError('CONFIGURATION', 'Cloud synchronization is unavailable.');
     }
-    if (!vault || vault.mode !== 'cloud' || !vault.cloud
+    // Background runs occur only with a clean editor, so they can cheaply
+    // reconcile server-authoritative membership before touching sync state.
+    // Manual runs do the same whenever no unsaved draft would be disturbed.
+    if (background || !saver?.hasUnsavedChanges) {
+      cloudStatus = await cloud.status();
+      await reloadCloudBindingCache();
+      await refreshRealtimeSubscription();
+    }
+    if (!cloudStatus.signedIn || !cloudStatus.identity || !vault || vault.mode !== 'cloud' || !vault.cloud
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
       throw new VaultError('PERMISSION', 'Choose a cloud Vault this signed-in account can access.');
     }
