@@ -9,6 +9,7 @@
 - template configuration = stable IDs/settings only
 - knowledge/search indexes = rebuildable acceleration
 - calendar/tasks/query/graph/board views = derived projections
+- Canvas geometry = authored Markdown content, not a derived projection
 - attachment store = local binary payload truth keyed by stable entry ID
 - future cloud database = synchronization/remote identity truth
 
@@ -18,7 +19,7 @@ No UI projection is a proprietary note/task/query-result store. Binary files are
 
 Phase A1 adds a storage-independent canonical domain contract in \`src/domain/canonical.ts\`.
 
-This is a **target semantic layer**, not an A2 storage migration. The current Phase 1–11 runtime continues to use Entry + Markdown/YAML + derived task/calendar/query/graph/board projections until A2 defines serialization and persistence changes.
+This is a **target semantic layer**, not an A2 storage migration. The current Phase 1–12 runtime continues to use Entry + Markdown/YAML + derived task/calendar/query/graph/board projections until A2 defines serialization and persistence changes.
 
 Permanent invariants now include:
 
@@ -264,6 +265,100 @@ In Reading mode, the fence is first compiled and sanitized as ordinary code. Vau
 Board projection reuses the indexed knowledge records and dynamic-query engine. CI includes a 10,000-note board projection benchmark with a bounded result limit to prevent a single view from rendering an unbounded number of cards.
 
 Board lanes, rendered cards, drag state and scroll position are presentation state only. Future sync must continue to synchronize canonical Markdown/frontmatter, not board projections.
+
+## Phase 12 — Spatial Canvas document boundary
+
+Canvas is intentionally different from the derived Graph.
+
+Graph layout is disposable presentation state. A Canvas is an authored spatial document, so its geometry and relationships are part of the Markdown note.
+
+```text
+vault-canvas fenced YAML
+        ↓
+strict Canvas parser
+        ↓
+stable node / edge / group ids
+        ↓
+DOM + SVG spatial workspace
+        ↓
+gesture/edit mutation
+        ↓
+replace only this Canvas fence
+        ↓
+SaveCoordinator / A2 version-checked repository write
+```
+
+### Canonical document
+
+Format version 1 stores:
+
+- Canvas id
+- persisted viewport x/y/zoom
+- note, text and media cards
+- card x/y/width/height
+- directed labeled edges
+- visual groups and group geometry
+
+The parser fails closed for malformed YAML, duplicate ids, invalid geometry, missing edge targets, self-edges, oversized documents and unsupported format versions.
+
+Current safety limits:
+
+- 1,000 nodes
+- 2,500 edges
+- 250 groups
+- 2 MB Canvas source
+- bounded coordinates and object dimensions
+- viewport zoom 0.1–4
+
+### References
+
+Note cards contain vault note targets and resolve using the existing Wiki-note resolver.
+
+Media cards contain vault attachment targets and resolve through the existing attachment subsystem. Binary bytes remain in attachment/blob persistence and are not copied into Canvas YAML.
+
+Text cards store plain text inside the Canvas document.
+
+### Persistence
+
+Every Canvas has a stable id. Mutations replace only the YAML body of the matching `vault-canvas` fence.
+
+For the currently open note, persistence goes through the active `SaveCoordinator` and A2-backed repository. For an embedded Canvas owned by another note, Vault performs a version-checked Markdown save through the same persistence bridge.
+
+Live Preview widgets preserve their DOM across their own canonical source saves, keyed by stable Canvas id. Gesture persistence is enqueued before later navigation/mode-switch actions so completed spatial edits cannot be lost when the widget detaches.
+
+### Rendering
+
+Live Preview recognizes only explicit `vault-canvas` fences.
+
+Reading mode first renders and sanitizes the fence as code. Only sanitized `language-vault-canvas` blocks are then replaced with controlled DOM/SVG.
+
+No Canvas YAML is executed as HTML or JavaScript.
+
+### Interaction
+
+The spatial engine uses native DOM/SVG rather than a third-party whiteboard framework.
+
+Supported interaction includes:
+
+- card/group move and resize
+- empty-space pan
+- wheel/button zoom
+- Fit
+- keyboard pan/zoom
+- desktop classic-mouse fallback
+- Pointer Events for mouse/touch/pen
+- grid snapping
+- fullscreen expansion
+- note/attachment open navigation
+- connection creation/edit/delete
+
+The classic mouse path and Pointer Events path share the same geometry/persistence model and are guarded against double-starts.
+
+### Export/sync boundary
+
+Canvas source remains ordinary Markdown text, so Markdown ZIP, recovery backup and the A2 full-fidelity archive preserve Canvas documents naturally.
+
+Future sync should synchronize the Markdown containing the Canvas and referenced attachment bytes. It should not introduce a second independently synchronized Canvas geometry database.
 
 ## Knowledge index
 
