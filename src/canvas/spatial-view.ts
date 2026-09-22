@@ -25,6 +25,7 @@ export interface CanvasMediaPayload {
 }
 
 export interface SpatialCanvasOptions {
+  readOnly?: boolean;
   persist(document: CanvasDocument): Promise<void>;
   resolveNote(target: string): CanvasNoteResolution;
   loadMedia(target: string): Promise<CanvasMediaPayload | null>;
@@ -78,6 +79,7 @@ export class SpatialCanvasView {
     this.document = cloneCanvasDocument(document);
     this.root = documentElement('section', 'canvas-workspace');
     this.root.dataset.canvasId = document.id;
+    this.root.dataset.readonly = String(!!options.readOnly);
 
     const toolbar = documentElement('div', 'canvas-toolbar');
     const addNote = button('Note', 'Add note card');
@@ -93,12 +95,16 @@ export class SpatialCanvasView {
     this.expandButton = button('Expand', 'Expand canvas workspace');
     this.status = documentElement('span', 'canvas-status');
     this.status.setAttribute('role', 'status');
+    const mutationButtons=[addNote,addText,addMedia,addGroup,this.connectButton,edit,remove];
+    for(const control of mutationButtons) control.disabled=!!options.readOnly;
     toolbar.append(addNote, addText, addMedia, addGroup, this.connectButton, fit, zoomOut, zoomIn, edit, remove, this.expandButton, this.status);
 
     const body = documentElement('div', 'canvas-body');
     this.stage = documentElement('div', 'canvas-stage');
     this.stage.tabIndex = 0;
-    this.stage.setAttribute('aria-label', 'Spatial canvas. Drag empty space to pan; wheel to zoom; drag card headers to move.');
+    this.stage.setAttribute('aria-label', options.readOnly
+      ? 'Spatial canvas, read only. Drag empty space to pan; wheel to zoom.'
+      : 'Spatial canvas. Drag empty space to pan; wheel to zoom; drag card headers to move.');
     this.world = documentElement('div', 'canvas-world');
     this.groupLayer = documentElement('div', 'canvas-group-layer');
     this.edgeLayer = globalThis.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -382,8 +388,10 @@ export class SpatialCanvasView {
       const label = documentElement('span');
       label.textContent = `${edge.from === nodeId ? '→' : '←'} ${nodeTitle(other)}${edge.label ? ` · ${edge.label}` : ''}`;
       const edit = button('Edit', 'Edit connection label');
+      edit.disabled=!!this.options.readOnly;
       edit.addEventListener('click', () => void this.editEdge(edge), { signal: this.abort.signal });
       const remove = button('×', 'Delete connection');
+      remove.disabled=!!this.options.readOnly;
       remove.addEventListener('click', () => void this.deleteEdge(edge.id), { signal: this.abort.signal });
       row.append(label, edit, remove);
       this.inspector.append(row);
@@ -813,6 +821,7 @@ export class SpatialCanvasView {
     if (this.destroyed || this.activeGesture || event.button !== 0) return;
     const target = event.target;
     if (!(target instanceof Element) || !this.root.contains(target)) return;
+    if (this.options.readOnly && target.closest('.canvas-node,.canvas-group,.canvas-inspector,.canvas-toolbar')) return;
 
     const resizeHandle = target.closest<HTMLElement>('.canvas-resize-handle');
     if (resizeHandle) {
@@ -863,6 +872,7 @@ export class SpatialCanvasView {
     if (this.destroyed || this.activeGesture || event.button !== 0) return;
     const target = event.target;
     if (!(target instanceof Element) || !this.root.contains(target)) return;
+    if (this.options.readOnly && target.closest('.canvas-node,.canvas-group,.canvas-inspector,.canvas-toolbar')) return;
 
     const resizeHandle = target.closest<HTMLElement>('.canvas-resize-handle');
     if (resizeHandle) {
@@ -986,11 +996,13 @@ export class SpatialCanvasView {
   }
 
   private async persistViewport(): Promise<void> {
+    if(this.options.readOnly) return;
     await this.commit(cloneCanvasDocument(this.document), 'Viewport saved', false);
   }
 
   private async commit(next: CanvasDocument, message: string, rerender = true): Promise<void> {
     if (this.destroyed) return;
+    if(this.options.readOnly){ this.updateStatus('Read only'); return; }
     this.document = next;
     if (rerender) this.render();
     else {
