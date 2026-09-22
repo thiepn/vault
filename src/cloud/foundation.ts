@@ -5,6 +5,7 @@ import { projectRefFromUrl } from './config.js';
 import { SupabaseRestAuth, type SignUpResult } from './auth-rest.js';
 import { defaultDeviceLabel, ensureDeviceId, type KeyValueStorage } from './device.js';
 import { SupabaseCloudRegistry, type CloudAccount, type CloudDevice, type RemoteCloudVault } from './supabase-registry.js';
+import { SyncLocalState } from '../sync/local-state.js';
 
 export interface CloudFoundationStatus {
   signedIn: boolean;
@@ -23,6 +24,7 @@ export class CloudFoundation {
     readonly auth: SupabaseRestAuth,
     readonly registry: SupabaseCloudRegistry,
     private readonly vaults: VaultRepository,
+    private readonly syncState: SyncLocalState,
     private readonly storage: KeyValueStorage,
     private readonly projectUrl: string,
     private readonly userAgent='',
@@ -94,6 +96,7 @@ export class CloudFoundation {
       deviceId:this.deviceId,
       adoptedAt:new Date().toISOString(),
     };
+    await this.syncState.initializeCursor(vault.id, initialized.identity.userId, remote.epoch);
     return this.vaults.adoptCloud(vault.id,binding);
   }
 
