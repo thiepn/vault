@@ -381,6 +381,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     },
   });
 
+  function reservedTaskIds(excludeEntryId?: EntryId): Set<string> {
+    const ids = new Set<string>();
+    for (const record of knowledge.records()) {
+      if (record.entryId === excludeEntryId) continue;
+      for (const task of record.tasks) {
+        const id = taskIdentityFromRaw(task.raw);
+        if (id) ids.add(id);
+      }
+    }
+    return ids;
+  }
+
   const editor = new MarkdownEditor(editorHost, {
     text: '', mode: 'live', readOnly: true, lineNumbers: false,
     wiki: {
@@ -416,7 +428,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       },
     },
     onChange(text) {
-      const reconciled = ensureTaskIdentityMarkers(text, { completeLinesOnly: true });
+      const reconciled = ensureTaskIdentityMarkers(text, { completeLinesOnly: true, usedIds: reservedTaskIds(selected?.id) });
       const canonicalText = reconciled.text;
       if (reconciled.changed) editor.reconcileText(canonicalText);
       saver?.update(canonicalText);
@@ -2995,7 +3007,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function clearSelection(): Promise<void> {
     const previousEntryId = selected?.kind === 'markdown' ? selected.id : undefined;
     if (saver && selected?.kind === 'markdown') {
-      const reconciled = ensureTaskIdentityMarkers(editor.getText());
+      const reconciled = ensureTaskIdentityMarkers(editor.getText(), { usedIds: reservedTaskIds(selected?.id) });
       if (reconciled.changed) {
         editor.reconcileText(reconciled.text);
         saver.update(reconciled.text);
@@ -3704,7 +3716,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'hidden' || !saver) return;
     if (selected?.kind === 'markdown') {
-      const reconciled = ensureTaskIdentityMarkers(editor.getText());
+      const reconciled = ensureTaskIdentityMarkers(editor.getText(), { usedIds: reservedTaskIds(selected?.id) });
       if (reconciled.changed) {
         editor.reconcileText(reconciled.text);
         saver.update(reconciled.text);
