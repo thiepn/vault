@@ -24,9 +24,9 @@ class MemoryStore {
     return value.id ?? value.entryId ?? value.key;
   }
   async get(key){ return structuredClone(this.data.get(key)); }
-  async getAll(){ return [...this.data.values()].map(structuredClone); }
+  async getAll(){ return [...this.data.values()].map(value=>structuredClone(value)); }
   async fromIndex(index,key){ return [...this.data.values()].find(v=>v[index]===key); }
-  async allFromIndex(index,key){ return [...this.data.values()].filter(v=>v[index]===key).map(structuredClone); }
+  async allFromIndex(index,key){ return [...this.data.values()].filter(v=>v[index]===key).map(value=>structuredClone(value)); }
   async add(value){ const key=this.key(value); if(this.data.has(key)) throw new Error('duplicate'); this.data.set(key,structuredClone(value)); }
   async put(value){ this.data.set(this.key(value),structuredClone(value)); }
   async delete(key){ this.data.delete(key); }
