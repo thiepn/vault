@@ -284,11 +284,37 @@ function normalizeRelativePath(base: string, raw: string): string | null {
   return parts.join('/');
 }
 
+interface SourceLookup {
+  noteByStem: ReadonlyMap<string, readonly string[]>;
+  fileByName: ReadonlyMap<string, readonly string[]>;
+}
+
+function pushLookup(map: Map<string, string[]>, key: string, path: string): void {
+  const values = map.get(key);
+  if (values) values.push(path);
+  else map.set(key, [path]);
+}
+
+function buildSourceLookup(sourceFiles: readonly string[]): SourceLookup {
+  const noteByStem = new Map<string, string[]>();
+  const fileByName = new Map<string, string[]>();
+  for (const path of sourceFiles) {
+    const name = basename(path);
+    if (/\.(?:md|canvas)$/iu.test(path)) {
+      const stem = stripExtension(stripExtension(name, /\.md$/iu), /\.canvas$/iu);
+      pushLookup(noteByStem, fold(stem), path);
+    } else {
+      pushLookup(fileByName, fold(name), path);
+    }
+  }
+  return { noteByStem, fileByName };
+}
+
 function resolveMappedFile(
   raw: string,
   sourcePath: string,
   sourceToTarget: ReadonlyMap<string, string>,
-  sourceFiles: readonly string[],
+  lookup: SourceLookup,
 ): string | null {
   const query = raw.replace(/^\.\//u, '').replace(/\\/gu, '/');
   const sourceDirectory = parentPath(sourcePath);
@@ -304,14 +330,10 @@ function resolveMappedFile(
   }
 
   const queryName = basename(query);
-  const queryNoteStem = stripExtension(queryName, /\.md$/iu);
-  const matches = sourceFiles.filter(path => {
-    const name = basename(path);
-    if (/\.md$/iu.test(path) || /\.canvas$/iu.test(path)) {
-      return fold(stripExtension(stripExtension(name, /\.md$/iu), /\.canvas$/iu)) === fold(stripExtension(queryNoteStem, /\.canvas$/iu));
-    }
-    return fold(name) === fold(queryName);
-  });
+  const queryNoteStem = stripExtension(stripExtension(queryName, /\.md$/iu), /\.canvas$/iu);
+  const noteMatches = lookup.noteByStem.get(fold(queryNoteStem)) ?? [];
+  const fileMatches = lookup.fileByName.get(fold(queryName)) ?? [];
+  const matches = [...new Set([...noteMatches, ...fileMatches])];
   if (matches.length !== 1) return null;
   return sourceToTarget.get(pathKey(matches[0]!)) ?? null;
 }
@@ -324,12 +346,12 @@ function rewriteWikiLinks(
   source: string,
   sourcePath: string,
   sourceToTarget: ReadonlyMap<string, string>,
-  sourceFiles: readonly string[],
+  lookup: SourceLookup,
 ): { text: string; count: number } {
   const replacements: Array<{ from: number; to: number; value: string }> = [];
   for (const reference of parseWikiReferences(source)) {
     if (!reference.note) continue;
-    const mapped = resolveMappedFile(reference.note, sourcePath, sourceToTarget, sourceFiles);
+    const mapped = resolveMappedFile(reference.note, sourcePath, sourceToTarget, lookup);
     if (!mapped) continue;
     const targetNote = wikiTargetForMappedPath(mapped);
     if (fold(targetNote) === fold(reference.note)) continue;
@@ -350,7 +372,7 @@ function rewriteMarkdownLinks(
   source: string,
   sourcePath: string,
   sourceToTarget: ReadonlyMap<string, string>,
-  sourceFiles: readonly string[],
+  lookup: SourceLookup,
 ): { text: string; count: number } {
   let count = 0;
   const text = source.replace(/(!?\[[^\]\n]*\]\()(<[^>]+>|[^)\s]+)(\s+(?:"[^"]*"|'[^']*'))?(\))/gu, (whole, prefix: string, rawHref: string, title: string | undefined, suffix: string) => {
@@ -362,7 +384,7 @@ function rewriteMarkdownLinks(
     const fragment = hashAt >= 0 ? href.slice(hashAt) : '';
     let pathPart = pathPartRaw;
     try { pathPart = decodeURIComponent(pathPartRaw); } catch { /* preserve undecodable path */ }
-    const mapped = resolveMappedFile(pathPart, sourcePath, sourceToTarget, sourceFiles);
+    const mapped = resolveMappedFile(pathPart, sourcePath, sourceToTarget, lookup);
     if (!mapped) return whole;
     const encoded = mapped.split('/').map(segment => encodeURIComponent(segment)).join('/') + fragment;
     if (encoded === href) return whole;
@@ -384,7 +406,7 @@ function convertJsonCanvas(
   parsed: JsonCanvas,
   sourcePath: string,
   sourceToTarget: ReadonlyMap<string, string>,
-  sourceFiles: readonly string[],
+  lookup: SourceLookup,
   report: ObsidianMigrationReport,
 ): CanvasDocument {
   const usedNodeIds = new Set<string>();
@@ -423,7 +445,7 @@ function convertJsonCanvas(
     }
 
     if (type === 'file' && typeof raw.file === 'string') {
-      const mapped = resolveMappedFile(raw.file, sourcePath, sourceToTarget, sourceFiles);
+      const mapped = resolveMappedFile(raw.file, sourcePath, sourceToTarget, lookup);
       const target = mapped ?? raw.file.replace(/\\/gu, '/');
       const subpath = typeof raw.subpath === 'string' ? raw.subpath : '';
       if (/\.md$/iu.test(target)) {
@@ -632,13 +654,14 @@ export function planObsidianMigration(
   }
 
   const sourceFiles = sourceItems.filter(item => !item.directory).map(item => item.sourcePath);
+  const sourceLookup = buildSourceLookup(sourceFiles);
   const files: PlannedObsidianFile[] = [];
   for (const item of sourceItems.filter(item => !item.directory).sort((a, b) => a.sourcePath.localeCompare(b.sourcePath))) {
     const target = fileTargetNames.get(item.sourcePath)!;
     if (item.kind === 'markdown') {
       const raw = decodeUtf8(item.bytes, item.sourcePath, MAX_MARKDOWN_BYTES);
-      const wiki = rewriteWikiLinks(raw, item.sourcePath, sourceToTargetPath, sourceFiles);
-      const markdown = rewriteMarkdownLinks(wiki.text, item.sourcePath, sourceToTargetPath, sourceFiles);
+      const wiki = rewriteWikiLinks(raw, item.sourcePath, sourceToTargetPath, sourceLookup);
+      const markdown = rewriteMarkdownLinks(wiki.text, item.sourcePath, sourceToTargetPath, sourceLookup);
       report.markdownNotes++;
       report.rewrittenWikiLinks += wiki.count;
       report.rewrittenMarkdownLinks += markdown.count;
@@ -658,7 +681,7 @@ export function planObsidianMigration(
     }
 
     if (item.kind === 'canvas' && item.canvasJson) {
-      const document = convertJsonCanvas(item.canvasJson, item.sourcePath, sourceToTargetPath, sourceFiles, report);
+      const document = convertJsonCanvas(item.canvasJson, item.sourcePath, sourceToTargetPath, sourceLookup, report);
       files.push({
         kind: 'markdown',
         sourcePath: item.sourcePath,
