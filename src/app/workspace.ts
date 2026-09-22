@@ -812,7 +812,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   syncCoordinator = new SyncCoordinator({
     eligible: () => !!syncEngine && !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
       && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId
-      && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus(),
+      && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus() && !cloudDialog.open,
     key: () => {
       if (!cloudStatus.identity || !vault?.cloud) return null;
       return `${cloudStatus.identity.userId}:${vault.id}:${vault.cloud.epoch}`;
@@ -3667,8 +3667,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           lastSyncSummary = null;
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
-          syncCoordinator?.wake('startup');
-          renderCloudDialog('Cloud sync enabled. Initial replication will start automatically; Sync now remains available.');
+          renderCloudDialog('Cloud sync enabled. Nothing is uploaded until you press Sync now.');
           renderCloudIndicator();
           renderInfo();
           return;
