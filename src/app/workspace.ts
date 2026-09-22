@@ -50,7 +50,7 @@ import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realti
 import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
 import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-text.js';
-import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
+import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
@@ -899,6 +899,179 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     collaborationStatus = collaboration.currentStatus;
     renderCollaborationState();
     renderRemoteCollaborationCursors();
+  }
+
+  function activeCrdtRole(): CrdtEditorRole | null {
+    const role=activeCollaborationRole();
+    return role==='owner' || role==='editor' ? role : null;
+  }
+
+  function crdtLeaderForCurrentEntry(): string | null {
+    if(!selected || selected.kind!=='markdown' || !activeCrdtRole()) return null;
+    const sessions=new Set<string>([storageSessionId]);
+    for(const participant of collaborationParticipants){
+      if(participant.entryId!==selected.id || (participant.role!=='owner' && participant.role!=='editor')) continue;
+      if(participant.mode!=='source' && participant.mode!=='live') continue;
+      sessions.add(participant.sessionId);
+    }
+    return [...sessions].sort()[0] ?? null;
+  }
+
+  function updateCrdtLeader(): void {
+    const next=crdtLeaderForCurrentEntry();
+    if(next===crdtLeaderSession) return;
+    crdtLeaderSession=next;
+    if(crdtDocument && crdtStatus==='connected' && next && next!==storageSessionId) requestCrdtSync();
+  }
+
+  function crdtStatusLabel(): string {
+    if(!crdtDocument) return '';
+    if(crdtStatus==='connected') return 'Live edit connected';
+    if(crdtStatus==='connecting') return 'Live edit connecting';
+    if(crdtStatus==='retrying') return 'Live edit reconnecting';
+    if(crdtStatus==='unauthenticated') return 'Live edit signed out';
+    return 'Live edit idle';
+  }
+
+  function stopCrdtSession(): void {
+    crdtRealtime?.stop();
+    crdtStatus=crdtRealtime?.currentStatus ?? 'idle';
+    crdtDocument?.destroy();
+    crdtDocument=null;
+    crdtBase=null;
+    crdtLocalDirty=false;
+    crdtLeaderSession=null;
+    editor.setCollaborativeUndoHandlers(null,null);
+    renderCollaborationState();
+  }
+
+  function installCrdtDocument(base:CrdtBaseSnapshot,seed:boolean): CrdtTextDocument {
+    crdtDocument?.destroy();
+    crdtBase=base;
+    crdtLocalDirty=false;
+    const document=new CrdtTextDocument(base,{
+      onText(text) {
+        if(disposed || crdtDocument!==document || selected?.id!==base.entryId) return;
+        if(editor.getText()!==text) editor.reconcileText(text);
+        if(currentVaultWritable()) saver?.update(text);
+        schedulePropertiesRender(text);
+        renderRemoteCollaborationCursors();
+      },
+      onUpdate(update) {
+        if(disposed || crdtDocument!==document) return;
+        crdtLocalDirty=true;
+        crdtRealtime?.publishUpdate(update);
+        renderCollaborationState();
+      },
+    },seed);
+    crdtDocument=document;
+    editor.setCollaborativeUndoHandlers(
+      ()=>document.undo(),
+      ()=>document.redo(),
+    );
+    return document;
+  }
+
+  async function verifiedCrdtBase(): Promise<CrdtBaseSnapshot | null> {
+    if(!selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
+      || !vault?.cloud || !cloudStatus.signedIn || !cloudStatus.identity || !activeCrdtRole()
+      || vault.cloud.authUserId!==cloudStatus.identity.userId || !saver) return null;
+    if(await syncState.isDirty(selected.id)) return null;
+    if((await syncState.pendingForEntry(vault.id,cloudStatus.identity.userId,selected.id)).length) return null;
+    const shadow=await syncState.shadow(selected.id,cloudStatus.identity.userId,vault.cloud.epoch);
+    if(!shadow || shadow.snapshot.kind!=='markdown' || shadow.snapshot.deletedAt!==null || shadow.snapshot.text===null) return null;
+    const current=editor.getText();
+    if(shadow.snapshot.text!==current) return null;
+    return {
+      entryId:selected.id,
+      revision:shadow.snapshot.revision,
+      fingerprint:editorStats.documentFingerprint,
+      text:current,
+    };
+  }
+
+  async function refreshCrdtSession(): Promise<void> {
+    const role=activeCrdtRole();
+    if(!role || !selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
+      || !vault?.cloud || !cloudStatus.identity || vault.cloud.authUserId!==cloudStatus.identity.userId){
+      stopCrdtSession();
+      return;
+    }
+    if(crdtDocument && crdtBase?.entryId===selected.id){
+      updateCrdtLeader();
+      return;
+    }
+    stopCrdtSession();
+    const base=await verifiedCrdtBase();
+    if(!base) return;
+    installCrdtDocument(base,true);
+    updateCrdtLeader();
+    if(!crdtRealtime) return;
+    await crdtRealtime.subscribe({
+      vaultId:vault.id,
+      epoch:vault.cloud.epoch,
+      entryId:selected.id,
+      sessionId:storageSessionId,
+      role,
+      baseRevision:base.revision,
+      baseFingerprint:base.fingerprint,
+    });
+    crdtStatus=crdtRealtime.currentStatus;
+    renderCollaborationState();
+  }
+
+  function requestCrdtSync(): void {
+    if(!crdtDocument || !crdtRealtime || crdtStatus!=='connected') return;
+    crdtRealtime.requestSync(crdtDocument.stateVector());
+  }
+
+  function handleCrdtRemoteUpdate(message:CrdtRemoteUpdate): void {
+    if(!crdtDocument || !crdtBase) return;
+    if(message.baseRevision!==crdtBase.revision || message.baseFingerprint!==crdtBase.fingerprint){
+      requestCrdtSync();
+      return;
+    }
+    crdtDocument.applyRemoteUpdate(message.update);
+  }
+
+  function handleCrdtSyncRequest(message:CrdtSyncRequest): void {
+    if(!crdtDocument || !crdtBase || !crdtRealtime) return;
+    updateCrdtLeader();
+    if(crdtLeaderSession!==storageSessionId) return;
+    const sameBase=message.baseRevision===crdtBase.revision && message.baseFingerprint===crdtBase.fingerprint;
+    crdtRealtime.respondSync(
+      message,
+      sameBase ? crdtDocument.stateUpdate(message.stateVector) : crdtDocument.stateUpdate(),
+      !sameBase,
+    );
+  }
+
+  function handleCrdtSyncResponse(message:CrdtSyncResponse): void {
+    if(!crdtDocument || !crdtBase || !selected || selected.kind!=='markdown') return;
+    updateCrdtLeader();
+    if(!crdtLeaderSession || message.sessionId!==crdtLeaderSession) return;
+    const sameBase=message.baseRevision===crdtBase.revision && message.baseFingerprint===crdtBase.fingerprint;
+    if(!message.replace && sameBase){
+      crdtDocument.applyRemoteUpdate(message.update);
+      return;
+    }
+    if(crdtLocalDirty){
+      stopCrdtSession();
+      errorBox.textContent='Live co-editing paused because another editor is based on a different canonical revision. Your local draft is preserved; synchronize it before rejoining live editing.';
+      errorBox.hidden=false;
+      return;
+    }
+    const replacementBase:CrdtBaseSnapshot={
+      entryId:selected.id,
+      revision:message.baseRevision,
+      fingerprint:message.baseFingerprint,
+      text:'',
+    };
+    const replacement=installCrdtDocument(replacementBase,false);
+    replacement.applyRemoteUpdate(message.update);
+    crdtLocalDirty=false;
+    crdtLeaderSession=message.sessionId;
+    renderCollaborationState();
   }
 
   function renderCloudIndicator(): void {
