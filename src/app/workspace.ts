@@ -2,7 +2,8 @@ import { VaultError, explainError } from '../domain/errors.js';
 import type { Entry, EntryId, RecoveryDraft, Vault, VaultId } from '../domain/model.js';
 import { VaultTree } from '../domain/tree.js';
 import { openDatabase } from '../storage/database.js';
-import { LocalRepository } from '../storage/local-repository.js';
+import { A2LocalRepository, A2Persistence } from '../storage/a2-persistence.js';
+import { requestPersistentStorage } from '../storage/storage-health.js';
 import { request, transact } from '../storage/idb.js';
 import { SaveCoordinator } from '../services/save-coordinator.js';
 import { vaultFiles, zipStore } from '../services/export.js';
@@ -15,7 +16,7 @@ import { extractFragment } from '../knowledge/fragments.js';
 import { updateInboundLinksAfterMove } from '../knowledge/link-updater.js';
 import { canonicalWikiNote } from '../knowledge/resolver.js';
 import type { KnowledgeTask, WikiResolution } from '../knowledge/types.js';
-import { taskDateState, taskEffectiveDate, updateTaskMarkdown, type TaskPatch, type TaskPriority } from '../tasks/markdown.js';
+import { ensureTaskIdentityMarkers, taskDateState, taskEffectiveDate, updateTaskMarkdown, type TaskPatch, type TaskPriority } from '../tasks/markdown.js';
 import { SearchIndexClient } from '../search/client.js';
 import type { QuickSwitchResult, SearchFacets, SearchInput, SearchResult, SearchStats } from '../search/types.js';
 import { deleteFrontmatterProperty, inspectFrontmatter, rawValueForProperty, renameFrontmatterProperty, setFrontmatterProperty, valueForKind, type PropertyKind } from '../metadata/frontmatter.js';
@@ -34,7 +35,12 @@ type EditorMode = 'source' | 'live' | 'reading';
 /** Phase 11 browser workspace: Markdown-native Kanban boards on the accepted Phase 1-10 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
-  const repository = new LocalRepository(db);
+  const a2 = await A2Persistence.create(db);
+  await a2.repairAll().catch(async error => {
+    await a2.markRepairNeeded(error).catch(() => undefined);
+  });
+  const repository = new A2LocalRepository(db, a2);
+  void requestPersistentStorage();
   const knowledge = new KnowledgeIndexService(db);
   const searchIndex = new SearchIndexClient({
     onWorkerRestart() {
@@ -398,7 +404,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         return renderBoardBlock(source, selected?.id);
       },
     },
-    onChange(text) { saver?.update(text); updateCounts(); schedulePropertiesRender(text); },
+    onChange(text) {
+      const reconciled = ensureTaskIdentityMarkers(text, { completeLinesOnly: true });
+      const canonicalText = reconciled.text;
+      if (reconciled.changed) editor.reconcileText(canonicalText);
+      saver?.update(canonicalText);
+      updateCounts();
+      schedulePropertiesRender(canonicalText);
+    },
     onStats(stats) { editorStats = stats; updateCounts(); highlightCurrentOutline(); },
   });
 
@@ -2845,7 +2858,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   async function clearSelection(): Promise<void> {
     const previousEntryId = selected?.kind === 'markdown' ? selected.id : undefined;
-    if (saver) await saver.close();
+    if (saver && selected?.kind === 'markdown') {
+      const reconciled = ensureTaskIdentityMarkers(editor.getText());
+      if (reconciled.changed) {
+        editor.reconcileText(reconciled.text);
+        saver.update(reconciled.text);
+      }
+      await saver.close();
+    } else if (saver) {
+      await saver.close();
+    }
     saver = undefined;
     if (previousEntryId && entries.some(entry => entry.id === previousEntryId && entry.deletedAt === null)) await refreshKnowledgeEntry(previousEntryId);
     selected = undefined; renderGeneration++; editorHost.hidden = true; readingView.hidden = true; readingView.replaceChildren(); attachmentView.hidden = true; attachmentPreview.replaceChildren(); editor.setReadOnly(true); editor.setText(''); renderPropertiesPanel(null);
@@ -3515,7 +3537,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     });
   }, { signal: abort.signal });
   window.addEventListener('beforeunload', event => { if (saver?.hasUnsavedChanges) { event.preventDefault(); event.returnValue = ''; } }, { signal: abort.signal });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void saver?.flush().catch(showError); }, { signal: abort.signal });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden' || !saver) return;
+    if (selected?.kind === 'markdown') {
+      const reconciled = ensureTaskIdentityMarkers(editor.getText());
+      if (reconciled.changed) {
+        editor.reconcileText(reconciled.text);
+        saver.update(reconciled.text);
+      }
+    }
+    void saver.flush().catch(showError);
+  }, { signal: abort.signal });
   window.addEventListener('keydown', event => {
     if (quickDialog.open) return;
     if (dialog.open || recoveryDialog.open) return;
@@ -3574,6 +3606,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     graphCanvasView.destroy();
     for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
     attachmentObjectUrls.clear();
+    a2.close();
     void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
   };
 }
