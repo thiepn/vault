@@ -43,7 +43,18 @@ async function registerOfflineShell(): Promise<void> {
         // Ignore opaque or malformed performance entries.
       }
     }
-    registration.active?.postMessage({ type: 'CACHE_URLS', urls: [...urls] });
+    const worker = registration.active;
+    if (!worker) return;
+    await new Promise<void>(resolve => {
+      const channel = new MessageChannel();
+      const timeout = window.setTimeout(resolve, 10_000);
+      channel.port1.onmessage = () => {
+        window.clearTimeout(timeout);
+        resolve();
+      };
+      worker.postMessage({ type: 'CACHE_URLS', urls: [...urls] }, [channel.port2]);
+    });
+    document.documentElement.dataset.offlineShell = 'ready';
   } catch {
     // Offline-shell failure must never prevent access to local canonical data.
   }
