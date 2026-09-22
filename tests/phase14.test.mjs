@@ -168,11 +168,13 @@ test('CloudFoundation signs in/registers a device and adopts only after explicit
     async listDevices(){return [];},
     async revokeDevice(){}
   };
-  const foundation=new CloudFoundation(fakeAuth,fakeRegistry,repo,storage,'https://project.supabase.co');
+  const syncState=new SyncLocalState(driver);
+  const foundation=new CloudFoundation(fakeAuth,fakeRegistry,repo,syncState,storage,'https://project.supabase.co');
   assert.equal((await repo.listVaults())[0].mode,'local');
   const adopted=await foundation.adoptVault(vault);
   assert.equal(adopted.mode,'cloud');
   assert.equal(adopted.cloud.epoch,epoch);
+  assert.equal((await syncState.cursor(vault.id,userId)).cursor,'0');
 });
 
 test('sync outbox is immutable/idempotent and owner-bound',async()=>{
