@@ -273,6 +273,33 @@ function locateTask(source: string, task: Pick<ParsedTaskLine, 'from' | 'to' | '
     return { from: task.from, to: task.to, rawSlice: directSlice, parsed };
   }
 
+  const stableIdentity = taskIdentityFromRaw(task.raw);
+  if (stableIdentity) {
+    const identityMatches: Array<{ from: number; to: number; rawSlice: string; parsed: ParsedTaskLine }> = [];
+    let identityFrom = 0;
+    while (identityFrom <= source.length) {
+      const newline = source.indexOf('\n', identityFrom);
+      const end = newline < 0 ? source.length : newline;
+      const rawSlice = source.slice(identityFrom, end);
+      const raw = rawSlice.replace(/\r$/u, '');
+      if (taskIdentityFromRaw(raw) === stableIdentity) {
+        const parsed = parseTaskLine(raw, identityFrom);
+        if (parsed) identityMatches.push({
+          from: identityFrom,
+          to: identityFrom + raw.length,
+          rawSlice: source.slice(identityFrom, identityFrom + raw.length),
+          parsed,
+        });
+      }
+      if (newline < 0) break;
+      identityFrom = newline + 1;
+    }
+    if (identityMatches.length === 1) return identityMatches[0]!;
+    if (identityMatches.length > 1) {
+      throw new VaultError('CORRUPT', 'A stable task identity appears more than once in this note.');
+    }
+  }
+
   const candidates: Array<{ from: number; to: number; rawSlice: string; parsed: ParsedTaskLine }> = [];
   let from = 0;
   while (from <= source.length) {
