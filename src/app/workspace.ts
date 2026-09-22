@@ -45,11 +45,12 @@ import { SyncLocalState } from '../sync/local-state.js';
 import { SupabaseSyncTransport } from '../sync/transport.js';
 import { SyncReplicaStore } from '../sync/replica-store.js';
 import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
+import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 15 browser workspace: remote canonical replication on the accepted Phase 1-14 + A1/A2 foundation. */
+/** Phase 16 browser workspace: continuous hardened replication on the accepted Phase 1-15 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -62,6 +63,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const syncState = new SyncLocalState(db);
   let cloud: CloudFoundation | null = null;
   let syncEngine: SyncEngine | null = null;
+  let syncCoordinator: SyncCoordinator | null = null;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
@@ -353,7 +355,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 15 synchronizes canonical files and attachment bytes on demand. Editing remains local-first; search, tasks, calendar, queries, graph and boards are rebuilt locally rather than uploaded.</p>
+          <p class="cloud-phase-note">Phase 16 continuously synchronizes adopted Vaults while the app is open, resumes after reconnect/focus, and auto-merges clearly independent Markdown edits. Sync now remains available for explicit control. Search, tasks, calendar, queries, graph and boards are rebuilt locally rather than uploaded.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
           <div class="cloud-section-heading">DEVICES</div>
@@ -563,6 +565,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   const crossTab = new VaultBroadcast('vault:storage', message => {
     if (disposed || message.kind === 'migration-started') return;
+    syncCoordinator?.request('peer', 750);
     if (saver?.hasUnsavedChanges) {
       errorBox.textContent = 'Another Vault tab changed local data while this editor has unsaved work. Your draft is preserved; save/reopen to reconcile instead of overwriting it.';
       errorBox.hidden = false;
@@ -717,11 +720,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const queued = await syncState.count(vault.id);
     const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
     cachedSyncDetail = latest
-      ? `Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
+      ? `Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
       : `Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
   }
 
-  async function runCurrentCloudSync(): Promise<SyncRunSummary> {
+  async function runCurrentCloudSync(background = false, _trigger: SyncTrigger = 'manual'): Promise<SyncRunSummary> {
     if (!syncEngine || !cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
       throw new VaultError('CONFIGURATION', 'Cloud synchronization is unavailable.');
     }
@@ -732,19 +735,51 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (saver) await saver.flush();
     const activeVaultId = vault.id;
     const selectedId = selected?.id;
-    cloudMessage.textContent = 'Synchronizing canonical files and attachments…';
+    if (!background) cloudMessage.textContent = 'Synchronizing canonical files and attachments…';
     cloudSyncNow.disabled = true;
-    const summary = await syncEngine.sync(vault, cloudStatus.identity.userId);
-    lastSyncSummary = { vaultId: activeVaultId, summary };
-    await refresh();
-    if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
-    await refreshCloudSyncDetail();
-    renderCloudDialog(
-      `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`,
-    );
-    renderCloudIndicator();
-    return summary;
+    try {
+      const summary = await syncEngine.sync(vault, cloudStatus.identity.userId);
+      lastSyncSummary = { vaultId: activeVaultId, summary };
+      const localUiChanged = summary.pulledEvents > 0 || summary.conflictsPreserved > 0 || summary.autoMergedMarkdown > 0;
+      if (vault?.id === activeVaultId && (!background || localUiChanged)) {
+        await refresh();
+        if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
+      }
+      await refreshCloudSyncDetail();
+      if (vault?.id === activeVaultId && selected?.kind === 'markdown' && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
+        element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
+      }
+      if (!background) {
+        renderCloudDialog(
+          `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.autoMergedMarkdown} auto-merged, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`,
+        );
+      } else if (cloudDialog.open) {
+        renderCloudDialog();
+      }
+      renderCloudIndicator();
+      return summary;
+    } finally {
+      const eligible = !!vault && !!syncEngine && cloudStatus.signedIn && !!cloudStatus.identity
+        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId;
+      cloudSyncNow.disabled = !eligible;
+    }
   }
+
+  syncCoordinator = new SyncCoordinator({
+    eligible: () => !!syncEngine && !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
+      && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId
+      && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus(),
+    key: () => {
+      if (!cloudStatus.identity || !vault?.cloud) return null;
+      return `${cloudStatus.identity.userId}:${vault.id}:${vault.cloud.epoch}`;
+    },
+    run: async reason => { await runCurrentCloudSync(true, reason); },
+    onError: (error, retryAt) => {
+      if (!cloudDialog.open) return;
+      const detail = error instanceof Error ? error.message : 'Synchronization failed.';
+      renderCloudDialog(`Background sync paused until ${new Date(retryAt).toLocaleTimeString()}: ${detail}`);
+    },
+  });
 
   async function refreshCloudStatus(message = ''): Promise<void> {
     if (!cloud) {
@@ -758,6 +793,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
       await refreshCloudSyncDetail();
       renderCloudDialog(message);
+      syncCoordinator?.wake('startup');
     } catch (error) {
       cloudStatus = cloudEmptyStatus();
       awaitableDevicesCache = [];
@@ -3429,6 +3465,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           element<HTMLElement>('.save-status').textContent = state.kind === 'saving' ? 'Saving locally\u2026' : state.kind === 'error'
             ? state.recovery === 'stored' ? 'Draft preserved \u00b7 canonical save blocked' : state.recovery === 'pending' ? 'Preserving recovery draft\u2026' : 'Not saved \u00b7 export your draft'
             : 'Saved locally \u00b7 not synced';
+          if (state.kind === 'saved-local') syncCoordinator?.request('local-change', 1200);
           if (updated) { selected = updated; const at = entries.findIndex(entry => entry.id === updated.id); if (at >= 0) entries[at] = updated; renderInfo(); void refreshKnowledgeEntry(updated.id).catch(showError); }
           element<HTMLElement>('[data-action="retry-save"]').hidden = state.kind !== 'error' || !saver?.canRetry;
           if (state.kind === 'error') {
@@ -4326,12 +4363,22 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const id = vaultSelect.value;
     perform(async () => {
       try { await clearSelection(); } catch (error) { vaultSelect.value = vault?.id ?? ''; throw error; }
-      vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id);
+      vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); syncCoordinator?.wake('focus');
     });
   }, { signal: abort.signal });
   window.addEventListener('beforeunload', event => { if (saver?.hasUnsavedChanges) { event.preventDefault(); event.returnValue = ''; } }, { signal: abort.signal });
+  window.addEventListener('online', () => syncCoordinator?.wake('online'), { signal: abort.signal });
+  window.addEventListener('focus', () => syncCoordinator?.wake('focus'), { signal: abort.signal });
+  editorHost.addEventListener('focusout', () => syncCoordinator?.wake('focus'), { signal: abort.signal });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'hidden' || !saver) return;
+    if (document.visibilityState === 'visible') {
+      syncCoordinator?.wake('visibility');
+      return;
+    }
+    if (!saver) {
+      syncCoordinator?.request('visibility', 0);
+      return;
+    }
     if (selected?.kind === 'markdown') {
       const reconciled = ensureTaskIdentityMarkers(editor.getText(), { usedIds: reservedTaskIds(selected?.id) });
       if (reconciled.changed) {
@@ -4339,7 +4386,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         saver.update(reconciled.text);
       }
     }
-    void saver.flush().catch(showError);
+    void saver.flush()
+      .then(() => syncCoordinator?.request('visibility', 0))
+      .catch(showError);
   }, { signal: abort.signal });
   window.addEventListener('keydown', event => {
     if (quickDialog.open) return;
@@ -4386,6 +4435,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const previous = entries.find(entry => entry.id === lastEntry && entry.deletedAt === null);
   if (previous) await openEntry(previous.id);
   if (vault) void requestPersistentStorage();
+  syncCoordinator?.start();
+  await refreshCloudStatus();
+  syncCoordinator?.wake('startup');
 
   return () => {
     disposed = true;
@@ -4397,6 +4449,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (quickDialog.open) quickDialog.close();
     if (templateDialog.open) templateDialog.close('cancel');
     searchIndex.close();
+    syncCoordinator?.stop();
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
     graphCanvasView.destroy();
