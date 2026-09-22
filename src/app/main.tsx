@@ -27,3 +27,26 @@ function VaultWorkspace() {
 const container = document.getElementById('root');
 if (!container) throw new Error('Missing application root.');
 createRoot(container).render(<StrictMode><VaultWorkspace /></StrictMode>);
+
+
+async function registerOfflineShell(): Promise<void> {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    const registration = await navigator.serviceWorker.ready;
+    const urls = new Set<string>([window.location.href]);
+    for (const entry of performance.getEntriesByType('resource')) {
+      const value = (entry as PerformanceResourceTiming).name;
+      try {
+        if (new URL(value).origin === window.location.origin) urls.add(value);
+      } catch {
+        // Ignore opaque or malformed performance entries.
+      }
+    }
+    registration.active?.postMessage({ type: 'CACHE_URLS', urls: [...urls] });
+  } catch {
+    // Offline-shell failure must never prevent access to local canonical data.
+  }
+}
+
+void registerOfflineShell();
