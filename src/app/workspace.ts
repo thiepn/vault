@@ -693,6 +693,50 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     );
   }
 
+  function currentMarkdownText(): string {
+    if(crdtDocument && crdtBase?.entryId===selected?.id) return crdtDocument.value;
+    return saver?.draft ?? editor.getText();
+  }
+
+  function currentCrdtFollower(entryId:EntryId): boolean {
+    return !!crdtDocument && crdtBase?.entryId===entryId
+      && !!crdtLeaderSession && crdtLeaderSession!==storageSessionId;
+  }
+
+  function applyCurrentMarkdownText(next:string): void {
+    if(crdtDocument && crdtBase?.entryId===selected?.id && editorMode!=='reading'){
+      crdtDocument.applyLocalText(next);
+      return;
+    }
+    if(editor.getText()!==next) editor.setText(next);
+    saver?.update(next);
+    schedulePropertiesRender(next);
+  }
+
+  async function flushCurrentMarkdownEdit(entryId:EntryId): Promise<void> {
+    if(currentCrdtFollower(entryId)){
+      crdtRecoveryText=currentMarkdownText();
+      await persistCrdtRecoveryNow();
+      return;
+    }
+    await saver?.flush();
+  }
+
+  async function refreshCurrentMarkdownProjection(entryId:EntryId,text:string): Promise<void> {
+    if(currentCrdtFollower(entryId) && selected?.id===entryId && selected.kind==='markdown'){
+      await knowledge.upsert(selected,text);
+      invalidateGraphModel();
+      renderTree();
+      renderKnowledgePanels();
+      renderTasks();
+      renderMedia();
+      renderCalendar();
+      if(graphOpen) renderGraph();
+      return;
+    }
+    await refreshKnowledgeEntry(entryId);
+  }
+
   function showError(error: unknown): void {
     if (disposed) return;
     errorBox.textContent = explainError(error);
@@ -1633,29 +1677,32 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     if (selected?.id === sourceEntryId && saver) {
       await saver.flush();
-      const current = saver.draft;
+      const current = currentMarkdownText();
       const next = replaceCanvasFenceSource(current, document.id, serialized);
       if (next === current) return;
-      editor.setText(next);
-      saver.update(next);
-      await saver.flush();
+      applyCurrentMarkdownText(next);
+      await flushCurrentMarkdownEdit(sourceEntryId);
 
       // Keep the active Canvas widget alive across its own canonical save.
       // Rebuilding the preview here can tear down an in-progress pointer gesture.
-      const savedFile = await repository.read(sourceEntryId);
-      if (savedFile.content && savedFile.entry.kind === 'markdown' && savedFile.entry.deletedAt === null) {
-        await knowledge.upsert(savedFile.entry, savedFile.content.text);
-        const at = entries.findIndex(item => item.id === savedFile.entry.id);
-        if (at >= 0) entries[at] = savedFile.entry;
-        dirtyIds.add(savedFile.entry.id);
-        await refreshSearchEntry(savedFile.entry.id);
-        invalidateGraphModel();
-        renderTree();
-        renderKnowledgePanels();
-        renderTasks();
-        renderMedia();
-        renderCalendar();
-        if (graphOpen) renderGraph();
+      if(currentCrdtFollower(sourceEntryId)){
+        await refreshCurrentMarkdownProjection(sourceEntryId,next);
+      }else{
+        const savedFile = await repository.read(sourceEntryId);
+        if (savedFile.content && savedFile.entry.kind === 'markdown' && savedFile.entry.deletedAt === null) {
+          await knowledge.upsert(savedFile.entry, savedFile.content.text);
+          const at = entries.findIndex(item => item.id === savedFile.entry.id);
+          if (at >= 0) entries[at] = savedFile.entry;
+          dirtyIds.add(savedFile.entry.id);
+          await refreshSearchEntry(savedFile.entry.id);
+          invalidateGraphModel();
+          renderTree();
+          renderKnowledgePanels();
+          renderTasks();
+          renderMedia();
+          renderCalendar();
+          if (graphOpen) renderGraph();
+        }
       }
     } else {
       const file = await repository.read(sourceEntryId);
@@ -2295,6 +2342,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (file.entry.kind !== 'markdown' || file.entry.deletedAt !== null || !file.content) {
       throw new VaultError('NOT_FOUND', 'The task source note is unavailable.');
     }
+    const sourceText=selected?.id===entryId && saver ? currentMarkdownText() : file.content.text;
     const stableTaskId = taskIdentityFromRaw(task.raw);
     let currentTask: Pick<KnowledgeTask, 'from' | 'to' | 'raw'> = task;
     if (stableTaskId) {
@@ -2302,19 +2350,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         entryId,
         vaultId: file.entry.vaultId,
         localVersion: file.entry.localVersion,
-        text: file.content.text,
+        text: sourceText,
       });
       const matches = currentRecord.tasks.filter(candidate => taskIdentityFromRaw(candidate.raw) === stableTaskId);
       if (matches.length !== 1) throw new VaultError('STALE_WRITE', 'The task identity is missing or duplicated. Refresh the Tasks view before editing it.');
       currentTask = matches[0]!;
     }
-    const mutation = updateTaskMarkdown(file.content.text, currentTask, patch);
+    const mutation = updateTaskMarkdown(sourceText, currentTask, patch);
 
     if (selected?.id === entryId && saver) {
-      editor.setText(mutation.text);
-      saver.update(mutation.text);
-      await saver.flush();
-      await refreshKnowledgeEntry(entryId);
+      applyCurrentMarkdownText(mutation.text);
+      await flushCurrentMarkdownEdit(entryId);
+      await refreshCurrentMarkdownProjection(entryId,mutation.text);
     } else {
       const saved = await repository.saveMarkdown(entryId, mutation.text, file.entry.localVersion);
       const index = entries.findIndex(entry => entry.id === saved.id);
@@ -2484,10 +2531,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const source = editor.getText();
     const separator = source.length === 0 || source.endsWith('\n') ? '' : '\n';
     const next = source + separator + '- [ ] New task';
-    editor.setText(next);
-    saver.update(next);
-    await saver.flush();
-    await refreshKnowledgeEntry(selected.id);
+    applyCurrentMarkdownText(next);
+    await flushCurrentMarkdownEdit(selected.id);
+    await refreshCurrentMarkdownProjection(selected.id,next);
     if (editorMode === 'reading') await renderReadingCurrent();
     switchSidebarPanel('tasks');
   }
@@ -3360,10 +3406,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (rerenderProperties) renderPropertiesPanel(nextText);
       return;
     }
-    editor.setText(nextText);
-    saver.update(nextText);
-    await saver.flush();
-    await refreshKnowledgeEntry(selected.id);
+    applyCurrentMarkdownText(nextText);
+    await flushCurrentMarkdownEdit(selected.id);
+    await refreshCurrentMarkdownProjection(selected.id,nextText);
     if (rerenderProperties) renderPropertiesPanel(nextText);
     if (editorMode === 'reading') await renderReadingCurrent();
   }
@@ -3633,15 +3678,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     if (selected?.id === entryId && saver) {
       await saver.flush();
-      const source = saver.draft;
+      const source = currentMarkdownText();
       const next = columnValue === null
         ? deleteFrontmatterProperty(source, groupProperty)
         : setFrontmatterProperty(source, groupProperty, columnValue);
       if (next === source) return;
-      editor.setText(next);
-      saver.update(next);
-      await saver.flush();
-      await refreshKnowledgeEntry(entryId);
+      applyCurrentMarkdownText(next);
+      await flushCurrentMarkdownEdit(entryId);
+      await refreshCurrentMarkdownProjection(entryId,next);
     } else {
       const file = await repository.read(entryId);
       if (!file.content || file.entry.kind !== 'markdown' || file.entry.deletedAt !== null) {
