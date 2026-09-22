@@ -7,11 +7,13 @@ import type { RemoteEntrySnapshot, RemoteReplicationEvent } from './remote-types
 import type { SyncReplicaStore } from './replica-store.js';
 import type { SupabaseSyncTransport } from './transport.js';
 import { synthesizeEntryOperation } from './synthesize.js';
+import { compareVersions } from './merge.js';
 
 export interface SyncRunSummary {
   pulledEvents: number;
   pushedOperations: number;
   conflictsPreserved: number;
+  autoMergedMarkdown: number;
   uploadedBlobs: number;
   downloadedBlobs: number;
   outboxRemaining: number;
@@ -51,6 +53,8 @@ function conflictName(name:string):string{
 }
 
 export class SyncEngine {
+  private readonly inFlight = new Map<string, Promise<SyncRunSummary>>();
+
   constructor(
     private readonly transport:Pick<SupabaseSyncTransport,'pull'|'push'|'uploadBlob'|'downloadBlob'>,
     private readonly state:SyncLocalState,
@@ -60,12 +64,27 @@ export class SyncEngine {
 
   async sync(vault:Vault,ownerId:string):Promise<SyncRunSummary>{
     const binding=requireBinding(vault,ownerId);
+    const key=`${ownerId}:${vault.id}:${binding.epoch}`;
+    const existing=this.inFlight.get(key);
+    if(existing) return existing;
+    const run=this.runSync(vault,ownerId);
+    this.inFlight.set(key,run);
+    try{
+      return await run;
+    } finally {
+      if(this.inFlight.get(key)===run) this.inFlight.delete(key);
+    }
+  }
+
+  private async runSync(vault:Vault,ownerId:string):Promise<SyncRunSummary>{
+    const binding=requireBinding(vault,ownerId);
     await this.state.assertPendingOwners(vault.id,ownerId);
     let cursor=await this.state.initializeCursor(vault.id,ownerId,binding.epoch);
     const summary:SyncRunSummary={
       pulledEvents:0,
       pushedOperations:0,
       conflictsPreserved:0,
+      autoMergedMarkdown:0,
       uploadedBlobs:0,
       downloadedBlobs:0,
       outboxRemaining:0,
@@ -138,11 +157,44 @@ export class SyncEngine {
         await this.state.dropEntryOperations(vault.id,ownerId,event.entryId);
         return;
       }
+      if(await this.tryMergeMarkdown(vault,ownerId,event.snapshot,summary)) return;
       await this.preserveConflictAndApply(vault,ownerId,event.snapshot,summary);
       return;
     }
 
     await this.applySnapshot(vault,ownerId,event.snapshot,summary);
+  }
+
+  private async tryMergeMarkdown(vault:Vault,ownerId:string,snapshot:RemoteEntrySnapshot,summary:SyncRunSummary):Promise<boolean>{
+    const binding=requireBinding(vault,ownerId);
+    if(snapshot.kind!=='markdown' || snapshot.text===null || snapshot.deletedAt!==null) return false;
+
+    const baseRecord=await this.state.shadow(snapshot.entryId,ownerId,binding.epoch);
+    if(!baseRecord || baseRecord.snapshot.kind!=='markdown' || baseRecord.snapshot.text===null || baseRecord.snapshot.deletedAt!==null) return false;
+
+    const local=await this.replica.read(snapshot.entryId);
+    if(!local || local.entry.kind!=='markdown' || local.text===null || local.entry.deletedAt!==null) return false;
+
+    // Phase 16 only auto-merges text. A simultaneous local move/rename remains
+    // structural intent and is preserved rather than guessed.
+    const base=baseRecord.snapshot;
+    if(local.entry.parentId!==base.parentId || local.entry.name!==base.name) return false;
+
+    const merged=compareVersions(base.text,local.text,snapshot.text);
+    if(merged.kind==='conflict') return false;
+
+    await this.state.dropEntryOperations(vault.id,ownerId,snapshot.entryId);
+    await this.applySnapshot(vault,ownerId,snapshot,summary);
+
+    if(merged.text!==snapshot.text){
+      const applied=await this.replica.read(snapshot.entryId);
+      if(!applied || applied.entry.kind!=='markdown' || applied.entry.deletedAt!==null){
+        throw new VaultError('STALE_WRITE','Merged Markdown could not be materialized safely.');
+      }
+      await this.repository.saveMarkdown(applied.entry.id,merged.text,applied.entry.localVersion);
+      summary.autoMergedMarkdown++;
+    }
+    return true;
   }
 
   private async preserveConflictAndApply(vault:Vault,ownerId:string,snapshot:RemoteEntrySnapshot,summary:SyncRunSummary):Promise<void>{
@@ -242,7 +294,9 @@ export class SyncEngine {
           if(result.reason==='path' || !result.current || result.current.entryId!==result.entryId){
             throw new VaultError('COLLISION','Remote synchronization found a path conflict. Rename one local item before syncing again.');
           }
-          await this.preserveConflictAndApply(vault,ownerId,result.current,summary);
+          if(!await this.tryMergeMarkdown(vault,ownerId,result.current,summary)){
+            await this.preserveConflictAndApply(vault,ownerId,result.current,summary);
+          }
           await this.state.acknowledge(row.id);
           continue;
         }
