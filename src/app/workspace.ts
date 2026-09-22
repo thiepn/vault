@@ -415,13 +415,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     errorBox.textContent = explainError(error);
     errorBox.hidden = false;
   }
-  function perform(action: () => Promise<void>): void {
+  function perform(action: () => Promise<void>): Promise<void> {
     chain = chain.then(async () => {
       if (disposed) return;
       // Stop accepting keystrokes while replacing the editor's owning document.
       editor.setReadOnly(true);
       try { await action(); } finally { editor.setReadOnly(!selected || selected.deletedAt !== null || !saver || editorMode === 'reading'); }
     }).catch(showError);
+    return chain.then(() => undefined);
   }
   function download(filename: string, content: BlobPart, type: string): void {
     const url = URL.createObjectURL(new Blob([content], { type }));
@@ -528,7 +529,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     const view = new SpatialCanvasView(document, {
       persist(nextDocument) {
-        return persistCanvasDocument(owner, nextDocument);
+        return perform(() => persistCanvasDocument(owner, nextDocument));
       },
       resolveNote(target) {
         return resolveCanvasNote(target, owner);
