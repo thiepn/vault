@@ -223,9 +223,10 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
   await expect(canvas).toBeVisible();
   await canvas.getByRole('button', { name:'Zoom in' }).click();
+  await expect(canvas.locator('.canvas-status')).toHaveText('Viewport saved');
 
-  // Canvas persistence and navigation share Vault's serialized action queue.
-  // Opening Alpha cannot run until the zoom write has durably completed.
+  // The status is emitted only after the canonical Canvas source save resolves.
+  // Navigation now verifies the already-durable viewport rather than racing it.
   await canvas.locator('[data-canvas-node="note-alpha"] .canvas-open-button').click();
   await expect(page.locator('.breadcrumb')).toContainText('Alpha.md');
 
