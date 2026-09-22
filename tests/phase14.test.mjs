@@ -89,6 +89,25 @@ test('Supabase REST auth signs in, refreshes an expired session, resolves identi
   assert.ok(calls.some(call=>call.url.includes('scope=local')));
 });
 
+test('expired auth session survives offline refresh failure and local sign-out works offline',async()=>{
+  const storage=new MemoryStorage();
+  const expired={accessToken:'old-access',refreshToken:'old-refresh',expiresAt:1};
+  storage.setItem('vault:supabase-session:example',JSON.stringify(expired));
+  const auth=new SupabaseRestAuth(config,storage,async()=>{ throw new TypeError('offline'); });
+  await assert.rejects(()=>auth.accessToken(),/offline/);
+  assert.equal(JSON.parse(storage.getItem('vault:supabase-session:example')).refreshToken,'old-refresh');
+  await auth.signOut();
+  assert.equal(storage.getItem('vault:supabase-session:example'),'');
+});
+
+test('rejected refresh token clears the stored browser session',async()=>{
+  const storage=new MemoryStorage();
+  storage.setItem('vault:supabase-session:example',JSON.stringify({accessToken:'old',refreshToken:'bad',expiresAt:1}));
+  const auth=new SupabaseRestAuth(config,storage,async()=>new Response(JSON.stringify({message:'invalid refresh token'}),{status:400,headers:{'content-type':'application/json'}}));
+  await assert.rejects(()=>auth.accessToken(),/invalid refresh token/);
+  assert.equal(storage.getItem('vault:supabase-session:example'),'');
+});
+
 test('Supabase REST auth supports Google authorize URL and implicit browser callback adoption',async()=>{
   const storage=new MemoryStorage();
   const auth=new SupabaseRestAuth(config,storage,async()=>{ throw new Error('network not expected'); });
