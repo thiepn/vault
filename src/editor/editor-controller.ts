@@ -25,6 +25,7 @@ export interface EditorStats {
   position: number;
   selectionFrom: number;
   selectionTo: number;
+  documentFingerprint: string;
 }
 
 export interface RemoteCursorMarker {
@@ -105,6 +106,16 @@ function countWords(text: string): number {
   return matches?.length ?? 0;
 }
 
+/** Advisory cursor alignment fingerprint, not a cryptographic integrity primitive. */
+function documentFingerprint(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 function replaceSelection(view: EditorView, insert: string, anchorOffset = insert.length): boolean {
   const selection = view.state.selection.main;
   view.dispatch({
@@ -152,6 +163,7 @@ export class MarkdownEditor {
   private readonly canvas: CanvasEditorBridge | undefined;
   private cachedCharacters = 0;
   private cachedWords = 0;
+  private cachedFingerprint = '00000000';
 
   constructor(readonly host: HTMLElement, options: MarkdownEditorOptions) {
     this.onChange = options.onChange;
@@ -372,6 +384,7 @@ export class MarkdownEditor {
     const text = state.doc.toString();
     this.cachedCharacters = text.length;
     this.cachedWords = countWords(text);
+    this.cachedFingerprint = documentFingerprint(text);
   }
 
   private computeStats(state: EditorState): EditorStats {
@@ -387,6 +400,7 @@ export class MarkdownEditor {
       position: head,
       selectionFrom: state.selection.main.from,
       selectionTo: state.selection.main.to,
+      documentFingerprint: this.cachedFingerprint,
     };
   }
 
