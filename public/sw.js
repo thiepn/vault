@@ -1,11 +1,28 @@
-const CACHE = 'vault-shell-a2-v1';
+const CACHE = 'vault-shell-a2-v2';
+
+async function cacheDocumentShell(cache, root) {
+  const response = await fetch(root, { cache: 'reload' });
+  if (!response.ok) throw new Error('Could not fetch Vault shell.');
+  await cache.put(root, response.clone());
+  const html = await response.text();
+  const urls = new Set([root]);
+  for (const match of html.matchAll(/(?:src|href)=["']([^"'#]+)["']/giu)) {
+    try {
+      const url = new URL(match[1], root);
+      if (url.origin === self.location.origin) urls.add(url.href);
+    } catch {
+      // Ignore malformed/non-network references.
+    }
+  }
+  await Promise.all([...urls].filter(url => url !== root).map(url => cache.add(url)));
+}
 
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     const root = new URL('./', self.registration.scope).href;
+    await cacheDocumentShell(cache, root);
     await Promise.allSettled([
-      cache.add(root),
       cache.add(new URL('manifest.webmanifest', root).href),
       cache.add(new URL('icon.svg', root).href),
     ]);
@@ -31,7 +48,9 @@ self.addEventListener('message', event => {
       .filter(value => {
         try { return new URL(value).origin === self.location.origin; } catch { return false; }
       });
-    await Promise.allSettled(urls.map(url => cache.add(url)));
+    const results = await Promise.allSettled(urls.map(url => cache.add(url)));
+    const failed = results.filter(result => result.status === 'rejected').length;
+    event.ports?.[0]?.postMessage({ type: 'CACHE_URLS_DONE', failed });
   })());
 });
 
@@ -44,11 +63,11 @@ self.addEventListener('fetch', event => {
     event.respondWith((async () => {
       try {
         const response = await fetch(event.request);
-        const cache = await caches.open(CACHE);
-        await cache.put(event.request, response.clone());
+        if (response.ok) await (await caches.open(CACHE)).put(event.request, response.clone());
         return response;
       } catch {
-        const cached = await caches.match(event.request) ?? await caches.match(new URL('./', self.registration.scope).href);
+        const cached = await caches.match(event.request)
+          ?? await caches.match(new URL('./', self.registration.scope).href);
         return cached ?? new Response('Vault is offline and its application shell has not been cached yet.', {
           status: 503,
           headers: { 'Content-Type': 'text/plain; charset=utf-8' },
