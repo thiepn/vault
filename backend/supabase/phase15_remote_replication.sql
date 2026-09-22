@@ -134,7 +134,7 @@ returns boolean
 language sql
 immutable
 set search_path = ''
-as $
+as $fn$
   select p_name is not null
     and char_length(p_name) between 1 and 240
     and octet_length(p_name) <= 240
@@ -142,12 +142,16 @@ as $
     and p_name = btrim(p_name)
     and p_name not in ('.','..')
     and p_name !~ E'[\\x00-\\x1f\\x7f/\\\\<>:"|?*]'
-    and p_name !~ '[. ]
+    and p_name !~ '[. ]$'
+    and p_name !~* '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.|$)';
+$fn$;
+
+create or replace function vault_private.sync_snapshot(p_entry public.vault_sync_entries)
 returns jsonb
 language sql
 stable
 set search_path = ''
-as $$
+as $fn$
   select jsonb_build_object(
     'entryId', p_entry.entry_id::text,
     'vaultId', p_entry.vault_id::text,
@@ -163,7 +167,7 @@ as $$
     'attachmentMimeType', case when p_entry.blob_mime_type is null then null else to_jsonb(p_entry.blob_mime_type) end,
     'attachmentSize', p_entry.blob_size
   );
-$$;
+$fn$;
 
 create or replace function vault_private.raise_sync_conflict(
   p_reason text,
