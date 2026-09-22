@@ -1,4 +1,4 @@
-import { Compartment, EditorState, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
+import { Compartment, EditorState, Prec, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
@@ -52,6 +52,7 @@ export interface MarkdownEditorOptions {
 const readOnlyCompartment = new Compartment();
 const editableCompartment = new Compartment();
 const previewCompartment = new Compartment();
+const collaborationUndoCompartment = new Compartment();
 
 const setRemoteCursorsEffect = StateEffect.define<readonly RemoteCursorMarker[]>();
 
@@ -164,6 +165,8 @@ export class MarkdownEditor {
   private cachedCharacters = 0;
   private cachedWords = 0;
   private cachedFingerprint = '00000000';
+  private collaborativeUndo: (() => boolean) | null = null;
+  private collaborativeRedo: (() => boolean) | null = null;
 
   constructor(readonly host: HTMLElement, options: MarkdownEditorOptions) {
     this.onChange = options.onChange;
@@ -194,6 +197,7 @@ export class MarkdownEditor {
         readOnlyCompartment.of(EditorState.readOnly.of(options.readOnly ?? false)),
         editableCompartment.of(EditorView.editable.of(!(options.readOnly ?? false))),
         previewCompartment.of(this.mode === 'live' ? this.previewExtensions() : []),
+        collaborationUndoCompartment.of(this.collaborationUndoExtension()),
         remoteCursorField,
         this.wiki ? wikiCompletionExtension(this.wiki) : [],
         EditorView.updateListener.of(update => {
@@ -302,6 +306,23 @@ export class MarkdownEditor {
       ...(this.board ? [boardPreviewExtension(this.board)] : []),
       ...(this.canvas ? [canvasPreviewExtension(this.canvas)] : []),
     ];
+  }
+
+  setCollaborativeUndoHandlers(undo: (() => boolean) | null, redo: (() => boolean) | null): void {
+    this.collaborativeUndo = undo;
+    this.collaborativeRedo = redo;
+    this.view.dispatch({
+      effects: collaborationUndoCompartment.reconfigure(this.collaborationUndoExtension()),
+    });
+  }
+
+  private collaborationUndoExtension(): Extension {
+    if (!this.collaborativeUndo && !this.collaborativeRedo) return [];
+    return Prec.highest(keymap.of([
+      { key: 'Mod-z', run: () => this.collaborativeUndo?.() ?? false },
+      { key: 'Mod-Shift-z', run: () => this.collaborativeRedo?.() ?? false },
+      { key: 'Mod-y', run: () => this.collaborativeRedo?.() ?? false },
+    ]));
   }
 
   setRemoteCursors(markers: readonly RemoteCursorMarker[]): void {
