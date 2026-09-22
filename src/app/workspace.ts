@@ -47,11 +47,12 @@ import { SyncReplicaStore } from '../sync/replica-store.js';
 import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
 import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
 import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realtime-wakeup.js';
+import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 17 browser workspace: realtime wakeups on the accepted Phase 1-16 + A1/A2 foundation. */
+/** Phase 18 browser workspace: shared Vault permissions on the accepted Phase 1-17 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -585,7 +586,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (disposed) return;
       // Stop accepting keystrokes while replacing the editor's owning document.
       editor.setReadOnly(true);
-      try { await action(); } finally { editor.setReadOnly(!selected || selected.deletedAt !== null || !saver || editorMode === 'reading'); }
+      try { await action(); } finally { editor.setReadOnly(!selected || selected.deletedAt !== null || !saver || editorMode === 'reading' || !currentVaultWritable()); }
     }).catch(showError);
     return chain.then(() => undefined);
   }
@@ -619,14 +620,26 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   function cloudEmptyStatus(): CloudFoundationStatus {
     return { signedIn:false, identity:null, account:null, device:null, remoteVaults:[] };
   }
+  function currentVaultReadable(): boolean {
+    return !!vault && (vault.mode === 'local' || cloudBindingCanRead(vault.cloud));
+  }
+  function currentVaultWritable(): boolean {
+    return !!vault && (vault.mode === 'local' || cloudBindingCanWrite(vault.cloud));
+  }
+  async function reloadCloudBindingCache(): Promise<void> {
+    const currentId=vault?.id;
+    vaults=await repository.listVaults();
+    if(currentId) vault=vaults.find(item=>item.id===currentId);
+  }
 
   function renderCloudIndicator(): void {
     const button = element<HTMLButtonElement>('[data-action="cloud-open"]');
     const adopted = vault?.mode === 'cloud';
+    const role=adopted ? effectiveCloudRole(vault?.cloud) : null;
     button.dataset.cloudState = adopted ? 'adopted' : 'local';
     button.textContent = adopted ? 'Cloud ✓' : 'Cloud';
     const label = element<HTMLElement>('.storage-scope-label');
-    label.textContent = adopted ? 'Stored locally · cloud adopted' : 'Stored in this browser';
+    label.textContent = adopted ? `Stored locally · cloud · ${role}` : 'Stored in this browser';
   }
 
   function cloudRow(title: string, detail: string, className = ''): HTMLElement {
@@ -669,7 +682,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const syncEligible = !!vault
       && vault.mode === 'cloud'
       && vault.cloud?.accountId === cloudStatus.account.id
-      && vault.cloud.authUserId === cloudStatus.identity.userId;
+      && vault.cloud.authUserId === cloudStatus.identity.userId
+      && cloudBindingCanRead(vault.cloud);
     cloudSyncNow.disabled = !syncEligible || !syncEngine;
     cloudSyncDetail.textContent = syncEligible ? (cachedSyncDetail || 'Ready to synchronize.') : '';
 
@@ -681,7 +695,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudAdopt.disabled = false;
       cloudAdopt.textContent = 'Enable cloud sync for this Vault';
     } else if (syncEligible) {
-      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
+      cloudVaultState.append(cloudRow(vault.name, `Cloud · ${effectiveCloudRole(vault.cloud!)} · sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
       cloudAdopt.disabled = true;
       cloudAdopt.textContent = 'Cloud sync enabled';
     } else {
@@ -699,7 +713,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         const localCopy = vaults.some(local => local.id === remote.id);
         const row = cloudRow(
           remote.name,
-          `${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}${localCopy ? ' · on this device' : ''}`,
+          `${remote.accessRole} · ${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}${localCopy ? ' · on this device' : ''}`,
         );
         if (vault?.id === remote.id) row.classList.add('current');
         if (!localCopy) {
@@ -747,7 +761,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function refreshRealtimeSubscription(): Promise<void> {
     if (!realtimeWake || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
-      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
       realtimeWake?.stop();
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
       return;
@@ -758,7 +772,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function refreshCloudSyncDetail(): Promise<void> {
     if (!vault || vault.mode !== 'cloud' || !vault.cloud || !cloudStatus.identity
-      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
       cachedSyncDetail = '';
       return;
     }
@@ -775,8 +789,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       throw new VaultError('CONFIGURATION', 'Cloud synchronization is unavailable.');
     }
     if (!vault || vault.mode !== 'cloud' || !vault.cloud
-      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
-      throw new VaultError('ACCOUNT_MISMATCH', 'Choose a cloud-enabled Vault owned by this signed-in account.');
+      || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
+      throw new VaultError('PERMISSION', 'Choose a cloud Vault this signed-in account can access.');
     }
     if (saver) await saver.flush();
     const activeVaultId = vault.id;
@@ -806,14 +820,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return summary;
     } finally {
       const eligible = !!vault && !!syncEngine && cloudStatus.signedIn && !!cloudStatus.identity
-        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId;
+        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud);
       cloudSyncNow.disabled = !eligible;
     }
   }
 
   syncCoordinator = new SyncCoordinator({
     eligible: () => !!syncEngine && !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
-      && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId
+      && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud)
       && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus() && !cloudDialog.open,
     key: () => {
       if (!cloudStatus.identity || !vault?.cloud) return null;
@@ -836,6 +850,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     try {
       cloudStatus = await cloud.status();
+      await reloadCloudBindingCache();
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
       await refreshRealtimeSubscription();
       await refreshCloudSyncDetail();
@@ -3449,10 +3464,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     editorHost.hidden = !noteOpen || editorMode === 'reading';
     readingView.hidden = !noteOpen || editorMode !== 'reading';
     attachmentView.hidden = selected?.kind !== 'attachment';
-    element<HTMLElement>('.editor-toolbar').hidden = !noteOpen || editorMode === 'reading' || selected?.deletedAt !== null;
+    element<HTMLElement>('.editor-toolbar').hidden = !noteOpen || editorMode === 'reading' || selected?.deletedAt !== null || !currentVaultWritable();
     editor.setMode(editorMode === 'source' ? 'source' : 'live');
     editor.setLineNumbers(lineNumbers);
-    editor.setReadOnly(!noteOpen || selected?.deletedAt !== null || !saver || editorMode === 'reading');
+    editor.setReadOnly(!noteOpen || selected?.deletedAt !== null || !saver || editorMode === 'reading' || !currentVaultWritable());
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-editor-mode]')) {
       const active = button.dataset.editorMode === editorMode;
       button.setAttribute('aria-pressed', String(active));
@@ -3499,15 +3514,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('.folder-message').textContent = selected.deletedAt ? 'This folder is in Trash. Restore its parent first, then restore the folder.' : 'Folder selected. New files will be created inside this folder.';
     element<HTMLElement>('.breadcrumb').textContent = targetPath;
     element<HTMLElement>('.save-status').textContent = selected.deletedAt ? 'In Trash \u00b7 read only' : 'Saved locally \u00b7 not synced';
-    for (const action of ['rename', 'move', 'duplicate', 'delete']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = selected.deletedAt !== null;
+    for (const action of ['rename', 'move', 'duplicate', 'delete']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = selected.deletedAt !== null || !currentVaultWritable();
     element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null;
     element<HTMLButtonElement>('[data-action="export-draft"]').disabled = selected.kind !== 'markdown';
-    element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null;
+    element<HTMLButtonElement>('[data-action="checkpoint"]').disabled = selected.kind !== 'markdown' || selected.deletedAt !== null || !currentVaultWritable();
     if (selected.kind !== 'markdown') renderPropertiesPanel(null);
     if (selected.kind === 'markdown' && item.content) {
       editor.setText(item.content.text);
       renderPropertiesPanel(item.content.text);
-      if (selected.deletedAt === null) {
+      if (selected.deletedAt === null && currentVaultWritable()) {
         const opened = selected; const draftId = `editor:${crypto.randomUUID()}`;
         saver = new SaveCoordinator(repository, selected.id, { version: selected.localVersion, text: item.content.text }, (state, updated) => {
           if (disposed || selected?.id !== opened.id) return;
