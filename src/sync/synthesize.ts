@@ -41,7 +41,6 @@ export async function synthesizeEntryOperation(input:{
   const blobs:PendingBlobUpload[]=[];
 
   if(!shadow){
-    let attachment:Mutation extends infer _ ? never : never;
     let attachmentRef: import('./protocol.js').RemoteAttachmentRef|undefined;
     if(local.entry.kind==='attachment'){
       const blob=await replica.localAttachmentHash(entryId);
