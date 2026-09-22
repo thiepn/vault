@@ -46,6 +46,8 @@ jobs:
         run: npm run benchmark:realtime-wakeup
       - name: Collaboration presence benchmark
         run: npm run benchmark:collaboration
+      - name: CRDT collaboration benchmark
+        run: npm run benchmark:crdt
       - name: Production build
         run: npm run build
       - name: Install Chromium
