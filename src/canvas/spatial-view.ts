@@ -793,10 +793,12 @@ export class SpatialCanvasView {
       this.renderInspector();
       this.updateStatus(message);
     }
-    this.persistChain = this.persistChain.then(async () => {
-      if (this.destroyed) return;
-      await this.options.persist(cloneCanvasDocument(next));
-    }).catch(error => this.options.onError(error));
+    // Invoke persistence immediately so the owning workspace can enqueue
+    // this exact gesture before a subsequent mode switch/navigation action.
+    // Delaying invocation behind the previous local promise can reorder a
+    // completed drag after "Source" mode and then lose it when this view detaches.
+    const pending = this.options.persist(cloneCanvasDocument(next));
+    this.persistChain = pending.catch(error => this.options.onError(error));
     await this.persistChain;
   }
 
