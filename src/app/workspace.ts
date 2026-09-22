@@ -3703,7 +3703,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           cloudMessage.textContent = 'Signing in…';
           cloudStatus = await cloud.signIn(cloudEmail.value, cloudPassword.value);
           cloudPassword.value = '';
+          await reloadCloudBindingCache();
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+          await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Signed in. Local Vaults remain local until explicitly adopted.');
@@ -3714,7 +3716,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           const result = await cloud.signUp(cloudEmail.value, cloudPassword.value);
           cloudStatus = result.status;
           cloudPassword.value = '';
+          await reloadCloudBindingCache();
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+          await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog(result.result.signedIn ? 'Account created and signed in.' : 'Account created. Check your email to confirm it, then sign in.');
@@ -3726,13 +3730,56 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           window.location.assign(cloud.googleAuthorizeUrl(redirect.toString()));
           return;
         }
+        if (action === 'create-share') {
+          if (!vault || vault.mode!=='cloud' || !vault.cloud || effectiveCloudRole(vault.cloud)!=='owner') {
+            throw new VaultError('PERMISSION','Only the Vault owner can create invitations.');
+          }
+          const role=cloudShareRole.value==='viewer' ? 'viewer' : 'editor';
+          const invite=await cloud.createShareInvite(vault.id,role);
+          cloudShareOutput.value=invite.token;
+          renderCloudDialog(`One-time ${role} invitation created. It expires ${new Date(invite.expiresAt).toLocaleString()}.`);
+          return;
+        }
+        if (action === 'accept-share') {
+          const token=cloudAcceptToken.value.trim();
+          if(!token) throw new VaultError('PROTOCOL','Paste a one-time invitation token first.');
+          const remote=await cloud.acceptShareInvite(token);
+          if (saver) await saver.flush();
+          await clearSelection();
+          vault=await cloud.addRemoteVault(remote);
+          vaults=await repository.listVaults();
+          preferencesVaultId=undefined;
+          knowledgeVaultId=undefined;
+          searchVaultId=undefined;
+          showingTrash=false;
+          filterText='';
+          lastSyncSummary=null;
+          cloudAcceptToken.value='';
+          await setting('lastVault',vault.id);
+          await refresh();
+          await refreshCloudStatus(`Invitation accepted with ${remote.accessRole} access. Downloading canonical history…`);
+          renderCloudIndicator();
+          await runCurrentCloudSync();
+          return;
+        }
+        if (action === 'member-editor' || action === 'member-viewer' || action === 'member-remove') {
+          if(!vault) throw new VaultError('NOT_FOUND','Choose the shared Vault first.');
+          const memberAuthUserId=cloudAction.dataset.memberAuthUserId;
+          if(!memberAuthUserId) throw new VaultError('PROTOCOL','Shared member identity is missing.');
+          const role=action==='member-editor' ? 'editor' : action==='member-viewer' ? 'viewer' : null;
+          await cloud.setMemberRole(vault.id,memberAuthUserId,role);
+          await refreshCloudStatus(role ? `Member changed to ${role}.` : 'Member access revoked.');
+          return;
+        }
         if (action === 'adopt') {
           if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud sync.');
           if (saver) await saver.flush();
           vault = await cloud.adoptVault(vault);
           vaults = await repository.listVaults();
           cloudStatus = await cloud.status();
+          await reloadCloudBindingCache();
           awaitableDevicesCache = await cloud.listDevices();
+          await refreshCloudMembers();
           lastSyncSummary = null;
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
@@ -3763,7 +3810,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await setting('lastVault', vault.id);
           await refresh();
           cloudStatus = await cloud.status();
+          await reloadCloudBindingCache();
           awaitableDevicesCache = await cloud.listDevices();
+          await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
@@ -3776,6 +3825,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await cloud.signOut();
           cloudStatus = cloudEmptyStatus();
           awaitableDevicesCache = [];
+          awaitableMembersCache = [];
           lastSyncSummary = null;
           cachedSyncDetail = '';
           realtimeWake?.stop();
