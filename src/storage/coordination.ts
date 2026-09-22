@@ -8,7 +8,7 @@ export async function withVaultExclusiveLock<T>(name: string, body: () => Promis
   if (!name || name.length > 200) throw new VaultError('CORRUPT', 'Invalid storage lock name.');
   const locks = typeof navigator === 'undefined' ? undefined : (navigator as NavigatorWithLocks).locks;
   if (!locks) return body();
-  return locks.request(\`vault:\${name}\`, { mode: 'exclusive' }, body);
+  return locks.request('vault:' + name, { mode: 'exclusive' }, body);
 }
 
 export type VaultInvalidation =
