@@ -97,6 +97,33 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       return updated;
     });
   }
+  async createCloudReplica(raw: string, binding: CloudVaultBinding): Promise<Vault> {
+    if (binding.remoteVaultId.length === 0) throw new VaultError('PROTOCOL', 'Remote Vault identity is required.');
+    const name = validateName(raw);
+    const createdAt = now();
+    const vault: Vault = {
+      id: binding.remoteVaultId,
+      name,
+      createdAt,
+      updatedAt: createdAt,
+      mode: 'cloud',
+      cloud: binding,
+    };
+    return this.driver.transaction(['vaults'], 'readwrite', async tx => {
+      const existing = await tx.store('vaults').get<Vault>(vault.id);
+      if (existing) {
+        if (existing.mode === 'cloud' && existing.cloud
+          && existing.cloud.accountId === binding.accountId
+          && existing.cloud.authUserId === binding.authUserId
+          && existing.cloud.epoch === binding.epoch
+          && existing.cloud.remoteVaultId === binding.remoteVaultId) return existing;
+        throw new VaultError('COLLISION', 'A different local Vault already uses this cloud Vault UUID.');
+      }
+      await tx.store('vaults').add(vault);
+      return vault;
+    });
+  }
+
   async listEntries(vaultId: VaultId, includeTrash = false): Promise<Entry[]> {
     return this.driver.transaction(['entries'], 'readonly', async tx => {
       const entries = await tx.store('entries').allFromIndex<Entry>('vaultId', vaultId);
