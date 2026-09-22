@@ -3673,7 +3673,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const targetId = selected.id;
     const source = await repository.read(sourceEntryId);
     if (!source.content || source.entry.deletedAt !== null) throw new VaultError('NOT_FOUND', 'The source note is unavailable.');
-    const visible = source.content.text.slice(from, to);
+    const sourceText = sourceEntryId===selected.id && saver ? currentMarkdownText() : source.content.text;
+    const visible = sourceText.slice(from, to);
     if (visible.normalize('NFC').toLocaleLowerCase() !== expectedTerm.normalize('NFC').toLocaleLowerCase()) {
       throw new VaultError('STALE_WRITE', 'The unlinked mention changed. Refresh backlinks before converting it.');
     }
@@ -3682,12 +3683,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const replacement = visible.normalize('NFC').toLocaleLowerCase() === canonical.normalize('NFC').toLocaleLowerCase()
       ? `[[${canonical}]]`
       : `[[${canonical}|${visible}]]`;
-    const text = source.content.text.slice(0, from) + replacement + source.content.text.slice(to);
-    const saved = await repository.saveMarkdown(source.entry.id, text, source.entry.localVersion);
-    await knowledge.upsert(saved, text);
-    const at = entries.findIndex(entry => entry.id === saved.id);
-    if (at >= 0) entries[at] = saved;
-    dirtyIds.add(saved.id);
+    const text = sourceText.slice(0, from) + replacement + sourceText.slice(to);
+    if(sourceEntryId===selected.id && saver){
+      applyCurrentMarkdownText(text);
+      await flushCurrentMarkdownEdit(sourceEntryId);
+      await refreshCurrentMarkdownProjection(sourceEntryId,text);
+    }else{
+      const saved = await repository.saveMarkdown(source.entry.id, text, source.entry.localVersion);
+      await knowledge.upsert(saved, text);
+      const at = entries.findIndex(entry => entry.id === saved.id);
+      if (at >= 0) entries[at] = saved;
+      dirtyIds.add(saved.id);
+    }
     renderTree();
     renderKnowledgePanels();
   }
