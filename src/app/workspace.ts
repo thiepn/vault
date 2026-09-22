@@ -457,6 +457,46 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       },
     );
   }
+
+  if (cloudAuth) {
+    collaboration = new SupabaseCollaborationRealtime(
+      cloudConfig,
+      () => cloudAuth!.accessToken(),
+      {
+        onStatus(status) {
+          collaborationStatus = status;
+          if (!disposed) renderCollaborationState();
+        },
+        onPresence(participants) {
+          collaborationParticipants = [...participants];
+          const activeSessions = new Set(participants.map(participant => participant.sessionId));
+          for (const sessionId of collaborationCursors.keys()) {
+            if (!activeSessions.has(sessionId)) collaborationCursors.delete(sessionId);
+          }
+          if (!disposed) {
+            renderCollaborationState();
+            renderRemoteCollaborationCursors();
+          }
+        },
+        onCursor(cursor) {
+          collaborationCursors.set(cursor.sessionId, cursor);
+          if (!disposed) renderRemoteCollaborationCursors();
+        },
+      },
+    );
+    collaborationCursorCleanupTimer = window.setInterval(() => {
+      if (disposed) return;
+      const cutoff = Date.now() - 8_000;
+      let changed = false;
+      for (const [sessionId, cursor] of collaborationCursors) {
+        if (Date.parse(cursor.at) < cutoff) {
+          collaborationCursors.delete(sessionId);
+          changed = true;
+        }
+      }
+      if (changed) renderRemoteCollaborationCursors();
+    }, 2_000);
+  }
   const migrationDialog = element<HTMLDialogElement>('.migration-dialog');
   const migrationSummary = element<HTMLElement>('.migration-summary');
   const migrationDetails = element<HTMLElement>('.migration-details');
