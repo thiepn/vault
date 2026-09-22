@@ -161,6 +161,14 @@ async function installRealtimeFake(page:Page){
         const [joinRef,ref,topic,event]=frame;
         if(event==='phx_join'){
           queueMicrotask(()=>this.message([joinRef,ref,topic,'phx_reply',{status:'ok',response:{}}]));
+          return;
+        }
+        if(event==='presence' && payload?.event==='track' && typeof topic==='string' && topic.startsWith('realtime:vault-collab:')){
+          const local=payload.payload;
+          queueMicrotask(()=>this.message([
+            null,null,topic,'presence_state',
+            {[local.sessionId]:{metas:[{phx_ref:'self-presence',...local}]}}
+          ]));
         }
       }
       close(){if(this.readyState===3)return;this.readyState=3;this.emit('close',{});}
