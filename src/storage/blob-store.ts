@@ -76,7 +76,7 @@ export class IndexedDbBlobStore implements BlobStore {
   }
 }
 
-interface StorageManagerWithDirectory extends StorageManager {
+interface StorageManagerWithDirectory {
   getDirectory?: () => Promise<FileSystemDirectoryHandle>;
 }
 
