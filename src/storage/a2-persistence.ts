@@ -32,7 +32,7 @@ import { storageDriver, type LocalStorageDriver, type StorageTransaction } from 
 import { createPreferredBlobStore, sha256Hex, type BlobStore } from './blob-store.js';
 import { withVaultExclusiveLock, VaultBroadcast } from './coordination.js';
 
-export const A2_MIGRATION_ID = 'a2-canonical-shadow-v1';
+export const A2_MIGRATION_ID = 'a2-canonical-shadow-v2';
 
 export interface StoredNoteHeader {
   id: NoteId;
@@ -61,7 +61,7 @@ export interface NoteBodyRecord {
 export interface A2MigrationState {
   id: typeof A2_MIGRATION_ID;
   status: 'running' | 'complete' | 'repair-needed';
-  schemaVersion: 1;
+  schemaVersion: 2;
   startedAt: string;
   completedAt: string | null;
   lastError: string | null;
@@ -218,7 +218,7 @@ export class A2Persistence {
       let state: A2MigrationState = {
         id: A2_MIGRATION_ID,
         status: 'running',
-        schemaVersion: 1,
+        schemaVersion: 2,
         startedAt,
         completedAt: null,
         lastError: null,
@@ -232,9 +232,10 @@ export class A2Persistence {
         for (const vault of vaults) await this.syncVaultRecord(vault);
 
         const entries = await this.driver.transaction(['entries'], 'readonly', tx => tx.store('entries').getAll<Entry>());
-        for (const original of entries) {
+        const usedTaskIds = new Set<string>();
+        for (const original of entries.sort((a, b) => a.id.localeCompare(b.id))) {
           if (original.kind === 'markdown' && original.deletedAt === null) {
-            await this.adoptTaskIdentities(original.id, false);
+            await this.adoptTaskIdentities(original.id, false, usedTaskIds);
           }
           await this.syncEntry(original.id);
           state = { ...state, processedEntries: state.processedEntries + 1 };
@@ -375,7 +376,7 @@ export class A2Persistence {
     for (const entry of entries) await this.syncEntry(entry.id);
   }
 
-  async adoptTaskIdentities(entryId: EntryId, rekey: boolean): Promise<Entry> {
+  async adoptTaskIdentities(entryId: EntryId, rekey: boolean, usedIds?: Set<string>): Promise<Entry> {
     const source = await this.driver.transaction(
       ['entries', 'contents'],
       'readonly',
@@ -385,7 +386,7 @@ export class A2Persistence {
 
     const reconciled = rekey
       ? rekeyTaskIdentityMarkers(source.content.text)
-      : ensureTaskIdentityMarkers(source.content.text);
+      : ensureTaskIdentityMarkers(source.content.text, { usedIds });
     if (!reconciled.changed) return source.entry;
 
     return this.driver.transaction(
