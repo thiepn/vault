@@ -936,10 +936,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const role = activeCollaborationRole();
     if (!collaboration || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud) || !role) {
+      await finalizeCrdtBeforeDetach();
       collaboration?.stop();
       collaborationStatus = collaboration?.currentStatus ?? 'idle';
       collaborationPresenceReady = false;
-      stopCrdtSession();
       collaborationParticipants = [];
       collaborationCursors.clear();
       renderCollaborationState();
@@ -1502,6 +1502,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       renderCloudDialog(message);
       syncCoordinator?.wake('startup');
     } catch (error) {
+      try {
+        await finalizeCrdtBeforeDetach();
+      } catch {
+        if (crdtDocument && selected?.kind === 'markdown') {
+          crdtRecoveryText = currentMarkdownText();
+          await persistCrdtRecoveryNow().catch(() => undefined);
+          stopCrdtSession();
+        }
+      }
       cloudStatus = cloudEmptyStatus();
       awaitableDevicesCache = [];
       awaitableMembersCache = [];
@@ -5271,6 +5280,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   return () => {
     disposed = true;
     abort.abort();
+    const recoveryFlush = persistCrdtRecoveryNow().catch(() => undefined);
+    const canonicalFlush = (saver?.flush() ?? Promise.resolve()).catch(() => undefined);
     if (dialog.open) dialog.close('cancel');
     if (cloudDialog.open) cloudDialog.close('close');
     if (migrationDialog.open) migrationDialog.close('cancel');
@@ -5281,7 +5292,6 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     syncCoordinator?.stop();
     realtimeWake?.stop();
     collaboration?.stop();
-    void persistCrdtRecoveryNow().catch(() => undefined);
     stopCrdtSession();
     if (collaborationCursorCleanupTimer !== undefined) window.clearInterval(collaborationCursorCleanupTimer);
     if (crdtRecoveryTimer !== undefined) window.clearTimeout(crdtRecoveryTimer);
@@ -5291,7 +5301,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
     attachmentObjectUrls.clear();
     crossTab.close();
-    a2.close();
-    void (saver?.flush() ?? Promise.resolve()).catch(() => undefined).finally(() => db.close());
+    void Promise.all([recoveryFlush, canonicalFlush]).finally(() => {
+      a2.close();
+      db.close();
+    });
   };
 }
