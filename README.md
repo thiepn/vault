@@ -23,10 +23,11 @@ The repository currently includes browser-certified:
 - **Phase 15 — Remote Replication, Conflict Resolution & Attachment Sync**
 - **Phase 16 — Continuous/Background Sync, Advanced Conflict Resolution & Sync Hardening**
 - **Phase 17 — Realtime Sync Wakeups & Connection Resilience**
+- **Phase 18 — Shared Vaults, Membership & Permission Architecture**
 
 ## Permanent architecture program
 
-The Phase 1–17 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–18 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
@@ -493,7 +494,7 @@ Phase 17 adds a private authenticated Supabase Realtime wake path on top of the 
 
 - every committed `vault_sync_events` row emits a tiny database-originated `sync_event` Broadcast
 - channel topics include both Vault ID and synchronization epoch
-- Realtime RLS permits only the owning authenticated account to receive that Vault/epoch topic
+- Realtime RLS permits authenticated Vault members to receive that Vault/epoch topic; membership revocation is rechecked by canonical sync/Storage authorization
 - the browser validates protocol/topic/payload before waking the Phase 16 coordinator
 - Realtime carries only event identity metadata; Markdown text, paths and attachment bytes stay on the normal RPC/Storage path
 - WebSocket heartbeat, token refresh and bounded reconnect are handled without making Realtime authoritative
@@ -502,6 +503,32 @@ Phase 17 adds a private authenticated Supabase Realtime wake path on top of the 
 This gives near-immediate cross-device convergence while Vault is open without introducing a second data model or live collaborative editing semantics.
 
 See docs/PHASE17_REALTIME_WAKEUPS.md.
+
+### Shared Vaults, Membership & Permission Architecture
+
+Phase 18 adds deliberate multi-user Vault access without replacing Vault's local-first replication model.
+
+Access model:
+
+- every cloud Vault has exactly one canonical **owner**
+- owners can create revocable one-time invitations for **editor** or **viewer** access
+- editors can pull and publish normal Vault mutations through the existing protocol-v1 event stream
+- viewers can pull and navigate the full Vault but cannot create, edit, move, trash, restore, change tasks/properties/boards/Canvas state, or upload attachments
+- role changes are reconciled from the server into each local cloud binding; revoked replicas remain locally readable but cannot synchronize
+- a viewer with pre-existing unsynchronized local writes fails closed instead of discarding or publishing them
+
+Security and data ownership:
+
+- membership is enforced server-side in Postgres RPCs, Storage RLS and Realtime RLS; browser UI state is not the security boundary
+- canonical sync rows and blob paths remain owned by the original Vault owner, so sharing never clones, migrates or re-owns history
+- collaborator actor/account IDs are recorded separately for audit provenance
+- owner/editor writes still require an active DeviceId belonging to the authenticated actor
+- invitation secrets are random one-time tokens; only their SHA-256 hashes are stored server-side
+- removing a member blocks subsequent RPC/Storage access without deleting the member's already-downloaded local replica
+
+Phase 18 intentionally does **not** add CRDT editing, cursor presence, simultaneous character-level collaboration or guaranteed synchronization while the browser/PWA is terminated. Realtime remains only a wakeup accelerator; the ordered event log and conflict engine remain authoritative.
+
+See `docs/PHASE_18_ACCEPTANCE.md` and `docs/PHASE_18_RESULTS.md`.
 
 ## Canonical data
 
@@ -532,7 +559,7 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 ## Not implemented yet
 
-- multi-user shared Vault permissions, live co-editing or presence
+- live co-editing, cursor presence or CRDT/OT collaboration
 - guaranteed closed-app service-worker replication
 - semantic/block-aware interactive conflict resolution
 
@@ -560,6 +587,6 @@ CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidia
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.17.0-phase17**
+- Current package version: **0.18.0-phase18**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
