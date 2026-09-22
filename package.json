@@ -15,7 +15,8 @@
     "test:e2e": "playwright test",
     "preview": "vite preview --host 127.0.0.1",
     "benchmark:search": "npm run build:core && node scripts/benchmark-phase4.mjs",
-    "benchmark:graph": "npm run build:core && node scripts/benchmark-phase10.mjs"
+    "benchmark:graph": "npm run build:core && node scripts/benchmark-phase10.mjs",
+    "benchmark:board": "npm run build:core && node scripts/benchmark-phase11.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
