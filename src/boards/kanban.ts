@@ -257,7 +257,7 @@ export function runBoard(
     plan,
     columns,
     total: result.total,
-    shown: cards.length,
+    shown: columns.reduce((sum, column) => sum + column.cards.length, 0),
     truncated: result.truncated,
   };
 }
