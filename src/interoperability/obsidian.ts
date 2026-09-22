@@ -268,6 +268,22 @@ function objectId(raw: unknown, prefix: string, used: Set<string>): string {
   return candidate;
 }
 
+function normalizeRelativePath(base: string, raw: string): string | null {
+  const absolute = raw.startsWith('/');
+  if (absolute) return null;
+  const parts = base ? base.split('/').filter(Boolean) : [];
+  for (const segment of raw.replace(/\\/gu, '/').split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (!parts.length) return null;
+      parts.pop();
+      continue;
+    }
+    parts.push(segment);
+  }
+  return parts.join('/');
+}
+
 function resolveMappedFile(
   raw: string,
   sourcePath: string,
@@ -276,10 +292,12 @@ function resolveMappedFile(
 ): string | null {
   const query = raw.replace(/^\.\//u, '').replace(/\\/gu, '/');
   const sourceDirectory = parentPath(sourcePath);
+  const relative = normalizeRelativePath(sourceDirectory, query);
   const candidates = [
     query,
-    sourceDirectory ? joinPath(sourceDirectory, query) : query,
-  ];
+    ...(relative && relative !== query ? [relative] : []),
+    sourceDirectory && !query.startsWith('.') ? joinPath(sourceDirectory, query) : null,
+  ].filter((candidate): candidate is string => !!candidate);
   for (const candidate of candidates) {
     const exact = sourceToTarget.get(pathKey(candidate));
     if (exact) return exact;
