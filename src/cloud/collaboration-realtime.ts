@@ -28,6 +28,7 @@ export interface CollaborationCursor {
   position:number;
   from:number;
   to:number;
+  documentFingerprint:string;
   at:string;
 }
 
@@ -114,7 +115,8 @@ export function validateCollaborationCursor(value:unknown,expectedVaultId:string
     || typeof row.position!=='number' || !Number.isSafeInteger(row.position) || row.position<0
     || typeof row.from!=='number' || !Number.isSafeInteger(row.from) || row.from<0
     || typeof row.to!=='number' || !Number.isSafeInteger(row.to) || row.to<row.from
-    || row.position<row.from || row.position>row.to) return null;
+    || row.position<row.from || row.position>row.to
+    || typeof row.documentFingerprint!=='string' || !/^[0-9a-f]{8}$/u.test(row.documentFingerprint)) return null;
   const at=timestamp(row.at);
   if(!at) return null;
   return {
@@ -127,6 +129,7 @@ export function validateCollaborationCursor(value:unknown,expectedVaultId:string
     position:row.position,
     from:row.from,
     to:row.to,
+    documentFingerprint:row.documentFingerprint,
     at,
   };
 }
@@ -207,6 +210,7 @@ export class SupabaseCollaborationRealtime {
       position:cursor.position,
       from:cursor.from,
       to:cursor.to,
+      documentFingerprint:cursor.documentFingerprint,
       at:new Date().toISOString(),
     },desired.vaultId);
     if(!parsed) return;
