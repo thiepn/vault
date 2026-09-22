@@ -361,9 +361,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 17 adds private authenticated Realtime wakeups so remote commits trigger the existing pull/merge/push protocol immediately while Vault is open. Polling, reconnect/focus wakeups and Sync now remain as fallbacks. Search, tasks, calendar, queries, graph and boards are rebuilt locally rather than uploaded.</p>
+          <p class="cloud-phase-note">Phase 18 adds shared Vault ownership, editor/viewer roles and revocable one-time invitations. Canonical Markdown and attachments still synchronize through the existing pull/merge/push protocol; this is not live co-editing or presence.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
+          <div class="cloud-section-heading">SHARING</div>
+          <div class="cloud-share-accept"><input class="cloud-accept-token" type="text" autocomplete="off" spellcheck="false" placeholder="Paste one-time invitation token" aria-label="Share invitation token" /><button type="button" data-cloud-action="accept-share">Accept invitation</button></div>
+          <div class="cloud-owner-share" hidden>
+            <div class="cloud-share-create"><select class="cloud-share-role" aria-label="Invitation role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select><button type="button" data-cloud-action="create-share">Create one-time invite</button></div>
+            <textarea class="cloud-share-output" rows="2" readonly spellcheck="false" aria-label="Generated one-time invitation token" placeholder="Generated token appears here"></textarea>
+            <div class="cloud-members"></div>
+          </div>
           <div class="cloud-section-heading">DEVICES</div>
           <div class="cloud-devices"></div>
           <button type="button" data-cloud-action="sign-out">Sign out on this device</button>
@@ -415,6 +422,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudSyncNow = element<HTMLButtonElement>('.cloud-sync-now');
   const cloudSyncDetail = element<HTMLElement>('.cloud-sync-detail');
   const cloudRemoteVaults = element<HTMLElement>('.cloud-remote-vaults');
+  const cloudOwnerShare = element<HTMLElement>('.cloud-owner-share');
+  const cloudShareRole = element<HTMLSelectElement>('.cloud-share-role');
+  const cloudShareOutput = element<HTMLTextAreaElement>('.cloud-share-output');
+  const cloudAcceptToken = element<HTMLInputElement>('.cloud-accept-token');
+  const cloudMembers = element<HTMLElement>('.cloud-members');
   const cloudDevices = element<HTMLElement>('.cloud-devices');
 
   if (cloudAuth) {
@@ -660,6 +672,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     cloudSignedOut.hidden = cloudStatus.signedIn;
     cloudSignedIn.hidden = !cloudStatus.signedIn;
     cloudRemoteVaults.replaceChildren();
+    cloudMembers.replaceChildren();
     cloudDevices.replaceChildren();
 
     if (!cloudStatus.signedIn || !cloudStatus.identity || !cloudStatus.account || !cloudStatus.device) {
@@ -668,6 +681,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudAdopt.disabled = true;
       cloudSyncNow.disabled = true;
       cloudSyncDetail.textContent = '';
+      cloudOwnerShare.hidden = true;
       return;
     }
 
@@ -679,6 +693,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     );
 
     cloudVaultState.replaceChildren();
+    const activeRole=vault?.mode==='cloud' && vault.cloud ? effectiveCloudRole(vault.cloud) : null;
+    cloudOwnerShare.hidden = activeRole !== 'owner';
     const syncEligible = !!vault
       && vault.mode === 'cloud'
       && vault.cloud?.accountId === cloudStatus.account.id
@@ -728,6 +744,32 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
     }
 
+    if(activeRole==='owner'){
+      for(const member of awaitableMembersCache){
+        const row=cloudRow(
+          member.role==='owner' ? 'Owner' : `Member ${member.authUserId.slice(0,8)}…`,
+          `${member.role} · account ${member.accountId.slice(0,8)}…`,
+          member.role==='owner' ? 'current' : '',
+        );
+        if(member.role!=='owner'){
+          if(member.role!=='editor'){
+            const edit=document.createElement('button');
+            edit.type='button'; edit.dataset.cloudAction='member-editor'; edit.dataset.memberAuthUserId=member.authUserId; edit.textContent='Editor';
+            row.append(edit);
+          }
+          if(member.role!=='viewer'){
+            const view=document.createElement('button');
+            view.type='button'; view.dataset.cloudAction='member-viewer'; view.dataset.memberAuthUserId=member.authUserId; view.textContent='Viewer';
+            row.append(view);
+          }
+          const remove=document.createElement('button');
+          remove.type='button'; remove.dataset.cloudAction='member-remove'; remove.dataset.memberAuthUserId=member.authUserId; remove.textContent='Remove';
+          row.append(remove);
+        }
+        cloudMembers.append(row);
+      }
+    }
+
     for (const device of cloudStatus.device ? awaitableDevicesCache : []) {
       const row = cloudRow(
         device.label,
@@ -747,6 +789,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   let awaitableDevicesCache: Awaited<ReturnType<CloudFoundation['listDevices']>> = [];
+  let awaitableMembersCache: Awaited<ReturnType<CloudFoundation['listMembers']>> = [];
   let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
   let cachedSyncDetail = '';
 
@@ -768,6 +811,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     await realtimeWake.subscribe(vault.id, vault.cloud.epoch);
     realtimeStatus = realtimeWake.currentStatus;
+  }
+
+  async function refreshCloudMembers(): Promise<void> {
+    awaitableMembersCache=[];
+    if(!cloud || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud) return;
+    if(vault.cloud.authUserId!==cloudStatus.identity.userId || effectiveCloudRole(vault.cloud)!=='owner') return;
+    awaitableMembersCache=await cloud.listMembers(vault.id);
   }
 
   async function refreshCloudSyncDetail(): Promise<void> {
@@ -852,6 +902,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudStatus = await cloud.status();
       await reloadCloudBindingCache();
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+      await refreshCloudMembers();
       await refreshRealtimeSubscription();
       await refreshCloudSyncDetail();
       renderCloudDialog(message);
@@ -859,6 +910,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     } catch (error) {
       cloudStatus = cloudEmptyStatus();
       awaitableDevicesCache = [];
+      awaitableMembersCache = [];
       realtimeWake?.stop();
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
       renderCloudDialog(error instanceof Error ? error.message : 'Cloud status could not be loaded.');
