@@ -480,6 +480,113 @@ CI includes a 10,000-source-file migration-planning benchmark containing 8,000 M
 
 The benchmark certifies planning/conversion independently from browser IndexedDB write throughput.
 
+## Phase 14 — Cloud account, device and sync-foundation boundary
+
+Phase 14 introduces remote identity/metadata, but local storage remains canonical ownership.
+
+```text
+browser local Vault
+      │
+      ├── explicit user adoption only
+      ↓
+provider-independent AccountId
+      ↓
+stable account-scoped DeviceId
+      ↓
+remote Cloud Vault registry
+      ├── same Vault UUID
+      ├── immutable sync epoch
+      └── protocol version 1
+
+local writes
+      ↓
+immutable local outbox + monotonic cursor state
+      ↓
+(Phase 15 remote operation replication)
+```
+
+### Authentication boundary
+
+Vault uses the public Supabase project origin/publishable key in the browser. Authentication is performed through Supabase Auth REST endpoints with the user's bearer session; no service-role/secret key is shipped to the client.
+
+Implemented browser auth behavior includes:
+
+- email/password sign-in
+- account creation
+- access-token refresh using a durable refresh token
+- user identity lookup
+- local-scope sign-out
+- Google social-login authorize/callback plumbing for the client-only browser flow
+
+Stored sessions are project-scoped. Expired-session refresh failures caused by offline/network/server errors do not erase the stored refresh token. An explicit invalid/rejected refresh token does clear the session. Local sign-out clears browser credentials even when remote logout cannot be reached.
+
+Phase 14 does not claim end-to-end encryption and does not store user passwords itself.
+
+### Account identity
+
+Supabase Auth user IDs are authentication-provider identities, not permanent Vault domain identity.
+
+`vault_accounts` maps the current Auth user to a provider-independent AccountId. Cloud Vault bindings store both IDs so account/provider mismatches fail closed.
+
+### Device identity
+
+Each browser installation receives one random stable DeviceId in localStorage. The label is intentionally coarse and derived only from broad platform/user-agent categories.
+
+The server primary identity is `(account_id, device_id)`, allowing one browser installation to sign out and later use a different account without colliding with another account's device row.
+
+Device revocation is irreversible through normal authenticated updates. The active device cannot revoke itself through the Vault UI; local sign-out is used instead.
+
+### Explicit Vault adoption
+
+Login never changes a Vault's local/cloud mode.
+
+A Vault moves from `local` to `cloud` only through an explicit user action. Adoption:
+
+1. requires a signed-in account and registered non-revoked device
+2. registers the existing Vault UUID remotely
+3. receives an immutable remote epoch
+4. initializes the local account/epoch cursor at `0`
+5. writes a `CloudVaultBinding` into the existing local Vault record
+
+Re-adoption with the same binding is idempotent. Attempted account/epoch/device rebinding fails as an account/protocol mismatch.
+
+Signing out never clears the local Vault or its cloud binding.
+
+### Supabase/RLS backend
+
+Phase 14 deploys three public RLS tables:
+
+- `vault_accounts`
+- `vault_cloud_devices`
+- `vault_cloud_vaults`
+
+Anonymous access is revoked. Authenticated policies enforce `auth.uid() = auth_user_id` for every allowed select/insert/update path. Composite foreign keys bind device/Vault rows to the provider-independent account mapping.
+
+Private trigger functions guard immutable identity fields, synchronization epochs/protocol versions and irreversible revocation/disable transitions.
+
+### Local replication foundation
+
+`SyncLocalState` uses the existing IndexedDB `outbox` and `syncCursors` stores.
+
+Outbox records contain the exact canonical operation wire bytes and SHA-256 digest. Enqueue is idempotent for identical bytes and rejects operation-ID reuse with different bytes. Pending operations are account-bound.
+
+Cursor state is keyed by Vault UUID and additionally bound to authenticated owner ID and remote epoch. Cursors are decimal PostgreSQL-bigint-compatible strings and can never move backward.
+
+The outbox/cursor layer does not upload content in Phase 14; it exists so Phase 15 can implement pull-before-push remote replication without changing local identity semantics.
+
+### Failure boundary
+
+- network/auth failure cannot block local editing
+- opening Vault does not require a cloud request
+- signing in does not enqueue or upload existing local content
+- signing out leaves local canonical data intact
+- account, owner or epoch mismatch fails closed before replication
+- full remote note/attachment content replication and conflict application remain Phase 15
+
+### Backend implementation source
+
+The deployable Supabase schema is retained in `backend/supabase/phase14_cloud_foundation.sql`. The live THIEPN Core project has the Phase 14 tables, RLS policies, immutability triggers and foreign-key covering indexes applied.
+
 ## Knowledge index
 
 The derived knowledge record stores aliases, headings, block IDs, links, tags, properties and parsed task projections. Its version advances when parser semantics change; it remains reconstructable from Markdown.
@@ -508,4 +615,4 @@ Paths are not permanent identity. Files/folders use immutable UUIDs.
 
 ## Sync boundary
 
-Cloud sync remains inactive. Future sync must synchronize canonical Markdown, stable entry metadata and attachment payloads, not derived task/search/calendar/query projections.
+Phase 14 activates cloud account/device/Vault identity and local replication state, but remote note/attachment content replication remains inactive. Phase 15 must synchronize canonical Markdown, stable entry metadata and attachment payloads—not derived task/search/calendar/query/graph/board projections—and must preserve the explicit account/epoch/outbox/cursor boundaries above.
