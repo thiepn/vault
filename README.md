@@ -24,10 +24,11 @@ The repository currently includes browser-certified:
 - **Phase 16 — Continuous/Background Sync, Advanced Conflict Resolution & Sync Hardening**
 - **Phase 17 — Realtime Sync Wakeups & Connection Resilience**
 - **Phase 18 — Shared Vaults, Membership & Permission Architecture**
+- **Phase 19 — Live Presence & Collaborative Session Foundation**
 
 ## Permanent architecture program
 
-The Phase 1–18 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–19 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
@@ -530,6 +531,25 @@ Phase 18 intentionally does **not** add CRDT editing, cursor presence, simultane
 
 See `docs/PHASE_18_ACCEPTANCE.md` and `docs/PHASE_18_RESULTS.md`.
 
+### Live Presence & Collaborative Session Foundation
+
+Phase 19 adds private, ephemeral collaboration awareness without changing canonical note ownership or synchronization.
+
+- active Vault members join a separate private `vault-collab:<vault>:<epoch>` Realtime channel
+- Supabase Presence carries only slow-changing session state: authenticated user/device/session UUIDs, membership role, active EntryId and editor mode
+- cursor/selection offsets use throttled Broadcast rather than Presence, so cursor movement does not flood Presence synchronization
+- no email address, note title/path, Markdown text, selection text or attachment bytes are sent through the collaboration channel
+- remote cursor decorations render only while both sessions are on the same note **and** their lightweight Markdown fingerprints match
+- cursor decorations expire locally after 8 seconds and disappear immediately after local text diverges
+- owner, editor and viewer members may publish ephemeral presence/cursor metadata; Phase 18 still controls all canonical write permissions
+- the existing `vault:<vault>:<epoch>` Realtime sync-wakeup channel remains separate and authoritative content continues to move only through the ordered sync RPC/Storage path
+
+Presence metadata is advisory UI state, never an authorization source. Realtime RLS authorizes the private channel from server-side active membership. Because Realtime authorization is cached for a live channel connection, membership revocation becomes effective for the collaboration channel on reauthorization/reconnect; Vault's canonical sync/Storage authorization remains independently enforced and does not rely on Presence.
+
+Phase 19 does **not** implement CRDT/OT text merging, simultaneous character-level editing, shared undo history or conflict-free live document mutation.
+
+See `docs/PHASE19_COLLABORATION_PRESENCE.md` and `docs/PHASE_19_ACCEPTANCE.md`.
+
 ## Canonical data
 
 ```text
@@ -559,7 +579,7 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 ## Not implemented yet
 
-- live co-editing, cursor presence or CRDT/OT collaboration
+- live CRDT/OT text co-editing and shared undo/operation history
 - guaranteed closed-app service-worker replication
 - semantic/block-aware interactive conflict resolution
 
@@ -576,17 +596,18 @@ npm run benchmark:sync-foundation
 npm run benchmark:replication
 npm run benchmark:sync-hardening
 npm run benchmark:realtime-wakeup
+npm run benchmark:collaboration
 npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration/sync-foundation/remote-replication performance gates, production Vite build and real Chromium desktop/mobile acceptance.
+CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration/sync/realtime/collaboration performance gates, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.18.0-phase18**
+- Current package version: **0.19.0-phase19**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.

@@ -44,6 +44,8 @@ jobs:
         run: npm run benchmark:sync-hardening
       - name: Realtime wakeup benchmark
         run: npm run benchmark:realtime-wakeup
+      - name: Collaboration presence benchmark
+        run: npm run benchmark:collaboration
       - name: Production build
         run: npm run build
       - name: Install Chromium

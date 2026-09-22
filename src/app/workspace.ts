@@ -11,7 +11,7 @@ import { readZipStore, vaultFiles, zipStore } from '../services/export.js';
 import { fullVaultArchiveFiles, restoreFullVaultArchive, validateFullVaultArchiveFiles } from '../services/a2-archive.js';
 import { CommandRegistry } from '../commands/registry.js';
 import { isFileSort, trashRows, treeRows, type FileSort } from '../services/file-tree.js';
-import { MarkdownEditor, type EditorStats, type MarkdownCommand } from '../editor/editor-controller.js';
+import { MarkdownEditor, type EditorStats, type MarkdownCommand, type RemoteCursorMarker } from '../editor/editor-controller.js';
 import { renderMarkdown } from '../editor/renderer.js';
 import { KnowledgeIndexService } from '../knowledge/index-service.js';
 import { parseKnowledge } from '../knowledge/parser.js';
@@ -48,11 +48,12 @@ import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
 import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
 import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realtime-wakeup.js';
 import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
+import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 18 browser workspace: shared Vault permissions on the accepted Phase 1-17 + A1/A2 foundation. */
+/** Phase 19 browser workspace: ephemeral collaboration presence on the accepted Phase 1-18 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -69,6 +70,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let syncCoordinator: SyncCoordinator | null = null;
   let realtimeWake: SupabaseRealtimeWakeup | null = null;
   let realtimeStatus: RealtimeWakeStatus = 'idle';
+  let collaboration: SupabaseCollaborationRealtime | null = null;
+  let collaborationStatus: CollaborationStatus = 'idle';
+  let collaborationParticipants: readonly CollaborationPresence[] = [];
+  const collaborationCursors = new Map<string, CollaborationCursor>();
+  let collaborationCursorCleanupTimer: number | undefined;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
@@ -154,7 +160,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const pendingCursorOffsets = new Map<EntryId, number>();
   let editorMode: EditorMode = 'live';
   let lineNumbers = false;
-  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0 };
+  let editorStats: EditorStats = { characters: 0, words: 0, line: 1, column: 1, selectedWords: 0, position: 0, selectionFrom: 0, selectionTo: 0, documentFingerprint: '00000000' };
   let renderGeneration = 0;
   let propertyRenderTimer: number | undefined;
   let templatesFolderId: EntryId | null = null;
@@ -201,7 +207,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 15 · Remote sync</span>
+        <span class="stage">Phase 19 · Presence</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -273,7 +279,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="sidebar-bottom"><span class="local-dot"></span><span class="storage-scope-label">Stored in this browser</span></div>
       </aside>
       <main class="main" aria-label="Markdown workspace">
-        <div class="document-bar"><div class="breadcrumb">No file selected</div><div class="daily-document-nav" hidden><button type="button" data-daily-nav="-1" aria-label="Previous daily note">‹</button><button type="button" data-daily-nav="0">Today</button><button type="button" data-daily-nav="1" aria-label="Next daily note">›</button></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-editor-mode="source" aria-pressed="false">Source</button><button type="button" data-editor-mode="live" aria-pressed="true">Live Preview</button><button type="button" data-editor-mode="reading" aria-pressed="false">Reading</button></div></div>
+        <div class="document-bar"><div class="breadcrumb">No file selected</div><div class="daily-document-nav" hidden><button type="button" data-daily-nav="-1" aria-label="Previous daily note">‹</button><button type="button" data-daily-nav="0">Today</button><button type="button" data-daily-nav="1" aria-label="Next daily note">›</button></div><div class="collaboration-presence" hidden aria-label="Active collaborators"></div><div class="mode-switch" role="group" aria-label="Editor mode"><button type="button" data-editor-mode="source" aria-pressed="false">Source</button><button type="button" data-editor-mode="live" aria-pressed="true">Live Preview</button><button type="button" data-editor-mode="reading" aria-pressed="false">Reading</button></div></div>
         <div class="actions" aria-label="File actions">
           <button data-action="rename" disabled>Rename</button><button data-action="move" disabled>Move</button><button data-action="duplicate" disabled>Duplicate</button>
           <button data-action="delete" disabled>Move to Trash</button><button data-action="restore" hidden>Restore</button>
@@ -335,7 +341,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB · schema 4</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="collaboration-status" hidden></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB · schema 4</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
@@ -361,7 +367,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 18 adds shared Vault ownership, editor/viewer roles and revocable one-time invitations. Canonical Markdown and attachments still synchronize through the existing pull/merge/push protocol; this is not live co-editing or presence.</p>
+          <p class="cloud-phase-note">Phase 19 adds private member presence and snapshot-safe collaborator cursors. Presence and cursor metadata are ephemeral; canonical Markdown and attachments still use the existing sync/conflict protocol. Live text co-editing is not enabled.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
           <div class="cloud-section-heading">SHARING</div>
@@ -428,6 +434,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudAcceptToken = element<HTMLInputElement>('.cloud-accept-token');
   const cloudMembers = element<HTMLElement>('.cloud-members');
   const cloudDevices = element<HTMLElement>('.cloud-devices');
+  const collaborationPresence = element<HTMLElement>('.collaboration-presence');
+  const collaborationStatusElement = element<HTMLElement>('.collaboration-status');
 
   if (cloudAuth) {
     realtimeWake = new SupabaseRealtimeWakeup(
@@ -448,6 +456,46 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         },
       },
     );
+  }
+
+  if (cloudAuth) {
+    collaboration = new SupabaseCollaborationRealtime(
+      cloudConfig,
+      () => cloudAuth!.accessToken(),
+      {
+        onStatus(status) {
+          collaborationStatus = status;
+          if (!disposed) renderCollaborationState();
+        },
+        onPresence(participants) {
+          collaborationParticipants = [...participants];
+          const activeSessions = new Set(participants.map(participant => participant.sessionId));
+          for (const sessionId of collaborationCursors.keys()) {
+            if (!activeSessions.has(sessionId)) collaborationCursors.delete(sessionId);
+          }
+          if (!disposed) {
+            renderCollaborationState();
+            renderRemoteCollaborationCursors();
+          }
+        },
+        onCursor(cursor) {
+          collaborationCursors.set(cursor.sessionId, cursor);
+          if (!disposed) renderRemoteCollaborationCursors();
+        },
+      },
+    );
+    collaborationCursorCleanupTimer = window.setInterval(() => {
+      if (disposed) return;
+      const cutoff = Date.now() - 8_000;
+      let changed = false;
+      for (const [sessionId, cursor] of collaborationCursors) {
+        if (Date.parse(cursor.at) < cutoff) {
+          collaborationCursors.delete(sessionId);
+          changed = true;
+        }
+      }
+      if (changed) renderRemoteCollaborationCursors();
+    }, 2_000);
   }
   const migrationDialog = element<HTMLDialogElement>('.migration-dialog');
   const migrationSummary = element<HTMLElement>('.migration-summary');
@@ -585,7 +633,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       updateCounts();
       schedulePropertiesRender(canonicalText);
     },
-    onStats(stats) { editorStats = stats; updateCounts(); highlightCurrentOutline(); },
+    onStats(stats) {
+      const fingerprintChanged = editorStats.documentFingerprint !== stats.documentFingerprint;
+      editorStats = stats;
+      updateCounts();
+      highlightCurrentOutline();
+      if (fingerprintChanged) queueMicrotask(() => {
+        if (!disposed) renderRemoteCollaborationCursors();
+      });
+      if (selected?.kind === 'markdown' && editorMode !== 'reading' && collaborationStatus === 'connected') {
+        collaboration?.publishCursor({
+          entryId: selected.id,
+          position: stats.position,
+          from: stats.selectionFrom,
+          to: stats.selectionTo,
+          documentFingerprint: stats.documentFingerprint,
+        });
+      }
+    },
   });
 
   function showError(error: unknown): void {
@@ -665,6 +730,138 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await syncEditorSurface();
       renderTasks();
     }
+  }
+
+  function activeCollaborationRole(): CollaborationRole | null {
+    if (!vault || vault.mode !== 'cloud' || !vault.cloud) return null;
+    const role = effectiveCloudRole(vault.cloud);
+    return role === 'owner' || role === 'editor' || role === 'viewer' ? role : null;
+  }
+
+  function currentCollaborationMode(): CollaborationMode {
+    if (!selected) return 'none';
+    if (selected.kind === 'markdown') return editorMode;
+    if (selected.kind === 'attachment') return 'attachment';
+    return 'folder';
+  }
+
+  function collaborationStatusLabel(): string {
+    if (collaborationStatus === 'connected') return 'Presence connected';
+    if (collaborationStatus === 'connecting') return 'Presence connecting';
+    if (collaborationStatus === 'retrying') return 'Presence reconnecting';
+    if (collaborationStatus === 'unauthenticated') return 'Presence signed out';
+    return 'Presence idle';
+  }
+
+  function renderCollaborationState(): void {
+    const eligible = !!collaboration
+      && !!vault?.cloud
+      && currentVaultReadable()
+      && !!activeCollaborationRole()
+      && cloudStatus.signedIn
+      && cloudStatus.identity?.userId === vault.cloud.authUserId;
+
+    if (!eligible) {
+      collaborationPresence.replaceChildren();
+      collaborationPresence.hidden = true;
+      collaborationStatusElement.hidden = true;
+      editor.setRemoteCursors([]);
+      return;
+    }
+
+    const others = collaborationParticipants.filter(participant => participant.sessionId !== storageSessionId);
+    const sameEntry = selected
+      ? others.filter(participant => participant.entryId === selected!.id)
+      : [];
+
+    const unique = new Map<string, { participant: CollaborationPresence; sessions: number }>();
+    for (const participant of sameEntry) {
+      const prior = unique.get(participant.userId);
+      if (prior) prior.sessions++;
+      else unique.set(participant.userId, { participant, sessions: 1 });
+    }
+
+    collaborationPresence.replaceChildren();
+    for (const { participant, sessions } of [...unique.values()].slice(0, 4)) {
+      const chip = document.createElement('span');
+      chip.className = 'collaboration-chip';
+      const role = participant.role[0]!.toUpperCase() + participant.role.slice(1);
+      chip.textContent = `${role} · ${participant.userId.slice(0, 4)}`;
+      chip.title = `${role} collaborator · ${sessions} active session${sessions === 1 ? '' : 's'} on this item`;
+      collaborationPresence.append(chip);
+    }
+    if (unique.size > 4) {
+      const more = document.createElement('span');
+      more.className = 'collaboration-chip collaboration-chip-more';
+      more.textContent = `+${unique.size - 4}`;
+      more.title = `${unique.size - 4} more collaborators on this item`;
+      collaborationPresence.append(more);
+    }
+    collaborationPresence.hidden = unique.size === 0;
+
+    collaborationStatusElement.hidden = false;
+    const connectedOthers = new Set(others.map(participant => participant.userId)).size;
+    collaborationStatusElement.textContent = `${collaborationStatusLabel()}${connectedOthers ? ` · ${connectedOthers} other${connectedOthers === 1 ? '' : 's'} online` : ''}`;
+  }
+
+  function clearCollaborationCursors(): void {
+    collaborationCursors.clear();
+    editor.setRemoteCursors([]);
+  }
+
+  function renderRemoteCollaborationCursors(): void {
+    if (!selected || selected.kind !== 'markdown' || editorMode === 'reading' || collaborationStatus !== 'connected') {
+      editor.setRemoteCursors([]);
+      return;
+    }
+    const participants = new Map(collaborationParticipants.map(participant => [participant.sessionId, participant]));
+    const cutoff = Date.now() - 8_000;
+    const markers: RemoteCursorMarker[] = [];
+    for (const cursor of collaborationCursors.values()) {
+      if (cursor.entryId !== selected.id || cursor.documentFingerprint !== editorStats.documentFingerprint || Date.parse(cursor.at) < cutoff) continue;
+      const participant = participants.get(cursor.sessionId);
+      if (!participant
+        || participant.sessionId === storageSessionId
+        || participant.entryId !== selected.id
+        || participant.userId !== cursor.userId
+        || participant.deviceId !== cursor.deviceId
+        || participant.mode === 'reading') continue;
+      const role = participant.role[0]!.toUpperCase() + participant.role.slice(1);
+      markers.push({
+        id: cursor.sessionId,
+        position: cursor.position,
+        from: cursor.from,
+        to: cursor.to,
+        label: `${role} ${participant.userId.slice(0, 4)}`,
+      });
+    }
+    editor.setRemoteCursors(markers);
+  }
+
+  async function refreshCollaborationSubscription(): Promise<void> {
+    const role = activeCollaborationRole();
+    if (!collaboration || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
+      || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud) || !role) {
+      collaboration?.stop();
+      collaborationStatus = collaboration?.currentStatus ?? 'idle';
+      collaborationParticipants = [];
+      collaborationCursors.clear();
+      renderCollaborationState();
+      return;
+    }
+    await collaboration.subscribe({
+      vaultId: vault.id,
+      epoch: vault.cloud.epoch,
+      userId: cloudStatus.identity.userId,
+      deviceId: vault.cloud.deviceId,
+      sessionId: storageSessionId,
+      role,
+      entryId: selected?.id ?? null,
+      mode: currentCollaborationMode(),
+    });
+    collaborationStatus = collaboration.currentStatus;
+    renderCollaborationState();
+    renderRemoteCollaborationCursors();
   }
 
   function renderCloudIndicator(): void {
@@ -868,6 +1065,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudStatus = await cloud.status();
       await reloadCloudBindingCache();
       await refreshRealtimeSubscription();
+      await refreshCollaborationSubscription();
     }
     if (!cloudStatus.signedIn || !cloudStatus.identity || !vault || vault.mode !== 'cloud' || !vault.cloud
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
@@ -935,6 +1133,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
       await refreshCloudMembers();
       await refreshRealtimeSubscription();
+      await refreshCollaborationSubscription();
       await refreshCloudSyncDetail();
       renderCloudDialog(message);
       syncCoordinator?.wake('startup');
@@ -944,6 +1143,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       awaitableMembersCache = [];
       realtimeWake?.stop();
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
+      collaboration?.stop();
+      collaborationStatus = collaboration?.currentStatus ?? 'idle';
+      collaborationParticipants = [];
+      clearCollaborationCursors();
+      renderCollaborationState();
       renderCloudDialog(error instanceof Error ? error.message : 'Cloud status could not be loaded.');
     }
   }
@@ -3582,6 +3786,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     editorMode = mode;
     await setting('editorMode', mode);
     await syncEditorSurface();
+    await refreshCollaborationSubscription();
+    renderRemoteCollaborationCursors();
     if (mode !== 'reading') editor.focus();
   }
   async function openEntry(id: EntryId, preserveCurrent = false): Promise<void> {
@@ -3640,6 +3846,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
     }
     await syncEditorSurface();
+    clearCollaborationCursors();
+    await refreshCollaborationSubscription();
     const pendingCursor = pendingCursorOffsets.get(selected.id);
     if (pendingCursor !== undefined && selected.kind === 'markdown' && selected.deletedAt === null) { pendingCursorOffsets.delete(selected.id); editor.revealOffset(pendingCursor); }
     renderTree(); renderInfo(); renderKnowledgePanels(); updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
@@ -3678,13 +3886,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const action of ['rename', 'move', 'duplicate', 'delete', 'export-draft', 'checkpoint']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = true;
     element<HTMLElement>('[data-action="restore"]').hidden = true;
     await syncEditorSurface();
+    clearCollaborationCursors();
+    await refreshCollaborationSubscription();
     updateDailyDocumentNav(); renderTasks(); renderMedia(); renderCalendar(); updateCounts();
     if (graphOpen) renderGraph();
   }
 
   registry.register({ id: 'vault.create', label: 'Create vault', run: async () => {
     const name = await ask('Create a vault', 'Vault name'); if (name === null) return;
-    await clearSelection(); vault = await repository.createVault(name); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh(); await setting('lastVault', vault.id); void requestPersistentStorage();
+    await clearSelection(); vault = await repository.createVault(name); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh(); await setting('lastVault', vault.id); await refreshCollaborationSubscription(); void requestPersistentStorage();
   } });
   for (const kind of ['markdown', 'directory'] as const) registry.register({ id: kind === 'markdown' ? 'file.create' : 'folder.create', label: kind === 'markdown' ? 'Create Markdown note' : 'Create folder', enabled: () => !!vault && currentVaultWritable(), run: async () => {
     if (!vault) return;
@@ -3754,6 +3964,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
           await refreshCloudMembers();
           await refreshRealtimeSubscription();
+          await refreshCollaborationSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Signed in. Local Vaults remain local until explicitly adopted.');
           return;
@@ -3767,6 +3978,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
           await refreshCloudMembers();
           await refreshRealtimeSubscription();
+          await refreshCollaborationSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog(result.result.signedIn ? 'Account created and signed in.' : 'Account created. Check your email to confirm it, then sign in.');
           return;
@@ -3829,6 +4041,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refreshCloudMembers();
           lastSyncSummary = null;
           await refreshRealtimeSubscription();
+          await refreshCollaborationSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Cloud sync enabled. Nothing is uploaded until you press Sync now.');
           renderCloudIndicator();
@@ -3861,6 +4074,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           awaitableDevicesCache = await cloud.listDevices();
           await refreshCloudMembers();
           await refreshRealtimeSubscription();
+          await refreshCollaborationSubscription();
           await refreshCloudSyncDetail();
           renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
           renderCloudIndicator();
@@ -3877,6 +4091,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           cachedSyncDetail = '';
           realtimeWake?.stop();
           realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
+          collaboration?.stop();
+          collaborationStatus = collaboration?.currentStatus ?? 'idle';
+          collaborationParticipants = [];
+          clearCollaborationCursors();
+          renderCollaborationState();
           renderCloudDialog('Signed out on this device. Local Vault data was kept.');
           renderCloudIndicator();
           return;
@@ -4584,7 +4803,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const id = vaultSelect.value;
     perform(async () => {
       try { await clearSelection(); } catch (error) { vaultSelect.value = vault?.id ?? ''; throw error; }
-      vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); await refreshRealtimeSubscription(); await refreshCloudSyncDetail(); syncCoordinator?.wake('focus');
+      vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); await refreshRealtimeSubscription(); await refreshCollaborationSubscription(); await refreshCloudSyncDetail(); syncCoordinator?.wake('focus');
     });
   }, { signal: abort.signal });
   window.addEventListener('beforeunload', event => { if (saver?.hasUnsavedChanges) { event.preventDefault(); event.returnValue = ''; } }, { signal: abort.signal });
@@ -4671,6 +4890,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     searchIndex.close();
     syncCoordinator?.stop();
     realtimeWake?.stop();
+    collaboration?.stop();
+    if (collaborationCursorCleanupTimer !== undefined) window.clearInterval(collaborationCursorCleanupTimer);
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
     graphCanvasView.destroy();
