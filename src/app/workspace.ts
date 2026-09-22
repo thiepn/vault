@@ -75,6 +75,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let collaboration: SupabaseCollaborationRealtime | null = null;
   let collaborationStatus: CollaborationStatus = 'idle';
   let collaborationParticipants: readonly CollaborationPresence[] = [];
+  let collaborationPresenceReady = false;
   const collaborationCursors = new Map<string, CollaborationCursor>();
   let collaborationCursorCleanupTimer: number | undefined;
   let crdtRealtime: SupabaseCrdtRealtime | null = null;
@@ -475,10 +476,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       {
         onStatus(status) {
           collaborationStatus = status;
+          if (status !== 'connected') collaborationPresenceReady = false;
           if (!disposed) renderCollaborationState();
         },
         onPresence(participants) {
           collaborationParticipants = [...participants];
+          collaborationPresenceReady = collaboration?.currentStatus === 'connected' && collaboration.currentTopic !== null;
           updateCrdtLeader();
           const activeSessions = new Set(participants.map(participant => participant.sessionId));
           for (const sessionId of collaborationCursors.keys()) {
@@ -487,6 +490,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           if (!disposed) {
             renderCollaborationState();
             renderRemoteCollaborationCursors();
+            if (collaborationPresenceReady) void refreshCrdtSession().catch(showError);
           }
         },
         onCursor(cursor) {
@@ -931,12 +935,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud) || !role) {
       collaboration?.stop();
       collaborationStatus = collaboration?.currentStatus ?? 'idle';
+      collaborationPresenceReady = false;
       stopCrdtSession();
       collaborationParticipants = [];
       collaborationCursors.clear();
       renderCollaborationState();
       return;
     }
+    const targetPresenceTopic=`vault-collab:${vault.id}:${vault.cloud.epoch}`;
+    if(collaboration.currentTopic!==targetPresenceTopic) collaborationPresenceReady=false;
     await collaboration.subscribe({
       vaultId: vault.id,
       epoch: vault.cloud.epoch,
@@ -1009,7 +1016,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   function crdtLeaderForCurrentEntry(): string | null {
-    if(!selected || selected.kind!=='markdown' || !activeCrdtRole()) return null;
+    if(!collaborationPresenceReady || collaborationStatus!=='connected' || !selected || selected.kind!=='markdown' || !activeCrdtRole()) return null;
     const sessions=new Set<string>([storageSessionId]);
     for(const participant of collaborationParticipants){
       if(participant.entryId!==selected.id || (participant.role!=='owner' && participant.role!=='editor')) continue;
@@ -1093,6 +1100,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function verifiedCrdtBase(): Promise<CrdtBaseSnapshot | null> {
     if(!selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
+      || collaborationStatus!=='connected' || !collaborationPresenceReady
       || !vault?.cloud || !cloudStatus.signedIn || !cloudStatus.identity || !activeCrdtRole()
       || vault.cloud.authUserId!==cloudStatus.identity.userId || !saver) return null;
     if(await syncState.isDirty(selected.id)) return null;
@@ -1498,6 +1506,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
       collaboration?.stop();
       collaborationStatus = collaboration?.currentStatus ?? 'idle';
+      collaborationPresenceReady = false;
       collaborationParticipants = [];
       clearCollaborationCursors();
       renderCollaborationState();
