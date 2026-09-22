@@ -192,3 +192,54 @@ test('A2 archive v2 round-trips deleted attachment payloads through its verified
   assert.deepEqual([...parsed.attachments[0].bytes], [...bytes]);
   assert.equal(parsed.state.entries[0].deletedAt, now);
 });
+
+
+test('A2 archive restore rejects a checksummed cyclic folder tree before restore', async () => {
+  const vaultId = '11111111-1111-4111-8111-111111111111';
+  const folderId = '44444444-4444-4444-8444-444444444444';
+  const now = '2026-09-22T02:00:00.000Z';
+  const snapshot = {
+    format: 'vault-local-backup',
+    version: 2,
+    exportedAt: now,
+    vault: { id:vaultId, name:'Cycle', createdAt:now, updatedAt:now, mode:'local' },
+    entries: [{
+      id:folderId, vaultId, parentId:null, name:'Folder', kind:'directory',
+      createdAt:now, updatedAt:now, localVersion:1, deletedAt:null,
+      deletionBatch:null, activeKey:vaultId + '/root/folder',
+    }],
+    contents: [],
+    attachments: [],
+    recoveryDrafts: [],
+    revisions: [],
+  };
+  const entities = [{
+    id:vaultId, entityType:'vault', name:'Cycle', schemaVersion:1, revision:1,
+    createdAt:now, updatedAt:now, deletedAt:null, properties:{},
+  }, {
+    id:folderId, entityType:'folder', vaultId, name:'Folder', parentFolderId:null,
+    schemaVersion:1, revision:1, createdAt:now, updatedAt:now,
+    deletedAt:null, properties:{},
+  }];
+
+  const files = await fullVaultArchiveFiles(snapshot, entities, []);
+  const stateFile = files.find(file => file.path === '.vault/state.json');
+  const checksumsFile = files.find(file => file.path === '.vault/checksums.json');
+  assert.ok(stateFile);
+  assert.ok(checksumsFile);
+
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const state = JSON.parse(decoder.decode(stateFile.bytes));
+  state.entries[0].parentId = folderId;
+  stateFile.bytes = encoder.encode(JSON.stringify(state, null, 2));
+
+  const checksums = JSON.parse(decoder.decode(checksumsFile.bytes));
+  checksums['.vault/state.json'] = await sha256Hex(stateFile.bytes);
+  checksumsFile.bytes = encoder.encode(JSON.stringify(checksums, null, 2));
+
+  await assert.rejects(
+    () => parseFullVaultArchiveFiles(files),
+    error => error?.code === 'CYCLE' || /cyclic|cycle/iu.test(error?.message ?? ''),
+  );
+});
