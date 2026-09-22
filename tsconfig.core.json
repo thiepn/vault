@@ -36,6 +36,7 @@
     "src/graph/**/*.ts",
     "src/boards/**/*.ts",
     "src/canvas/**/*.ts",
+    "src/interoperability/**/*.ts",
     "src/app/workspace.ts",
     "src/editor/**/*.ts"
   ]
