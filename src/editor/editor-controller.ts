@@ -1,5 +1,5 @@
-import { Compartment, EditorState, type Extension } from '@codemirror/state';
-import { EditorView, keymap } from '@codemirror/view';
+import { Compartment, EditorState, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
+import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
 import { openSearchPanel } from '@codemirror/search';
@@ -23,6 +23,16 @@ export interface EditorStats {
   column: number;
   selectedWords: number;
   position: number;
+  selectionFrom: number;
+  selectionTo: number;
+}
+
+export interface RemoteCursorMarker {
+  id: string;
+  position: number;
+  from: number;
+  to: number;
+  label: string;
 }
 
 export interface MarkdownEditorOptions {
@@ -41,6 +51,54 @@ export interface MarkdownEditorOptions {
 const readOnlyCompartment = new Compartment();
 const editableCompartment = new Compartment();
 const previewCompartment = new Compartment();
+
+const setRemoteCursorsEffect = StateEffect.define<readonly RemoteCursorMarker[]>();
+
+class RemoteCursorWidget extends WidgetType {
+  constructor(private readonly label: string) { super(); }
+  eq(other: RemoteCursorWidget): boolean { return other.label === this.label; }
+  toDOM(): HTMLElement {
+    const caret = document.createElement('span');
+    caret.className = 'cm-remote-cursor';
+    caret.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'cm-remote-cursor-label';
+    label.textContent = this.label;
+    caret.append(label);
+    return caret;
+  }
+  ignoreEvent(): boolean { return true; }
+}
+
+function remoteCursorDecorations(docLength: number, markers: readonly RemoteCursorMarker[]): DecorationSet {
+  const ranges: Range<Decoration>[] = [];
+  const seen = new Set<string>();
+  for (const marker of markers) {
+    if (!marker.id || seen.has(marker.id)) continue;
+    seen.add(marker.id);
+    const from = Math.max(0, Math.min(marker.from, docLength));
+    const to = Math.max(from, Math.min(marker.to, docLength));
+    const position = Math.max(0, Math.min(marker.position, docLength));
+    if (to > from) ranges.push(Decoration.mark({ class: 'cm-remote-selection' }).range(from, to));
+    ranges.push(Decoration.widget({
+      widget: new RemoteCursorWidget(marker.label.slice(0, 48)),
+      side: 1,
+    }).range(position));
+  }
+  return Decoration.set(ranges, true);
+}
+
+const remoteCursorField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, transaction) {
+    let next = value.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (effect.is(setRemoteCursorsEffect)) next = remoteCursorDecorations(transaction.state.doc.length, effect.value);
+    }
+    return next;
+  },
+  provide: field => EditorView.decorations.from(field),
+});
 
 function countWords(text: string): number {
   const matches = text.trim().match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu);
@@ -124,6 +182,7 @@ export class MarkdownEditor {
         readOnlyCompartment.of(EditorState.readOnly.of(options.readOnly ?? false)),
         editableCompartment.of(EditorView.editable.of(!(options.readOnly ?? false))),
         previewCompartment.of(this.mode === 'live' ? this.previewExtensions() : []),
+        remoteCursorField,
         this.wiki ? wikiCompletionExtension(this.wiki) : [],
         EditorView.updateListener.of(update => {
           if (update.docChanged) {
@@ -233,6 +292,10 @@ export class MarkdownEditor {
     ];
   }
 
+  setRemoteCursors(markers: readonly RemoteCursorMarker[]): void {
+    this.view.dispatch({ effects: setRemoteCursorsEffect.of(markers) });
+  }
+
   setLineNumbers(show: boolean): void {
     this.host.dataset.lineNumbers = String(show);
   }
@@ -322,6 +385,8 @@ export class MarkdownEditor {
       column: head - line.from + 1,
       selectedWords: countWords(selectedText),
       position: head,
+      selectionFrom: state.selection.main.from,
+      selectionTo: state.selection.main.to,
     };
   }
 
