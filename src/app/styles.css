@@ -623,6 +623,11 @@ body.vault-canvas-expanded{overflow:hidden}
 .cloud-row.warning,.cloud-row.revoked{background:#fff7f3;border-color:#ead8cf}
 .cloud-row button{flex:0 0 auto;padding:4px 7px;font-size:8px}
 .cloud-adopt{justify-self:start}
+.cloud-sync-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 9px;border:1px solid #dbe7e0;border-radius:6px;background:#f7faf8}
+.cloud-sync-now{flex:0 0 auto}
+.cloud-sync-detail{min-width:0;color:var(--muted);font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+.cloud-sync-now:disabled{opacity:.55}
+.cloud-row [data-cloud-action="add-remote-vault"]{min-height:30px}
 .sidebar-bottom .storage-scope-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:640px){
   .cloud-toggle{padding:5px 7px;font-size:9px}
@@ -631,6 +636,9 @@ body.vault-canvas-expanded{overflow:hidden}
   .cloud-signed-out input{min-height:44px;font-size:16px}
   .cloud-auth-actions{display:grid;grid-template-columns:1fr}
   .cloud-auth-actions button,.cloud-adopt,.cloud-signed-in>button{min-height:42px}
+  .cloud-sync-controls{display:grid;grid-template-columns:1fr;padding:9px}
+  .cloud-sync-now{min-height:42px;width:100%}
+  .cloud-sync-detail{font-size:10px}
   .cloud-row{padding:9px}
   .cloud-row strong{font-size:11px}
   .cloud-row span{font-size:9px}

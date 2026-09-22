@@ -100,6 +100,28 @@ export class CloudFoundation {
     return this.vaults.adoptCloud(vault.id,binding);
   }
 
+  async addRemoteVault(remote: RemoteCloudVault): Promise<Vault> {
+    const initialized=await this.initializeIdentity();
+    if (!initialized) throw new VaultError('ACCOUNT_MISMATCH','Sign in before adding a cloud Vault to this device.');
+    if (this.device?.revokedAt) throw new VaultError('ACCOUNT_MISMATCH','This device has been revoked.');
+    if (remote.accountId !== initialized.account.id || remote.authUserId !== initialized.identity.userId || remote.disabledAt) {
+      throw new VaultError('ACCOUNT_MISMATCH','That remote Vault is not available to this account.');
+    }
+    const binding: CloudVaultBinding={
+      accountId:initialized.account.id as AccountId,
+      authUserId:initialized.identity.userId,
+      projectRef:projectRefFromUrl(this.projectUrl),
+      remoteVaultId:remote.id,
+      epoch:remote.epoch,
+      protocolVersion:1,
+      deviceId:this.deviceId,
+      adoptedAt:new Date().toISOString(),
+    };
+    const vault=await this.vaults.createCloudReplica(remote.name,binding);
+    await this.syncState.initializeCursor(vault.id,initialized.identity.userId,remote.epoch);
+    return vault;
+  }
+
   async listDevices(): Promise<CloudDevice[]> {
     const initialized=await this.initializeIdentity();
     if (!initialized) return [];

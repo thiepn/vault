@@ -2,6 +2,7 @@ import { VaultError } from '../domain/errors.js';
 import { assertMarkdownContent, nextVersion } from '../domain/integrity.js';
 import type {
   AttachmentContent,
+  CloudVaultBinding,
   DirtyEntry,
   Entry,
   EntryId,
@@ -523,6 +524,12 @@ export class A2LocalRepository extends LocalRepository {
     } catch (error) {
       await this.a2.markRepairNeeded(error).catch(() => undefined);
     }
+  }
+
+  override async createCloudReplica(raw: string, binding: CloudVaultBinding): Promise<Vault> {
+    const vault = await super.createCloudReplica(raw, binding);
+    await this.mirror(() => this.a2.syncVault(vault.id));
+    return vault;
   }
 
   override async readAttachment(entryId: EntryId): Promise<AttachmentContent> {

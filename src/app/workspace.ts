@@ -42,11 +42,14 @@ import { SupabaseRestAuth } from '../cloud/auth-rest.js';
 import { SupabaseCloudRegistry } from '../cloud/supabase-registry.js';
 import { CloudFoundation, type CloudFoundationStatus } from '../cloud/foundation.js';
 import { SyncLocalState } from '../sync/local-state.js';
+import { SupabaseSyncTransport } from '../sync/transport.js';
+import { SyncReplicaStore } from '../sync/replica-store.js';
+import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 14 browser workspace: cloud account/device/adoption foundation on the accepted Phase 1-13 + A1/A2 foundation. */
+/** Phase 15 browser workspace: remote canonical replication on the accepted Phase 1-14 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -58,11 +61,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudConfig = browserCloudConfiguration();
   const syncState = new SyncLocalState(db);
   let cloud: CloudFoundation | null = null;
+  let syncEngine: SyncEngine | null = null;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
     const auth = new SupabaseRestAuth(cloudConfig, window.localStorage);
     const registry = new SupabaseCloudRegistry(cloudConfig, () => auth.accessToken());
+    const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
+    const syncReplica = new SyncReplicaStore(db, a2);
+    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository);
     cloud = new CloudFoundation(
       auth,
       registry,
@@ -186,7 +193,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 14 · Cloud foundation</span>
+        <span class="stage">Phase 15 · Remote sync</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -333,7 +340,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     </dialog>
     <dialog class="cloud-dialog" aria-labelledby="cloud-title">
       <form method="dialog">
-        <div class="cloud-dialog-heading"><div><p class="eyebrow">CLOUD FOUNDATION</p><h2 id="cloud-title">Account & devices</h2></div><button value="close" aria-label="Close cloud panel">×</button></div>
+        <div class="cloud-dialog-heading"><div><p class="eyebrow">CLOUD SYNC</p><h2 id="cloud-title">Account, sync & devices</h2></div><button value="close" aria-label="Close cloud panel">×</button></div>
         <p class="cloud-message" role="status"></p>
         <section class="cloud-signed-out">
           <p class="cloud-explainer">Sign in does not upload local Vaults. Each Vault stays local until you explicitly enable cloud foundation for it.</p>
@@ -344,8 +351,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <section class="cloud-signed-in" hidden>
           <div class="cloud-identity"></div>
           <div class="cloud-vault-state"></div>
-          <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud foundation for this Vault</button>
-          <p class="cloud-phase-note">Phase 14 registers account, device and Vault identity only. Full note/attachment replication is the next sync phase.</p>
+          <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
+          <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
+          <p class="cloud-phase-note">Phase 15 synchronizes canonical files and attachment bytes on demand. Editing remains local-first; search, tasks, calendar, queries, graph and boards are rebuilt locally rather than uploaded.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
           <div class="cloud-section-heading">DEVICES</div>
@@ -396,6 +404,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudIdentity = element<HTMLElement>('.cloud-identity');
   const cloudVaultState = element<HTMLElement>('.cloud-vault-state');
   const cloudAdopt = element<HTMLButtonElement>('.cloud-adopt');
+  const cloudSyncNow = element<HTMLButtonElement>('.cloud-sync-now');
+  const cloudSyncDetail = element<HTMLElement>('.cloud-sync-detail');
   const cloudRemoteVaults = element<HTMLElement>('.cloud-remote-vaults');
   const cloudDevices = element<HTMLElement>('.cloud-devices');
   const migrationDialog = element<HTMLDialogElement>('.migration-dialog');
@@ -614,6 +624,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudIdentity.replaceChildren();
       cloudVaultState.replaceChildren();
       cloudAdopt.disabled = true;
+      cloudSyncNow.disabled = true;
+      cloudSyncDetail.textContent = '';
       return;
     }
 
@@ -625,17 +637,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     );
 
     cloudVaultState.replaceChildren();
+    const syncEligible = !!vault
+      && vault.mode === 'cloud'
+      && vault.cloud?.accountId === cloudStatus.account.id
+      && vault.cloud.authUserId === cloudStatus.identity.userId;
+    cloudSyncNow.disabled = !syncEligible || !syncEngine;
+    cloudSyncDetail.textContent = syncEligible ? (cachedSyncDetail || 'Ready to synchronize.') : '';
+
     if (!vault) {
-      cloudVaultState.append(cloudRow('No Vault selected', 'Choose or create a local Vault before enabling cloud foundation.'));
+      cloudVaultState.append(cloudRow('No Vault selected', 'Choose or create a local Vault before enabling cloud sync.'));
       cloudAdopt.disabled = true;
     } else if (vault.mode === 'local') {
       cloudVaultState.append(cloudRow(vault.name, 'Local only · nothing has been uploaded.', 'local'));
       cloudAdopt.disabled = false;
-      cloudAdopt.textContent = 'Enable cloud foundation for this Vault';
-    } else if (vault.cloud?.accountId === cloudStatus.account.id && vault.cloud.authUserId === cloudStatus.identity.userId) {
-      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · epoch ${vault.cloud.epoch.slice(0, 8)}… · device ${vault.cloud.deviceId.slice(0, 8)}…`, 'adopted'));
+      cloudAdopt.textContent = 'Enable cloud sync for this Vault';
+    } else if (syncEligible) {
+      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
       cloudAdopt.disabled = true;
-      cloudAdopt.textContent = 'Cloud foundation enabled';
+      cloudAdopt.textContent = 'Cloud sync enabled';
     } else {
       cloudVaultState.append(cloudRow(vault.name, 'This Vault is linked to another cloud account. Local data remains available.', 'warning'));
       cloudAdopt.disabled = true;
@@ -648,8 +667,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudRemoteVaults.append(empty);
     } else {
       for (const remote of cloudStatus.remoteVaults) {
-        const row = cloudRow(remote.name, `${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}`);
+        const localCopy = vaults.some(local => local.id === remote.id);
+        const row = cloudRow(
+          remote.name,
+          `${remote.id.slice(0, 8)}… · protocol v${remote.protocolVersion}${localCopy ? ' · on this device' : ''}`,
+        );
         if (vault?.id === remote.id) row.classList.add('current');
+        if (!localCopy) {
+          const add = document.createElement('button');
+          add.type = 'button';
+          add.dataset.cloudAction = 'add-remote-vault';
+          add.dataset.remoteVaultId = remote.id;
+          add.textContent = 'Add to this device';
+          row.append(add);
+        }
         cloudRemoteVaults.append(row);
       }
     }
@@ -673,6 +704,47 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   let awaitableDevicesCache: Awaited<ReturnType<CloudFoundation['listDevices']>> = [];
+  let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
+  let cachedSyncDetail = '';
+
+  async function refreshCloudSyncDetail(): Promise<void> {
+    if (!vault || vault.mode !== 'cloud' || !vault.cloud || !cloudStatus.identity
+      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      cachedSyncDetail = '';
+      return;
+    }
+    const cursor = await syncState.cursor(vault.id, cloudStatus.identity.userId);
+    const queued = await syncState.count(vault.id);
+    const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
+    cachedSyncDetail = latest
+      ? `Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
+      : `Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
+  }
+
+  async function runCurrentCloudSync(): Promise<SyncRunSummary> {
+    if (!syncEngine || !cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
+      throw new VaultError('CONFIGURATION', 'Cloud synchronization is unavailable.');
+    }
+    if (!vault || vault.mode !== 'cloud' || !vault.cloud
+      || vault.cloud.authUserId !== cloudStatus.identity.userId) {
+      throw new VaultError('ACCOUNT_MISMATCH', 'Choose a cloud-enabled Vault owned by this signed-in account.');
+    }
+    if (saver) await saver.flush();
+    const activeVaultId = vault.id;
+    const selectedId = selected?.id;
+    cloudMessage.textContent = 'Synchronizing canonical files and attachments…';
+    cloudSyncNow.disabled = true;
+    const summary = await syncEngine.sync(vault, cloudStatus.identity.userId);
+    lastSyncSummary = { vaultId: activeVaultId, summary };
+    await refresh();
+    if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
+    await refreshCloudSyncDetail();
+    renderCloudDialog(
+      `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`,
+    );
+    renderCloudIndicator();
+    return summary;
+  }
 
   async function refreshCloudStatus(message = ''): Promise<void> {
     if (!cloud) {
@@ -684,6 +756,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     try {
       cloudStatus = await cloud.status();
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
+      await refreshCloudSyncDetail();
       renderCloudDialog(message);
     } catch (error) {
       cloudStatus = cloudEmptyStatus();
@@ -3497,15 +3570,46 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           return;
         }
         if (action === 'adopt') {
-          if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud foundation.');
+          if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud sync.');
           if (saver) await saver.flush();
           vault = await cloud.adoptVault(vault);
           vaults = await repository.listVaults();
           cloudStatus = await cloud.status();
           awaitableDevicesCache = await cloud.listDevices();
-          renderCloudDialog('Cloud foundation enabled. Phase 14 has not uploaded note or attachment contents.');
+          lastSyncSummary = null;
+          await refreshCloudSyncDetail();
+          renderCloudDialog('Cloud sync enabled. Nothing is uploaded until you press Sync now.');
           renderCloudIndicator();
           renderInfo();
+          return;
+        }
+        if (action === 'sync') {
+          await runCurrentCloudSync();
+          return;
+        }
+        if (action === 'add-remote-vault') {
+          const remoteId = cloudAction.dataset.remoteVaultId as VaultId | undefined;
+          if (!remoteId) return;
+          const remote = cloudStatus.remoteVaults.find(item => item.id === remoteId);
+          if (!remote) throw new VaultError('NOT_FOUND', 'That cloud Vault is no longer available.');
+          if (saver) await saver.flush();
+          await clearSelection();
+          vault = await cloud.addRemoteVault(remote);
+          vaults = await repository.listVaults();
+          preferencesVaultId = undefined;
+          knowledgeVaultId = undefined;
+          searchVaultId = undefined;
+          showingTrash = false;
+          filterText = '';
+          lastSyncSummary = null;
+          await setting('lastVault', vault.id);
+          await refresh();
+          cloudStatus = await cloud.status();
+          awaitableDevicesCache = await cloud.listDevices();
+          await refreshCloudSyncDetail();
+          renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
+          renderCloudIndicator();
+          await runCurrentCloudSync();
           return;
         }
         if (action === 'sign-out') {
@@ -3513,6 +3617,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await cloud.signOut();
           cloudStatus = cloudEmptyStatus();
           awaitableDevicesCache = [];
+          lastSyncSummary = null;
+          cachedSyncDetail = '';
           renderCloudDialog('Signed out on this device. Local Vault data was kept.');
           renderCloudIndicator();
           return;
