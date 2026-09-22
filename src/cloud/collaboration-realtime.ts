@@ -176,7 +176,11 @@ export class SupabaseCollaborationRealtime {
     const topic=vaultCollaborationTopic(normalized.vaultId,normalized.epoch);
     if(this.desired?.topic===topic && this.desired.sessionId===normalized.sessionId){
       this.desired={...normalized,topic,wireTopic:`realtime:${topic}`};
-      if(this.status==='connected') this.trackPresence();
+      if(this.status==='connected'){ this.trackPresence(); return; }
+      if(this.status==='connecting' || this.status==='retrying') return;
+      this.resetSocket();
+      this.reconnectAttempt=0;
+      await this.connect();
       return;
     }
     this.stop(false);
