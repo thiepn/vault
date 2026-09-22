@@ -214,11 +214,20 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
   await expect(canvas.locator('.canvas-group')).toHaveCount(2);
 
+  const beforeZoomSource = await sourceText(page);
+  const beforeZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(beforeZoomSource);
+  expect(beforeZoomMatch).not.toBeNull();
+  const beforeZoom = Number(beforeZoomMatch![1]);
+
+  await returnLive(page);
+  canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
+  await expect(canvas).toBeVisible();
   await canvas.getByRole('button', { name:'Zoom in' }).click();
-  await expect.poll(async () => {
-    const text = await sourceText(page);
-    return /zoom: 1\.(?:1|2)/u.test(text) || /zoom: 1\.22/u.test(text);
-  }).toBe(true);
+
+  const afterZoomSource = await sourceText(page);
+  const afterZoomMatch = /viewport:[\s\S]*?zoom:\s*(\d+(?:\.\d+)?)/u.exec(afterZoomSource);
+  expect(afterZoomMatch).not.toBeNull();
+  expect(Number(afterZoomMatch![1])).toBeGreaterThan(beforeZoom);
 
   await returnLive(page);
   canvas = page.locator('#vault-editor .cm-canvas-widget .canvas-workspace');
