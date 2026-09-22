@@ -113,10 +113,16 @@ function assertArchiveState(state: VaultArchiveState, manifest: VaultArchiveMani
     entryIds.add(entry.id);
   }
 
+  const tree = new VaultTree(state.entries);
+  for (const entry of state.entries) tree.path(entry.id);
+
+  const entryById = new Map(state.entries.map(entry => [entry.id as string, entry]));
   const contentIds = new Set<string>();
   for (const content of state.contents) {
-    if (!entryIds.has(content.entryId) || contentIds.has(content.entryId) || typeof content.text !== 'string') {
-      throw new VaultError('CORRUPT', 'Vault archive contains invalid Markdown content records.');
+    const entry = entryById.get(content.entryId as string);
+    if (!entry || entry.kind !== 'markdown' || contentIds.has(content.entryId) || typeof content.text !== 'string'
+      || content.localVersion !== entry.localVersion) {
+      throw new VaultError('CORRUPT', 'Vault archive contains invalid or revision-mismatched Markdown content records.');
     }
     contentIds.add(content.entryId);
   }
@@ -125,6 +131,24 @@ function assertArchiveState(state: VaultArchiveState, manifest: VaultArchiveMani
     if (entry.kind === 'markdown' && !contentIds.has(entry.id)) {
       throw new VaultError('CORRUPT', 'Vault archive is missing Markdown content for ' + entry.name + '.');
     }
+  }
+
+  const revisionIds = new Set<string>();
+  for (const revision of state.revisions) {
+    if (!revision?.id || revision.vaultId !== state.vault.id || !entryIds.has(revision.entryId)
+      || revisionIds.has(revision.id) || typeof revision.text !== 'string') {
+      throw new VaultError('CORRUPT', 'Vault archive contains invalid revision records.');
+    }
+    revisionIds.add(revision.id);
+  }
+
+  const draftIds = new Set<string>();
+  for (const draft of state.recoveryDrafts) {
+    if (!draft?.id || draft.vaultId !== state.vault.id || !entryIds.has(draft.entryId)
+      || draftIds.has(draft.id) || typeof draft.text !== 'string') {
+      throw new VaultError('CORRUPT', 'Vault archive contains invalid recovery draft records.');
+    }
+    draftIds.add(draft.id);
   }
 
   const attachmentIds = new Set<string>();
@@ -295,14 +319,40 @@ export async function parseFullVaultArchiveFiles(files: readonly ExportFile[]): 
   }
 
   const entityIds = new Set<string>();
+  const noteEntityIds = new Set<string>();
+  let vaultEntityCount = 0;
   for (const entity of entities) {
-    if (!entity?.id || entityIds.has(entity.id as string)) throw new VaultError('CORRUPT', 'Vault archive canonical entity IDs are invalid or duplicated.');
-    entityIds.add(entity.id as string);
-  }
-  for (const body of noteBodies) {
-    if (!body?.noteId || body.vaultId !== state.vault.id || typeof body.text !== 'string') {
-      throw new VaultError('CORRUPT', 'Vault archive note-body records are invalid.');
+    const id = entity?.id as string | undefined;
+    if (!id || entityIds.has(id)) throw new VaultError('CORRUPT', 'Vault archive canonical entity IDs are invalid or duplicated.');
+    entityIds.add(id);
+
+    if (entity.entityType === 'vault') {
+      vaultEntityCount += 1;
+      if (id !== state.vault.id) throw new VaultError('CORRUPT', 'Vault archive canonical Vault entity does not match restore state.');
+    } else {
+      if (!('vaultId' in entity) || entity.vaultId !== state.vault.id) {
+        throw new VaultError('CORRUPT', 'Vault archive contains a cross-vault canonical entity.');
+      }
+      if (entity.entityType === 'note') noteEntityIds.add(id);
     }
+  }
+  if (vaultEntityCount !== 1) throw new VaultError('CORRUPT', 'Vault archive must contain exactly one canonical Vault entity.');
+
+  const noteBodyIds = new Set<string>();
+  for (const body of noteBodies) {
+    const noteId = body?.noteId as string | undefined;
+    if (!noteId || body.vaultId !== state.vault.id || typeof body.text !== 'string'
+      || noteBodyIds.has(noteId) || !noteEntityIds.has(noteId)) {
+      throw new VaultError('CORRUPT', 'Vault archive note-body records are invalid or duplicated.');
+    }
+    const legacyEntry = state.entries.find(entry => entry.id === noteId);
+    if (!legacyEntry || legacyEntry.kind !== 'markdown' || body.revision !== legacyEntry.localVersion) {
+      throw new VaultError('CORRUPT', 'Vault archive note body does not match its legacy Note revision.');
+    }
+    noteBodyIds.add(noteId);
+  }
+  for (const noteId of noteEntityIds) {
+    if (!noteBodyIds.has(noteId)) throw new VaultError('CORRUPT', 'Vault archive is missing a canonical Note body.');
   }
 
   return { manifest, state, entities, noteBodies, attachments };
