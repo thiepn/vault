@@ -640,8 +640,31 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   async function reloadCloudBindingCache(): Promise<void> {
     const currentId=vault?.id;
+    const wasWritable=currentVaultWritable();
     vaults=await repository.listVaults();
     if(currentId) vault=vaults.find(item=>item.id===currentId);
+    const isWritable=currentVaultWritable();
+    if(!currentId || wasWritable===isWritable || selected?.vaultId!==currentId) return;
+
+    if(!isWritable){
+      if(saver){
+        await saver.closeToRecovery();
+        saver=undefined;
+      }
+      await syncEditorSurface();
+      if(selected.kind==='markdown') renderPropertiesPanel(editor.getText());
+      renderTasks();
+      element<HTMLElement>('.save-status').textContent =
+        effectiveCloudRole(vault?.cloud)==='revoked' ? 'Access revoked · local copy read only' : 'Viewer access · read only';
+      return;
+    }
+
+    if(selected.kind==='markdown' && selected.deletedAt===null && !saver){
+      await openEntry(selected.id,true);
+    } else {
+      await syncEditorSurface();
+      renderTasks();
+    }
   }
 
   function renderCloudIndicator(): void {
@@ -3585,7 +3608,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     element<HTMLElement>('.folder-message').hidden = selected.kind !== 'directory';
     element<HTMLElement>('.folder-message').textContent = selected.deletedAt ? 'This folder is in Trash. Restore its parent first, then restore the folder.' : 'Folder selected. New files will be created inside this folder.';
     element<HTMLElement>('.breadcrumb').textContent = targetPath;
-    element<HTMLElement>('.save-status').textContent = selected.deletedAt ? 'In Trash \u00b7 read only' : 'Saved locally \u00b7 not synced';
+    element<HTMLElement>('.save-status').textContent = selected.deletedAt
+      ? 'In Trash \u00b7 read only'
+      : !currentVaultWritable()
+        ? effectiveCloudRole(vault?.cloud)==='revoked' ? 'Access revoked \u00b7 local copy read only' : 'Viewer access \u00b7 read only'
+        : 'Saved locally \u00b7 not synced';
     for (const action of ['rename', 'move', 'duplicate', 'delete']) element<HTMLButtonElement>(`[data-action="${action}"]`).disabled = selected.deletedAt !== null || !currentVaultWritable();
     element<HTMLElement>('[data-action="restore"]').hidden = selected.deletedAt === null || !currentVaultWritable();
     element<HTMLButtonElement>('[data-action="export-draft"]').disabled = selected.kind !== 'markdown';
