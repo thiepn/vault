@@ -93,7 +93,7 @@ test('A2 PWA cold-starts offline and opens durable local data', async ({ page, c
   }), { timeout: 10_000 }).toBe(true);
 
   await expect.poll(async () => page.evaluate(async () => {
-    const cache = await caches.open('vault-shell-a2-v2');
+    const cache = await caches.open('vault-shell-a2-v3');
     const keys = await cache.keys();
     return keys.some(request => /\/assets\/.*\.js(?:$|\?)/u.test(request.url));
   }), { timeout: 10_000 }).toBe(true);
