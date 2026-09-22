@@ -2881,6 +2881,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           return renderBoardBlock(source, sourceEntryId);
         },
       },
+      canvas: {
+        async render(source, sourceEntryId) {
+          return renderSpatialCanvasBlock(source, sourceEntryId);
+        },
+      },
       attachment: {
         status(target, sourceEntryId) {
           const source = sourceEntryId && entries.some(entry => entry.id === sourceEntryId) ? sourceEntryId as EntryId : rootEntryId;
@@ -3323,6 +3328,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           'sort: updated desc',
           'limit: 200',
           'exclude-self: true',
+          '```',
+          '',
+        ].join('\n'));
+      });
+      return;
+    }
+    if (action === 'insert-canvas') {
+      perform(async () => {
+        if (!selected || selected.kind !== 'markdown' || selected.deletedAt !== null) return;
+        if (editorMode === 'reading') await setEditorMode('live');
+        const document = emptyCanvasDocument();
+        editor.insertText([
+          '```vault-canvas',
+          serializeCanvasDocument(document),
           '```',
           '',
         ].join('\n'));
