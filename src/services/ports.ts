@@ -5,6 +5,7 @@ export interface VaultRepository {
   createVault(name: string): Promise<Vault>;
   renameVault(vaultId: VaultId, name: string): Promise<Vault>;
   adoptCloud(vaultId: VaultId, binding: CloudVaultBinding): Promise<Vault>;
+  createCloudReplica(name: string, binding: CloudVaultBinding): Promise<Vault>;
   snapshot(vaultId: VaultId): Promise<VaultSnapshot>;
 }
 export interface FileRepository {
