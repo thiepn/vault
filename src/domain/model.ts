@@ -71,7 +71,7 @@ export interface LocalRevision {
   text: string;
   localVersion: Revision;
   createdAt: string;
-  reason: 'checkpoint' | 'trash' | 'restore';
+  reason: 'checkpoint' | 'trash' | 'restore' | 'migration';
 }
 
 export interface RecoveryDraft {
