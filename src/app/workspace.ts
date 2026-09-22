@@ -428,7 +428,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           realtimeStatus = status;
           if (disposed) return;
           void refreshCloudSyncDetail()
-            .then(() => { if (cloudDialog.open) renderCloudDialog(); })
+            .then(() => {
+              if (cloudDialog.open && cloudStatus.signedIn) cloudSyncDetail.textContent = cachedSyncDetail;
+            })
             .catch(() => undefined);
         },
       },
