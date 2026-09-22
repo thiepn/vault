@@ -80,39 +80,8 @@ export function ensureTaskIdentityMarkers(
     } else {
       const fenceToken = /^ {0,3}(`{3,}|~{3,})/.exec(line);
       if (fence) {
-        const close = new RegExp(`^ {0,3}${fence.char}{${fence.size},}\\s*import { VaultError } from '../domain/errors.js';
-import { newCanonicalId } from '../domain/canonical.js';
-
-export type TaskPriority = 'high' | 'medium' | 'low';
-
-export interface ParsedTaskLine {
-  raw: string;
-  text: string;
-  completed: boolean;
-  from: number;
-  to: number;
-  due: string | null;
-  scheduled: string | null;
-  priority: TaskPriority | null;
-  recurrence: string | null;
-  completedOn: string | null;
-}
-
-export interface TaskPatch {
-  text?: string;
-  completed?: boolean;
-  due?: string | null;
-  scheduled?: string | null;
-  priority?: TaskPriority | null;
-  recurrence?: string | null;
-}
-
-export interface TaskMutation {
-  text: string;
-  recurringTaskInserted: boolean;
-}
-
-).exec(line);
+        const escaped = fence.char === '`' ? '`' : '~';
+        const close = new RegExp('^ {0,3}' + escaped + '{' + fence.size + ',}\\s*$').exec(line);
         if (close) fence = null;
       } else if (fenceToken) {
         fence = { char: fenceToken[1]![0] as '`' | '~', size: fenceToken[1]!.length };
