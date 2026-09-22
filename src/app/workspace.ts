@@ -30,7 +30,7 @@ import { buildKnowledgeGraph, filterKnowledgeGraph, graphStats, localKnowledgeGr
 import { GraphCanvasView } from '../graph/canvas-view.js';
 import { boardFieldLabel, parseBoard, runBoard, type BoardCard, type BoardColumn, type BoardPlan } from '../boards/kanban.js';
 import { emptyCanvasDocument, parseCanvasDocument, serializeCanvasDocument, type CanvasDocument } from '../canvas/model.js';
-import { replaceCanvasFenceSource } from '../canvas/fences.js';
+import { parseCanvasFences, replaceCanvasFenceSource } from '../canvas/fences.js';
 import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-view.js';
 
 export interface WorkspaceOptions { databaseName?: string }
@@ -495,6 +495,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     };
   }
 
+  function canvasSourceMatches(markdown: string, canvasId: string, serialized: string): boolean {
+    const matches = parseCanvasFences(markdown).filter(fence => fence.canvasId === canvasId);
+    if (matches.length !== 1) return false;
+    try {
+      return serializeCanvasDocument(parseCanvasDocument(matches[0]!.source)) === serialized;
+    } catch {
+      return false;
+    }
+  }
+
   async function persistCanvasDocument(sourceEntryId: EntryId, document: CanvasDocument): Promise<void> {
     const serialized = serializeCanvasDocument(document);
     const sourceEntry = entries.find(item => item.id === sourceEntryId && item.kind === 'markdown' && item.deletedAt === null);
@@ -509,34 +519,57 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       saver.update(next);
       await saver.flush();
 
-      // Keep the currently-interactive Canvas DOM alive across its own source
-      // persistence. Rebuilding the preview here can tear down a pointer gesture
-      // between Fit/pan/drag operations. The Canvas widget is keyed by stable
-      // canvas id and already reflects the mutation in memory.
-      const savedFile = await repository.read(sourceEntryId);
-      if (savedFile.content && savedFile.entry.kind === 'markdown' && savedFile.entry.deletedAt === null) {
-        await knowledge.upsert(savedFile.entry, savedFile.content.text);
-        const at = entries.findIndex(item => item.id === savedFile.entry.id);
-        if (at >= 0) entries[at] = savedFile.entry;
-        dirtyIds.add(savedFile.entry.id);
-        await refreshSearchEntry(savedFile.entry.id);
-        invalidateGraphModel();
-        renderTree();
-        renderKnowledgePanels();
-        renderTasks();
-        renderMedia();
-        renderCalendar();
-        if (graphOpen) renderGraph();
+      let savedFile = await repository.read(sourceEntryId);
+      if (!savedFile.content || savedFile.entry.kind !== 'markdown' || savedFile.entry.deletedAt !== null) {
+        throw new VaultError('NOT_FOUND', 'The Markdown note containing this Canvas became unavailable after saving.');
       }
+      if (!canvasSourceMatches(savedFile.content.text, document.id, serialized)) {
+        const repaired = replaceCanvasFenceSource(savedFile.content.text, document.id, serialized);
+        editor.setText(repaired);
+        saver.update(repaired);
+        await saver.flush();
+        savedFile = await repository.read(sourceEntryId);
+        if (!savedFile.content || !canvasSourceMatches(savedFile.content.text, document.id, serialized)) {
+          throw new VaultError('STORAGE', 'Canvas save completed but canonical Markdown did not retain the requested spatial state.');
+        }
+      }
+
+      // Keep the currently-interactive Canvas DOM alive across its own source
+      // persistence. The widget is keyed by stable Canvas id and already reflects
+      // this mutation in memory.
+      await knowledge.upsert(savedFile.entry, savedFile.content.text);
+      const at = entries.findIndex(item => item.id === savedFile.entry.id);
+      if (at >= 0) entries[at] = savedFile.entry;
+      dirtyIds.add(savedFile.entry.id);
+      await refreshSearchEntry(savedFile.entry.id);
+      invalidateGraphModel();
+      renderTree();
+      renderKnowledgePanels();
+      renderTasks();
+      renderMedia();
+      renderCalendar();
+      if (graphOpen) renderGraph();
     } else {
-      const file = await repository.read(sourceEntryId);
+      let file = await repository.read(sourceEntryId);
       if (!file.content || file.entry.kind !== 'markdown' || file.entry.deletedAt !== null) {
         throw new VaultError('NOT_FOUND', 'The Markdown note containing this Canvas is unavailable.');
       }
-      const next = replaceCanvasFenceSource(file.content.text, document.id, serialized);
+      let next = replaceCanvasFenceSource(file.content.text, document.id, serialized);
       if (next === file.content.text) return;
-      const saved = await repository.saveMarkdown(sourceEntryId, next, file.entry.localVersion);
-      await knowledge.upsert(saved, next);
+      let saved = await repository.saveMarkdown(sourceEntryId, next, file.entry.localVersion);
+      file = await repository.read(sourceEntryId);
+      if (!file.content || !canvasSourceMatches(file.content.text, document.id, serialized)) {
+        if (!file.content || file.entry.kind !== 'markdown' || file.entry.deletedAt !== null) {
+          throw new VaultError('NOT_FOUND', 'The Canvas owner note became unavailable after saving.');
+        }
+        next = replaceCanvasFenceSource(file.content.text, document.id, serialized);
+        saved = await repository.saveMarkdown(sourceEntryId, next, file.entry.localVersion);
+        file = await repository.read(sourceEntryId);
+        if (!file.content || !canvasSourceMatches(file.content.text, document.id, serialized)) {
+          throw new VaultError('STORAGE', 'Canvas save completed but canonical Markdown did not retain the requested spatial state.');
+        }
+      }
+      await knowledge.upsert(saved, file.content.text);
       const at = entries.findIndex(item => item.id === saved.id);
       if (at >= 0) entries[at] = saved;
       dirtyIds.add(saved.id);
