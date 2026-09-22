@@ -50,11 +50,12 @@ export interface TaskIdentityReconciliation {
 
 export function ensureTaskIdentityMarkers(
   source: string,
-  options: { completeLinesOnly?: boolean; rekey?: boolean; idFactory?: () => string } = {},
+  options: { completeLinesOnly?: boolean; rekey?: boolean; idFactory?: () => string; usedIds?: Set<string> } = {},
 ): TaskIdentityReconciliation {
   const completeLinesOnly = options.completeLinesOnly ?? false;
   const rekey = options.rekey ?? false;
   const idFactory = options.idFactory ?? (() => newCanonicalId('task'));
+  const usedIds = options.usedIds;
   const output: string[] = [];
   const taskIds: string[] = [];
   let cursor = 0;
@@ -89,12 +90,15 @@ export function ensureTaskIdentityMarkers(
         const parsed = parseTaskLine(line);
         if (parsed) {
           const existing = taskIdentityFromRaw(line);
-          const identity = rekey || !existing ? idFactory() : existing;
+          let identity = rekey || !existing || usedIds?.has(existing) ? idFactory() : existing;
+          while (usedIds?.has(identity.toLowerCase())) identity = idFactory();
           if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(identity)) {
             throw new VaultError('CORRUPT', 'Task identity factory returned an invalid UUID.');
           }
-          taskIds.push(identity.toLowerCase());
-          if (rekey || !existing) {
+          identity = identity.toLowerCase();
+          usedIds?.add(identity);
+          taskIds.push(identity);
+          if (rekey || !existing || existing !== identity) {
             const trailing = /[ \t]*$/u.exec(existing ? line.replace(taskIdentityPattern, '') : line)?.[0] ?? '';
             const stripped = existing ? line.replace(taskIdentityPattern, '') : line;
             const base = trailing.length ? stripped.slice(0, -trailing.length) : stripped;
