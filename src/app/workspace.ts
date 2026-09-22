@@ -931,6 +931,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud) || !role) {
       collaboration?.stop();
       collaborationStatus = collaboration?.currentStatus ?? 'idle';
+      stopCrdtSession();
       collaborationParticipants = [];
       collaborationCursors.clear();
       renderCollaborationState();
@@ -1433,6 +1434,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (vault?.id === activeVaultId && selected?.kind === 'markdown' && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
         element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
       }
+      if (vault?.id === activeVaultId && selected?.id === selectedId && summary.pushedOperations > 0 && crdtDocument) {
+        stopCrdtSession();
+        await refreshCrdtSession();
+      } else if (vault?.id === activeVaultId && !crdtDocument) {
+        await refreshCrdtSession();
+      }
       if (!background) {
         renderCloudDialog(
           `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.autoMergedMarkdown} auto-merged, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`,
@@ -1479,6 +1486,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await refreshCloudMembers();
       await refreshRealtimeSubscription();
       await refreshCollaborationSubscription();
+      await refreshCrdtSession();
       await refreshCloudSyncDetail();
       renderCloudDialog(message);
       syncCoordinator?.wake('startup');
@@ -4435,6 +4443,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           return;
         }
         if (action === 'sign-out') {
+          await finalizeCrdtBeforeDetach();
           if (saver) await saver.flush();
           await cloud.signOut();
           cloudStatus = cloudEmptyStatus();
@@ -5156,10 +5165,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const id = vaultSelect.value;
     perform(async () => {
       try { await clearSelection(); } catch (error) { vaultSelect.value = vault?.id ?? ''; throw error; }
-      vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); await refreshRealtimeSubscription(); await refreshCollaborationSubscription(); await refreshCloudSyncDetail(); syncCoordinator?.wake('focus');
+      vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); await refreshRealtimeSubscription(); await refreshCollaborationSubscription(); await refreshCrdtSession(); await refreshCloudSyncDetail(); syncCoordinator?.wake('focus');
     });
   }, { signal: abort.signal });
-  window.addEventListener('beforeunload', event => { if (saver?.hasUnsavedChanges) { event.preventDefault(); event.returnValue = ''; } }, { signal: abort.signal });
+  window.addEventListener('beforeunload', event => {
+    if (saver?.hasUnsavedChanges || crdtRecoveryText !== null) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  }, { signal: abort.signal });
   window.addEventListener('online', () => syncCoordinator?.wake('online'), { signal: abort.signal });
   window.addEventListener('focus', () => syncCoordinator?.wake('focus'), { signal: abort.signal });
   editorHost.addEventListener('focusout', () => syncCoordinator?.wake('focus'), { signal: abort.signal });
@@ -5173,13 +5187,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
     if (selected?.kind === 'markdown') {
-      const reconciled = ensureTaskIdentityMarkers(editor.getText(), { usedIds: reservedTaskIds(selected?.id) });
-      if (reconciled.changed) {
-        editor.reconcileText(reconciled.text);
-        saver.update(reconciled.text);
-      }
+      const reconciled = ensureTaskIdentityMarkers(currentMarkdownText(), { usedIds: reservedTaskIds(selected?.id) });
+      if (reconciled.changed) applyCurrentMarkdownText(reconciled.text);
     }
-    void saver.flush()
+    const hiddenFlush = selected?.kind==='markdown' && currentCrdtFollower(selected.id)
+      ? (crdtRecoveryText=currentMarkdownText(), persistCrdtRecoveryNow())
+      : saver.flush();
+    void hiddenFlush
       .then(() => syncCoordinator?.request('visibility', 0))
       .catch(showError);
   }, { signal: abort.signal });
@@ -5244,7 +5258,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     syncCoordinator?.stop();
     realtimeWake?.stop();
     collaboration?.stop();
+    void persistCrdtRecoveryNow().catch(() => undefined);
+    stopCrdtSession();
     if (collaborationCursorCleanupTimer !== undefined) window.clearInterval(collaborationCursorCleanupTimer);
+    if (crdtRecoveryTimer !== undefined) window.clearTimeout(crdtRecoveryTimer);
     if (propertyRenderTimer !== undefined) window.clearTimeout(propertyRenderTimer);
     editor.destroy();
     graphCanvasView.destroy();
