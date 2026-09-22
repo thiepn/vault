@@ -109,3 +109,58 @@ test('A2 PWA cold-starts offline and opens durable local data', async ({ page, c
     await context.setOffline(false);
   }
 });
+
+
+test('A2 full Vault archive restores IDs and Markdown into a fresh browser profile', async ({ page, browser }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium-desktop');
+
+  await createVault(page, 'Restore Source');
+  await createNote(page, 'Archive Note', '# Archive\n\n- [ ] Keep identity\n');
+  const originalSource = await sourceText(page);
+  const originalTaskId = taskId(originalSource);
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('.inspector [data-command="vault.archive"]').click();
+  const download = await downloadPromise;
+  const archivePath = await download.path();
+  if (!archivePath) throw new Error('Playwright did not expose the downloaded Vault archive path.');
+
+  const restoredContext = await browser.newContext({ baseURL:'http://127.0.0.1:4173' });
+  try {
+    const restored = await restoredContext.newPage();
+    await restored.goto('/');
+    await expect(restored.locator('.empty-state [data-command="vault.restore"]')).toBeVisible();
+    await restored.locator('.archive-restore-input').setInputFiles(archivePath);
+
+    await expect.poll(async () => restored.locator('#vault-vault option').allTextContents()).toContain('Restore Source');
+    await restored.locator('[data-action="quick-switcher"]').click();
+    const dialog = restored.locator('.quick-switcher-dialog');
+    await dialog.locator('.quick-switcher-input').fill('Archive Note');
+    await dialog.locator('.quick-result').filter({ hasText:'Archive Note' }).first().click();
+
+    const restoredSource = await sourceText(restored);
+    expect(restoredSource).toContain('# Archive');
+    expect(restoredSource).toContain('Keep identity');
+    expect(taskId(restoredSource)).toBe(originalTaskId);
+
+    await expect.poll(async () => restored.evaluate(async id => {
+      return new Promise<boolean>((resolve, reject) => {
+        const request = indexedDB.open('vault:local');
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const database = request.result;
+          const transaction = database.transaction('entities', 'readonly');
+          const get = transaction.objectStore('entities').get(id);
+          get.onerror = () => { database.close(); reject(get.error); };
+          get.onsuccess = () => {
+            const value = get.result as { entityType?: string; title?: string } | undefined;
+            database.close();
+            resolve(value?.entityType === 'task' && value.title === 'Keep identity');
+          };
+        };
+      });
+    }, originalTaskId)).toBe(true);
+  } finally {
+    await restoredContext.close();
+  }
+});
