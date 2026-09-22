@@ -262,7 +262,7 @@ export class A2Persistence {
     await this.saveState({
       id: A2_MIGRATION_ID,
       status: 'repair-needed',
-      schemaVersion: 1,
+      schemaVersion: 2,
       startedAt: previous?.startedAt ?? now(),
       completedAt: null,
       lastError: error instanceof Error ? error.message : String(error),
@@ -590,7 +590,7 @@ export class A2LocalRepository extends LocalRepository {
   override async recoverDraft(draftId: string, rawName: string): Promise<Entry> {
     let entry = await super.recoverDraft(draftId, rawName);
     await this.mirror(async () => {
-      entry = await this.a2.adoptTaskIdentities(entry.id, false);
+      entry = await this.a2.adoptTaskIdentities(entry.id, true);
       await this.a2.syncEntry(entry.id);
     });
     return entry;
