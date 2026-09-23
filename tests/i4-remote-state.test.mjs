@@ -534,3 +534,34 @@ test('I4 SQL bootstrap reconstructs immutable state as-of H rather than reading 
   assert.match(bootstrap,/distinct on \(v\.entity_id\)/iu);
   assert.match(bootstrap,/p_after_entity_id is null or v\.entity_id>p_after_entity_id/iu);
 });
+
+
+test('I4 pull page is bounded by the high watermark captured before event selection',()=>{
+  const sql=readFileSync(new URL('../backend/supabase/i4_encrypted_remote_state.sql',import.meta.url),'utf8');
+  const start=sql.indexOf('create or replace function public.vault_sync_pull_v2');
+  const end=sql.indexOf('create or replace function public.vault_sync_ack_v2',start);
+  const pull=sql.slice(start,end);
+  assert.match(pull,/and e\.sequence>v_after[\s\S]*and e\.sequence<=v_high/u);
+});
+
+test('I4 bootstrap descriptor counts entity identities from immutable versions as-of H',()=>{
+  const sql=readFileSync(new URL('../backend/supabase/i4_encrypted_remote_state.sql',import.meta.url),'utf8');
+  const start=sql.indexOf('create or replace function public.vault_sync_begin_bootstrap_v2');
+  const end=sql.indexOf('create or replace function public.vault_sync_bootstrap_page_v2',start);
+  const begin=sql.slice(start,end);
+  assert.match(begin,/count\(distinct v\.entity_id\)/u);
+  assert.match(begin,/from vault_private\.entity_versions v/u);
+  assert.match(begin,/v\.sequence<=v_high/u);
+  assert.doesNotMatch(begin,/from vault_private\.entity_heads h/u);
+});
+
+test('I4 server rejects non-string revision and identity fields before PostgreSQL coercion',()=>{
+  const sql=readFileSync(new URL('../backend/supabase/i4_encrypted_remote_state.sql',import.meta.url),'utf8');
+  const start=sql.indexOf('create or replace function public.vault_sync_push_v2');
+  const end=sql.indexOf('-- ---------------------------------------------------------------------------\n-- Pull / acknowledgement',start);
+  const push=sql.slice(start,end);
+  assert.match(push,/jsonb_typeof\(v_wire->'operationId'\)<>'string'/u);
+  assert.match(push,/jsonb_typeof\(v_mutation->'baseRemoteRevision'\) in \('null','string'\)/u);
+  assert.match(push,/jsonb_typeof\(v_mutation->'schemaVersion'\)<>'number'/u);
+  assert.match(push,/jsonb_typeof\(v_payload->'keyGeneration'\)<>'number'/u);
+});
