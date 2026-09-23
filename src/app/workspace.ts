@@ -3658,6 +3658,40 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       return;
     }
 
+    if (isProtocolV2Conflict(record)) {
+      if (record.entityType !== 'note' || record.kind !== 'markdown') {
+        conflictPreview.value = '';
+        resolveButton.hidden = true;
+        resolveButton.disabled = true;
+        return;
+      }
+      resolveButton.hidden = false;
+      if (record.status !== 'open') {
+        conflictPreview.value = '';
+        resolveButton.disabled = true;
+        conflictStatus.textContent = 'Resolution saved. Waiting for the ordered sync event before this conflict closes.';
+        return;
+      }
+      const plan = buildMarkdownConflictPlan(record.base?.text ?? '', record.local.text ?? '', record.remote.text ?? '');
+      const missing = plan.conflictIds.filter(id => !conflictChoices.has(id));
+      resolveButton.disabled = missing.length > 0;
+      if (missing.length) {
+        conflictPreview.value = '';
+        conflictStatus.textContent = 'Choose a resolution for all ' + missing.length + ' overlapping Markdown region' + (missing.length === 1 ? '' : 's') + '.';
+        return;
+      }
+      try {
+        conflictPreview.value = plan.autoMergedText ?? resolveMarkdownConflictPlan(plan, conflictChoiceObject());
+        conflictStatus.textContent = 'Manual merge preview ready. Mine and remote remain preserved until you apply it.';
+      } catch (error) {
+        conflictPreview.value = '';
+        conflictStatus.textContent = error instanceof Error ? error.message : 'Manual merge preview could not be built.';
+        resolveButton.disabled = true;
+      }
+      return;
+    }
+
+    resolveButton.hidden = false;
     const plan = buildMarkdownConflictPlan(record.baseText, record.localText, record.remoteText);
     const missing = plan.conflictIds.filter(id => !conflictChoices.has(id));
     resolveButton.disabled = missing.length > 0;
