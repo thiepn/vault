@@ -490,3 +490,65 @@ test('Phase 15 mobile owner Sync now remains blocked until encrypted setup',asyn
   expect(remote.entries.size).toBe(0);
   expect(remote.calls.some(call=>call.includes('/rest/v1/rpc/vault_sync_push'))).toBe(false);
 });
+
+
+test('I5 browser activates E2EE and syncs Note content only as Protocol v2 ciphertext',async({page},testInfo)=>{
+  test.skip(testInfo.project.name!=='chromium-desktop');
+  test.setTimeout(60_000);
+  const remote=new MockSyncCloud();
+  await remote.attach(page);
+
+  const secretMarkdown='# browser plaintext must stay local\nprivate sentence 4917';
+  await createVault(page,'Encrypted Browser Vault');
+  await createNote(page,'Cipher Note',secretMarkdown);
+
+  const dialog=await signIn(page);
+  await dialog.locator('[data-cloud-action="adopt"]').click();
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
+
+  await dialog.locator('[data-cloud-action="activate-encrypted"]').click();
+  const recovery=dialog.locator('textarea[aria-label="Vault Recovery Code"]');
+  await expect(recovery).toBeVisible({timeout:20_000});
+  await expect(recovery).toHaveValue(/^VLT1-/);
+  await dialog.locator('.cloud-vault-state input[type="checkbox"]').check();
+  await dialog.getByRole('button',{name:'Enable encrypted sync'}).click();
+
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('End-to-end encrypted',{timeout:20_000});
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Protocol v2');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeEnabled();
+  expect(remote.protocolVersion).toBe(2);
+  expect(remote.keyReady).toBe(true);
+
+  await dialog.locator('[data-cloud-action="sync"]').click();
+  await expect(dialog.locator('.cloud-message')).toContainText('Encrypted sync complete',{timeout:20_000});
+  await expect(dialog.locator('.cloud-sync-detail')).toContainText('0 queued');
+
+  expect(remote.v2Wires.length).toBeGreaterThan(0);
+  expect(remote.v2Heads.size).toBeGreaterThan(0);
+  expect(remote.calls.filter(call=>call==='POST /rest/v1/rpc/vault_sync_push')).toHaveLength(0);
+  expect(remote.calls.some(call=>call==='POST /rest/v1/rpc/vault_sync_push_v2')).toBe(true);
+
+  for(const wire of remote.v2Wires){
+    expect(wire).not.toContain('browser plaintext must stay local');
+    expect(wire).not.toContain('private sentence 4917');
+    expect(wire).not.toContain('Cipher Note');
+    const operation=JSON.parse(wire);
+    expect(operation.protocolVersion).toBe(2);
+    expect(operation.accountId).toBe(accountId);
+    for(const mutation of operation.mutations){
+      expect(mutation.kind).toBe('put');
+      expect(mutation.payload.algorithm).toBe('A256GCM');
+      expect(typeof mutation.payload.ciphertext).toBe('string');
+      expect(mutation.payload.ciphertext.length).toBeGreaterThan(20);
+      expect('text' in mutation).toBe(false);
+      expect('name' in mutation).toBe(false);
+      expect('mimeType' in mutation).toBe(false);
+    }
+  }
+
+  await dialog.locator('button[value="close"]').click();
+  await quickOpen(page,'Cipher Note');
+  expect(await sourceText(page)).toContain('private sentence 4917');
+  await expect(page.locator('.save-status')).toContainText('synced');
+});
