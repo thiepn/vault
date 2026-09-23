@@ -13,6 +13,7 @@ export interface CrdtJournalBase {
   baseRevision:number;
   baseFingerprint:string;
   baseText:string;
+  baseVerified:boolean;
 }
 
 export interface CrdtJournalSession extends CrdtJournalBase {
@@ -69,7 +70,8 @@ function validateBase(base:CrdtJournalBase):void{
   if(!UUID.test(base.vaultId)||!UUID.test(base.entryId)||!UUID.test(base.ownerId)||!UUID.test(base.epoch)){
     throw new VaultError('PROTOCOL','CRDT journal identity is invalid.');
   }
-  if(!Number.isSafeInteger(base.baseRevision)||base.baseRevision<1||!FP.test(base.baseFingerprint)||typeof base.baseText!=='string'){
+  if(!Number.isSafeInteger(base.baseRevision)||base.baseRevision<1||!FP.test(base.baseFingerprint)
+    ||typeof base.baseText!=='string'||typeof base.baseVerified!=='boolean'){
     throw new VaultError('PROTOCOL','CRDT journal canonical base is invalid.');
   }
 }
@@ -130,15 +132,23 @@ export class CrdtJournalStore {
       const previous=await tx.store('crdtSessions').get<CrdtJournalSession>(id);
       if(previous){
         validateSession(previous);
-        if(previous.roomKey!==roomKey||previous.baseText!==base.baseText||previous.status==='canonicalized') {
+        if(previous.roomKey!==roomKey||previous.status==='canonicalized') {
           throw new VaultError('PROTOCOL','CRDT journal session identity cannot be reused for another canonical state.');
         }
-        if(previous.status==='closed'){
-          const reopened={...previous,status:'active' as const,closedAt:null,updatedAt:new Date().toISOString()};
+        if(previous.baseVerified && base.baseVerified && previous.baseText!==base.baseText){
+          throw new VaultError('PROTOCOL','Verified CRDT journal base Markdown cannot change.');
+        }
+        const timestamp=new Date().toISOString();
+        const upgraded=!previous.baseVerified && base.baseVerified
+          ? {...previous,baseText:base.baseText,baseVerified:true,updatedAt:timestamp}
+          : previous;
+        if(upgraded.status==='closed'){
+          const reopened={...upgraded,status:'active' as const,closedAt:null,updatedAt:timestamp};
           await tx.store('crdtSessions').put(reopened);
           return reopened;
         }
-        return previous;
+        if(upgraded!==previous) await tx.store('crdtSessions').put(upgraded);
+        return upgraded;
       }
       const timestamp=new Date().toISOString();
       const session:CrdtJournalSession={
@@ -211,6 +221,8 @@ export class CrdtJournalStore {
     for(const update of updates) validateUpdate(update);
     const activeSessions=sessions.filter(session=>
       session.status!=='canonicalized'
+      && session.baseVerified
+      && base.baseVerified
       && session.vaultId===base.vaultId
       && session.entryId===base.entryId
       && session.ownerId===base.ownerId
@@ -228,6 +240,29 @@ export class CrdtJournalStore {
       updates:activeUpdates,
       byteSize:activeUpdates.reduce((total,update)=>total+update.byteLength,0),
     };
+  }
+
+  async verifyBase(base:CrdtJournalBase):Promise<void>{
+    if(!base.baseVerified) throw new VaultError('PROTOCOL','Only a verified canonical base can verify journal history.');
+    const roomKey=crdtJournalRoomKey(base);
+    await this.driver.transaction(['crdtSessions'],'readwrite',async tx=>{
+      const sessions=await tx.store('crdtSessions').allFromIndex<CrdtJournalSession>('roomKey',roomKey);
+      const timestamp=new Date().toISOString();
+      for(const session of sessions){
+        validateSession(session);
+        if(session.ownerId!==base.ownerId||session.epoch!==base.epoch) continue;
+        if(session.baseVerified){
+          if(session.baseText!==base.baseText) continue;
+          continue;
+        }
+        await tx.store('crdtSessions').put({
+          ...session,
+          baseText:base.baseText,
+          baseVerified:true,
+          updatedAt:timestamp,
+        });
+      }
+    });
   }
 
   async close(sessionId:string):Promise<void>{
@@ -251,8 +286,9 @@ export class CrdtJournalStore {
       const timestamp=new Date().toISOString();
       for(const session of sessions){
         validateSession(session);
-        if(session.status==='canonicalized' || session.baseText!==base.baseText
-          || session.ownerId!==base.ownerId || session.epoch!==base.epoch) continue;
+        if(session.status==='canonicalized'
+          || session.ownerId!==base.ownerId || session.epoch!==base.epoch
+          || (base.baseVerified && session.baseVerified && session.baseText!==base.baseText)) continue;
         await tx.store('crdtSessions').put({
           ...session,
           status:'canonicalized',
@@ -286,7 +322,8 @@ export class CrdtJournalStore {
     for(const row of rows) validateUpdate(row);
     const compatibleIds=new Set(sessions
       .filter(candidate=>
-        candidate.baseText===session.baseText
+        candidate.baseVerified===session.baseVerified
+        && candidate.baseText===session.baseText
         && candidate.ownerId===session.ownerId
         && candidate.epoch===session.epoch
         && candidate.baseRevision===session.baseRevision
