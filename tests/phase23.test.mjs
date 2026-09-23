@@ -66,6 +66,7 @@ const BASE={
   baseRevision:7,
   baseFingerprint:'deadbeef',
   baseText:'hello',
+  baseVerified:true,
 };
 const DOC_BASE={entryId:ENTRY,revision:7,fingerprint:'deadbeef',text:'hello'};
 
