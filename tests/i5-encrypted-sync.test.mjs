@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { VaultCryptoContext } from '../build/core/crypto/context.js';
 import { createNameToken } from '../build/core/crypto/keys.js';
 import { generateVaultMasterKey } from '../build/core/crypto/keys.js';
