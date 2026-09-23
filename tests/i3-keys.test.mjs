@@ -532,7 +532,7 @@ test('I3 Supabase migration implements every multi-generation RPC used by the cl
     'vault_key_rotate_recovery',
   ];
   for(const name of required){
-    assert.match(sql,new RegExp('create\\\\s+or\\\\s+replace\\\\s+function\\\\s+public\\\\.'+name+'\\\\s*\\\\(','iu'),name+' RPC is missing');
+    assert.match(sql,new RegExp(String.raw`create\\s+or\\s+replace\\s+function\\s+public\\.${name}\\s*\\(`,'iu'),name+' RPC is missing');
   }
   assert.match(sql,/create table if not exists vault_private\.vault_key_state/iu);
   assert.match(sql,/active_generation integer not null/iu);
