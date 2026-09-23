@@ -1,5 +1,5 @@
 const BACKGROUND_DB = 'vault:local';
-const BACKGROUND_SCHEMA = 5;
+const BACKGROUND_SCHEMA = 6;
 const BACKGROUND_TAG = 'vault-background-sync';
 const PERIODIC_TAG = 'vault-periodic-sync';
 
@@ -37,6 +37,12 @@ async function openBackgroundDatabase() {
           inbox.createIndex('vaultId', 'vaultId');
           inbox.createIndex('vaultSequence', ['vaultId', 'sequence'], { unique: true });
         }
+      }
+      if (event.oldVersion < 6 && !database.objectStoreNames.contains('conflicts')) {
+        const conflicts = database.createObjectStore('conflicts', { keyPath: 'id' });
+        conflicts.createIndex('vaultId', 'vaultId');
+        conflicts.createIndex('entryId', 'entryId');
+        conflicts.createIndex('conflictEntryId', 'conflictEntryId');
       }
     };
     request.onsuccess = () => resolve(request.result);
