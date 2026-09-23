@@ -20,6 +20,10 @@ export interface SyncConflictRecordV2 {
   status:SyncConflictStatusV2;
   baseRevision:string|null;
   remoteRevision:string;
+  remoteSequence:string;
+  remoteNameToken:string;
+  remoteKeyGeneration:number;
+  remoteStateSha256:string;
   base:SyncEntityStateV2|null;
   local:SyncEntityStateV2;
   remote:SyncEntityStateV2;
@@ -59,6 +63,12 @@ export function validateSyncConflictV2(record:SyncConflictRecordV2):void{
   }
   revision(record.baseRevision,'Protocol v2 conflict base revision',true);
   revision(record.remoteRevision,'Protocol v2 conflict remote revision');
+  revision(record.remoteSequence,'Protocol v2 conflict remote sequence');
+  if(!/^[A-Za-z0-9_-]{43}$/u.test(record.remoteNameToken)
+    ||!Number.isSafeInteger(record.remoteKeyGeneration)||record.remoteKeyGeneration<1
+    ||!/^[0-9a-f]{64}$/u.test(record.remoteStateSha256)){
+    throw new VaultError('CORRUPT','Protocol v2 conflict remote cryptographic metadata is invalid.');
+  }
   validateState(record.local,'Conflict LOCAL');
   validateState(record.remote,'Conflict REMOTE');
   if(record.base)validateState(record.base,'Conflict BASE');
@@ -128,6 +138,10 @@ export interface UpsertSyncConflictV2 {
   kind:SyncConflictKindV2;
   baseRevision:string|null;
   remoteRevision:string;
+  remoteSequence:string;
+  remoteNameToken:string;
+  remoteKeyGeneration:number;
+  remoteStateSha256:string;
   base:SyncEntityStateV2|null;
   local:SyncEntityStateV2;
   remote:SyncEntityStateV2;
@@ -152,6 +166,10 @@ export async function upsertSyncConflictInTx(
       local:structuredClone(input.local),
       remote:structuredClone(input.remote),
       remoteRevision:input.remoteRevision,
+      remoteSequence:input.remoteSequence,
+      remoteNameToken:input.remoteNameToken,
+      remoteKeyGeneration:input.remoteKeyGeneration,
+      remoteStateSha256:input.remoteStateSha256,
       markdownConflictIds:[...(input.markdownConflictIds??[])],
       source:input.source,
       status:'open',
@@ -176,6 +194,10 @@ export async function upsertSyncConflictInTx(
     status:'open',
     baseRevision:input.baseRevision,
     remoteRevision:input.remoteRevision,
+    remoteSequence:input.remoteSequence,
+    remoteNameToken:input.remoteNameToken,
+    remoteKeyGeneration:input.remoteKeyGeneration,
+    remoteStateSha256:input.remoteStateSha256,
     base:input.base?structuredClone(input.base):null,
     local:structuredClone(input.local),
     remote:structuredClone(input.remote),
