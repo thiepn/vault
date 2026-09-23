@@ -148,8 +148,10 @@ test('Phase 14 sign-in stays local until explicit adoption and sign-out preserve
   expect(remote.calls.some(call=>call.includes('POST /rest/v1/vault_cloud_vaults'))).toBe(false);
 
   await dialog.locator('[data-cloud-action="adopt"]').click();
-  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
-  await expect(dialog.locator('[data-cloud-action="adopt"]')).toBeDisabled();
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('no canonical content uploaded');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
+  await expect(dialog.locator('[data-cloud-action="activate-encrypted"]')).toBeEnabled();
   expect(remote.adopted).toBe(true);
   expect(remote.remoteVaultId).toBe(localVaultId);
   await expect(page.locator('[data-action="cloud-open"]')).toHaveText('Cloud ✓');
@@ -180,7 +182,9 @@ test('Phase 14 Cloud panel and explicit adoption remain usable on mobile',async(
   const dialog=await signIn(page);
   await expect(dialog.locator('.cloud-vault-state')).toContainText('Local only');
   await dialog.locator('[data-cloud-action="adopt"]').tap();
-  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('E2EE setup required');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
   await expect(dialog.locator('.cloud-devices')).toContainText('Current device');
   await dialog.locator('[data-cloud-action="sign-out"]').tap();
   await expect(dialog.locator('.cloud-signed-out')).toBeVisible();
