@@ -53,6 +53,7 @@ import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-t
 import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
 import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
 import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
+import { MarkdownConflictStore } from '../sync/conflict-store.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
@@ -69,6 +70,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudConfig = browserCloudConfiguration();
   const syncState = new SyncLocalState(db);
   const backgroundState = new BackgroundReplicationState(db);
+  const conflictStore = new MarkdownConflictStore(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
@@ -103,7 +105,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const registry = new SupabaseCloudRegistry(cloudConfig, () => auth.accessToken());
     const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
     const syncReplica = new SyncReplicaStore(db, a2);
-    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState);
+    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState, conflictStore);
     backgroundBridge = new BackgroundReplicationBridge(backgroundState,cloudConfig,auth,db.name);
     cloud = new CloudFoundation(
       auth,
