@@ -157,6 +157,9 @@ class FakeEncryptedServer{
     this.pushedWires.push(sealed.wire);
     const snapshots=[];
     for(const mutation of operation.mutations){
+      if(mutation.structural.parentId && !this.revisions.has(mutation.structural.parentId)){
+        return {status:'conflict',reason:'parent',entityId:mutation.entityId,current:null};
+      }
       const current=this.revisions.get(mutation.entityId) ?? 0n;
       if(mutation.baseRemoteRevision===null){
         if(current!==0n)return {status:'conflict',reason:'exists',entityId:mutation.entityId,current:null};
@@ -330,6 +333,39 @@ test('I5 one-device sync keeps a newer edit dirty after first acceptance and sen
       assert.equal(JSON.stringify(parsed).includes('first'),false);
       assert.equal(JSON.stringify(parsed).includes('second'),false);
     }
+  }finally{context.destroy();}
+});
+
+test('I5 push order is dependency-safe even when the durable outbox returns child before parent',async()=>{
+  const driver=new MemoryDriver();
+  driver.stores.get('vaults').set(vaultId,cloudVault(2));
+  const repository=new LocalRepository(driver);
+  const folder=await repository.createEntry(vaultId,null,'Folder','directory');
+  const note=await repository.createEntry(vaultId,folder.id,'Child.md','markdown','child');
+
+  class ReversePendingState extends SyncLocalStateV2 {
+    async pending(...args){
+      return (await super.pending(...args)).reverse();
+    }
+  }
+  const state=new ReversePendingState(driver);
+  await state.initializeCursor(vaultId,accountId,epoch);
+  const replica=new EncryptedReplicaStoreV2(driver);
+  const server=new FakeEncryptedServer();
+  const context=VaultCryptoContext.generate(vaultId,1);
+  const engine=new EncryptedSyncEngineV2(server,state,replica,repository);
+  try{
+    const summary=await engine.sync(cloudVault(2),accountId,{
+      active:async()=>context,
+      forGeneration:async()=>context,
+    });
+    assert.equal(summary.pushedOperations,2);
+    assert.equal(server.revisions.get(folder.id),1n);
+    assert.equal(server.revisions.get(note.id),1n);
+    const first=decodeOperationV2(server.pushedWires[0]);
+    const second=decodeOperationV2(server.pushedWires[1]);
+    assert.equal(first.mutations[0].entityId,folder.id);
+    assert.equal(second.mutations[0].entityId,note.id);
   }finally{context.destroy();}
 });
 
