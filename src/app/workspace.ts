@@ -51,11 +51,13 @@ import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '.
 import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-text.js';
 import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
+import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
+import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 20 browser workspace: Yjs live Markdown co-editing on the accepted Phase 1-19 + A1/A2 foundation. */
+/** Phase 21 browser workspace: best-effort worker replication on the accepted Phase 1-20 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -66,10 +68,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const repository = new A2LocalRepository(db, a2);
   const cloudConfig = browserCloudConfiguration();
   const syncState = new SyncLocalState(db);
+  const backgroundState = new BackgroundReplicationState(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
   let syncCoordinator: SyncCoordinator | null = null;
+  let backgroundBridge: BackgroundReplicationBridge | null = null;
+  let backgroundStatus: BackgroundStatusRecord | null = null;
   let realtimeWake: SupabaseRealtimeWakeup | null = null;
   let realtimeStatus: RealtimeWakeStatus = 'idle';
   let collaboration: SupabaseCollaborationRealtime | null = null;
@@ -94,7 +99,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const registry = new SupabaseCloudRegistry(cloudConfig, () => auth.accessToken());
     const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
     const syncReplica = new SyncReplicaStore(db, a2);
-    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository);
+    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState);
+    backgroundBridge = new BackgroundReplicationBridge(backgroundState,cloudConfig,auth,db.name);
     cloud = new CloudFoundation(
       auth,
       registry,
@@ -218,7 +224,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 20 · Live co-editing</span>
+        <span class="stage">Phase 21 · Background replication</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
