@@ -257,7 +257,7 @@ returns boolean
 language plpgsql
 immutable
 set search_path=''
-as $
+as $$
 begin
   if jsonb_typeof(p_value)<>'object' then
     return false;
@@ -268,7 +268,7 @@ begin
     from jsonb_object_keys(p_value) as key_name
   );
 end;
-$;
+$$;
 
 create or replace function vault_private.valid_entity_type(p_type text)
 returns boolean
