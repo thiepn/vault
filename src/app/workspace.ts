@@ -996,7 +996,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function refreshCollaborationSubscription(): Promise<void> {
     const role = activeCollaborationRole();
-    if (!collaboration || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
+    if (!collaboration || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud || vault.cloud.protocolVersion!==1
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud) || !role) {
       await finalizeCrdtBeforeDetach();
       collaboration?.stop();
@@ -1466,7 +1466,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   async function scheduleBackgroundReplication(targetVault:Vault|undefined=vault): Promise<void> {
-    if(!backgroundBridge || !syncEngine || !targetVault?.cloud || !cloudStatus.signedIn || !cloudStatus.identity) return;
+    if(!backgroundBridge || !syncEngine || !targetVault?.cloud || targetVault.cloud.protocolVersion!==1 || !cloudStatus.signedIn || !cloudStatus.identity) return;
     if(targetVault.cloud.authUserId!==cloudStatus.identity.userId || !cloudBindingCanWrite(targetVault.cloud)) return;
     await backgroundBridge.prepare(targetVault,cloudStatus.identity.userId,syncEngine);
     backgroundStatus=await backgroundState.status();
@@ -1483,7 +1483,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   async function refreshRealtimeSubscription(): Promise<void> {
-    if (!realtimeWake || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
+    if (!realtimeWake || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud || vault.cloud.protocolVersion!==1
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
       realtimeWake?.stop();
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
