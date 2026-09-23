@@ -48,6 +48,7 @@ class MemoryStore {
     if (this.name === 'remoteShadows') return value.entryId;
     if (this.name === 'syncCursors') return value.vaultId;
     if (this.name === 'knowledge') return value.entryId;
+    if (this.name === 'conflicts') return value.id;
     throw new Error('unknown store ' + this.name);
   }
   #assertUnique(value, key) {
@@ -61,7 +62,7 @@ class MemoryStore {
 class MemoryDriver {
   stores = new Map();
   constructor() {
-    for (const name of ['vaults','entries','contents','attachments','dirty','outbox','revisions','drafts','settings','remoteShadows','syncCursors','knowledge']) {
+    for (const name of ['vaults','entries','contents','attachments','dirty','outbox','revisions','drafts','settings','remoteShadows','syncCursors','knowledge','conflicts']) {
       this.stores.set(name, new Map());
     }
   }
