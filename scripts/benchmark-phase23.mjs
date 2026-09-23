@@ -14,14 +14,17 @@ class Store {
 }
 class Driver {
   constructor(){this.stores=new Map([['crdtSessions',new Map()],['crdtUpdates',new Map()]]);}
-  async transaction(names,mode,body){
-    const working=new Map([...this.stores].map(([name,data])=>[
-      name,
-      mode==='readwrite'&&names.includes(name)?new Map([...data].map(([key,value])=>[key,structuredClone(value)])):data,
-    ]));
-    const result=await body({store:name=>new Store(working.get(name))});
-    if(mode==='readwrite')for(const name of names)this.stores.set(name,working.get(name));
-    return result;
+  async transaction(names,_mode,body){
+    // This is a CPU/serialization benchmark, not a transaction-isolation test.
+    // Cloning every accumulated row on every append makes the fixture O(n²)
+    // and measures the fake driver rather than CrdtJournalStore. Core tests
+    // separately exercise rollback/transaction semantics.
+    return body({store:name=>{
+      if(!names.includes(name)) throw new Error('store outside benchmark transaction: '+name);
+      const data=this.stores.get(name);
+      if(!data) throw new Error('unknown benchmark store: '+name);
+      return new Store(data);
+    }});
   }
 }
 
