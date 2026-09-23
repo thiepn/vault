@@ -337,6 +337,64 @@ test('I5 one-device sync keeps a newer edit dirty after first acceptance and sen
   }finally{context.destroy();}
 });
 
+test('I5 lost push response retries exact immutable wire and converges through server idempotency',async()=>{
+  const driver=new MemoryDriver();
+  driver.stores.get('vaults').set(vaultId,cloudVault(2));
+  const repository=new LocalRepository(driver);
+  const note=await repository.createEntry(vaultId,null,'Secret.md','markdown','first');
+  const state=new SyncLocalStateV2(driver);
+  await state.initializeCursor(vaultId,accountId,epoch);
+  const replica=new EncryptedReplicaStoreV2(driver);
+  const server=new FakeEncryptedServer();
+
+  let first=true;
+  const flaky={
+    pullV2:server.pullV2.bind(server),
+    ackV2:server.ackV2.bind(server),
+    async pushV2(sealed){
+      const result=await server.pushV2(sealed);
+      if(first){
+        first=false;
+        throw new Error('simulated lost push response');
+      }
+      return result;
+    },
+  };
+  const context=VaultCryptoContext.generate(vaultId,1);
+  const engine=new EncryptedSyncEngineV2(flaky,state,replica,repository);
+  try{
+    await assert.rejects(
+      ()=>engine.sync(cloudVault(2),accountId,{
+        active:async()=>context,
+        forGeneration:async()=>context,
+      }),
+      /lost push response/,
+    );
+    assert.equal(server.events.length,1);
+    assert.equal(await state.count(vaultId,accountId),1);
+    const queued=[...driver.stores.get('outbox').values()][0];
+    const originalWire=queued.wire;
+    const originalId=queued.id;
+
+    // Make retry immediately eligible without changing the sealed operation.
+    queued.nextAttemptAt=new Date(0).toISOString();
+    driver.stores.get('outbox').set(queued.id,structuredClone(queued));
+
+    const summary=await engine.sync(cloudVault(2),accountId,{
+      active:async()=>context,
+      forGeneration:async()=>context,
+    });
+    assert.equal(summary.observedOwnOperations,1);
+    assert.equal(summary.outboxRemaining,0);
+    assert.equal(server.events.length,1);
+    assert.equal(server.pushedWires[0],originalWire);
+    const accepted=server.accepted.get(originalId);
+    assert.equal(accepted.wire,originalWire);
+    assert.equal(driver.stores.get('dirty').size,0);
+    assert.equal((await repository.read(note.id)).content.text,'first');
+  }finally{context.destroy();}
+});
+
 test('I5 push order is dependency-safe even when the durable outbox returns child before parent',async()=>{
   const driver=new MemoryDriver();
   driver.stores.get('vaults').set(vaultId,cloudVault(2));
