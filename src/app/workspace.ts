@@ -1790,15 +1790,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     checked.addEventListener('change',()=>{confirm.disabled=!checked.checked;});
 
     return new Promise(resolve=>{
+      let settled=false;
       const finish=(value:boolean)=>{
+        if(settled)return;
+        settled=true;
         cancel.removeEventListener('click',cancelHandler);
         confirm.removeEventListener('click',confirmHandler);
+        cloudDialog.removeEventListener('cancel',dialogCancelHandler);
+        cloudDialog.removeEventListener('close',dialogCloseHandler);
         resolve(value);
       };
       const cancelHandler=()=>finish(false);
       const confirmHandler=()=>finish(true);
+      const dialogCancelHandler=()=>finish(false);
+      const dialogCloseHandler=()=>finish(false);
       cancel.addEventListener('click',cancelHandler);
       confirm.addEventListener('click',confirmHandler);
+      cloudDialog.addEventListener('cancel',dialogCancelHandler);
+      cloudDialog.addEventListener('close',dialogCloseHandler);
       codeBox.focus();
       codeBox.select();
     });
