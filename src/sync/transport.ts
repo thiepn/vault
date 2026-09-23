@@ -4,6 +4,7 @@ import type { PublicBackendConfig } from '../services/runtime-config.js';
 import type { Cursor, SealedOperation } from './protocol.js';
 import { sha256Hex } from '../storage/blob-store.js';
 import { validatePushResult, validateRemotePage, type RemotePushResult, type RemoteReplicationPage } from './remote-types.js';
+import { validateSyncBackendCapabilities, type SyncBackendCapabilities } from './capabilities.js';
 
 type FetchLike=typeof fetch;
 
@@ -54,6 +55,15 @@ export class SupabaseSyncTransport {
       throw new VaultError(response.status===401||response.status===403?'ACCOUNT_MISMATCH':'CONFIGURATION',message(parsed,'Cloud synchronization request failed.'));
     }
     return parsed;
+  }
+
+  /**
+   * I1 negotiation endpoint. It intentionally reports Protocol v2 contract
+   * availability separately from whether encrypted content ingestion is live.
+   */
+  async capabilities():Promise<SyncBackendCapabilities>{
+    const result=await this.rpc('vault_sync_capabilities_v2',{});
+    return validateSyncBackendCapabilities(result);
   }
 
   async pull(vaultId:VaultId,epoch:string,after:Cursor,limit=500):Promise<RemoteReplicationPage>{
