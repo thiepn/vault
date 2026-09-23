@@ -50,6 +50,7 @@ import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realti
 import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
 import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-text.js';
+import { CrdtJournalStore, type CrdtJournalBase, type CrdtJournalSource } from '../collaboration/crdt-journal.js';
 import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
 import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
 import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
@@ -59,7 +60,7 @@ import { buildMarkdownConflictPlan, resolveMarkdownConflictPlan, type ConflictCh
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 22 browser workspace: semantic interactive conflict resolution on the accepted Phase 1-21 + A1/A2 foundation. */
+/** Phase 23 browser workspace: durable CRDT collaboration journal on the accepted Phase 1-22 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -72,6 +73,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const syncState = new SyncLocalState(db);
   const backgroundState = new BackgroundReplicationState(db);
   const conflictStore = new MarkdownConflictStore(db);
+  const crdtJournal = new CrdtJournalStore(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
@@ -94,6 +96,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let crdtLeaderSession: string | null = null;
   let crdtRecoveryTimer: number | undefined;
   let crdtRecoveryText: string | null = null;
+  let crdtJournalSessionId: string | null = null;
+  let crdtJournalBase: CrdtJournalBase | null = null;
+  let crdtJournalWrite: Promise<void> = Promise.resolve();
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
@@ -1048,6 +1053,70 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if(draft?.text===text) await repository.discardRecoveryDraft(id);
   }
 
+  function journalBaseFor(base:CrdtBaseSnapshot): CrdtJournalBase | null {
+    if(!vault?.cloud || !cloudStatus.identity || vault.cloud.authUserId!==cloudStatus.identity.userId) return null;
+    return {
+      vaultId:vault.id,
+      entryId:base.entryId,
+      ownerId:cloudStatus.identity.userId,
+      epoch:vault.cloud.epoch,
+      baseRevision:base.revision,
+      baseFingerprint:base.fingerprint,
+    };
+  }
+
+  function queueCrdtJournalUpdate(
+    source:CrdtJournalSource,
+    sourceSessionId:string,
+    update:Uint8Array,
+    publish=false,
+  ): Promise<void> {
+    const sessionId=crdtJournalSessionId;
+    if(!sessionId){
+      if(publish) crdtRealtime?.publishUpdate(update);
+      return Promise.resolve();
+    }
+    const operation=crdtJournalWrite.then(async()=>{
+      await crdtJournal.append(sessionId,{source,sourceSessionId,bytes:update});
+      if(publish) crdtRealtime?.publishUpdate(update);
+    });
+    crdtJournalWrite=operation.catch(error=>{
+      if(!disposed){
+        errorBox.textContent='Live collaboration journal failed. The current text is still preserved locally, but Vault paused durable CRDT transport until the note is reopened. '
+          +(error instanceof Error?error.message:'');
+        errorBox.hidden=false;
+      }
+      crdtRealtime?.stop();
+    });
+    return operation;
+  }
+
+  async function flushCrdtJournal(): Promise<void> {
+    await crdtJournalWrite.catch(()=>undefined);
+  }
+
+  async function closeCrdtJournalSession(): Promise<void> {
+    const id=crdtJournalSessionId;
+    crdtJournalSessionId=null;
+    crdtJournalBase=null;
+    await flushCrdtJournal();
+    if(id) await crdtJournal.close(id);
+  }
+
+  async function canonicalizeCrdtJournal(
+    base:CrdtJournalBase|null,
+    canonicalRevision:number|null,
+  ): Promise<void> {
+    if(!base || canonicalRevision===null || canonicalRevision<=base.baseRevision) return;
+    await flushCrdtJournal();
+    await crdtJournal.canonicalizeRoom(base,canonicalRevision);
+    await crdtJournal.prune(base.vaultId).catch(()=>undefined);
+    if(crdtJournalBase?.entryId===base.entryId && crdtJournalBase.baseRevision===base.baseRevision){
+      crdtJournalSessionId=null;
+      crdtJournalBase=null;
+    }
+  }
+
   function activeCrdtRole(): CrdtEditorRole | null {
     const role=activeCollaborationRole();
     return role==='owner' || role==='editor' ? role : null;
@@ -1124,7 +1193,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       onUpdate(update) {
         if(disposed || crdtDocument!==document) return;
         crdtLocalDirty=true;
-        crdtRealtime?.publishUpdate(update);
+        void queueCrdtJournalUpdate('local',storageSessionId,update,true).catch(()=>undefined);
         renderCollaborationState();
       },
     },seed);
@@ -1166,11 +1235,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       updateCrdtLeader();
       return;
     }
+    await closeCrdtJournalSession();
     stopCrdtSession();
     const base=await verifiedCrdtBase();
     if(!base) return;
+    const journalBase=journalBaseFor(base);
+    if(!journalBase) return;
     await clearCrdtRecoveryIfCanonical(base.entryId,base.text);
-    installCrdtDocument(base,true);
+    const session=await crdtJournal.ensureSession(journalBase,storageSessionId);
+    crdtJournalSessionId=session.id;
+    crdtJournalBase=journalBase;
+    const replay=await crdtJournal.replay(journalBase);
+    const document=installCrdtDocument(base,true);
+    for(const update of replay.updates) document.applyRemoteUpdate(update.bytes);
+    if(replay.updates.length && document.value!==base.text){
+      crdtLocalDirty=true;
+      queueCrdtRecovery(document.value);
+    }
     updateCrdtLeader();
     if(!crdtRealtime) return;
     await crdtRealtime.subscribe({
@@ -1197,6 +1278,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       requestCrdtSync();
       return;
     }
+    void queueCrdtJournalUpdate('remote',message.sessionId,message.update).catch(()=>undefined);
     crdtDocument.applyRemoteUpdate(message.update);
   }
 
@@ -1218,6 +1300,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if(!crdtLeaderSession || message.sessionId!==crdtLeaderSession) return;
     const sameBase=message.baseRevision===crdtBase.revision && message.baseFingerprint===crdtBase.fingerprint;
     if(!message.replace && sameBase){
+      void queueCrdtJournalUpdate('sync',message.sessionId,message.update).catch(()=>undefined);
       crdtDocument.applyRemoteUpdate(message.update);
       return;
     }
@@ -1235,6 +1318,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       fingerprint:message.baseFingerprint,
       text:'',
     };
+    const replacementJournalBase=journalBaseFor(replacementBase);
+    void closeCrdtJournalSession().then(async()=>{
+      if(!replacementJournalBase) return;
+      const session=await crdtJournal.ensureSession(replacementJournalBase,storageSessionId);
+      crdtJournalSessionId=session.id;
+      crdtJournalBase=replacementJournalBase;
+      await queueCrdtJournalUpdate('sync',message.sessionId,message.update);
+    }).catch(showError);
     const replacement=installCrdtDocument(replacementBase,false);
     replacement.applyRemoteUpdate(message.update);
     crdtLocalDirty=false;
@@ -1253,6 +1344,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await saver?.flush();
       await clearCrdtRecoveryDraft(selected.id);
     }
+    await closeCrdtJournalSession();
     stopCrdtSession();
   }
 
