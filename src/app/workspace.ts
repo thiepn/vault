@@ -1333,29 +1333,56 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     cloudVaultState.replaceChildren();
     const activeRole=vault?.mode==='cloud' && vault.cloud ? effectiveCloudRole(vault.cloud) : null;
-    cloudOwnerShare.hidden = activeRole !== 'owner';
+    cloudOwnerShare.hidden = activeRole !== 'owner' || vault?.cloud?.protocolVersion===2;
     const syncEligible = !!vault
       && vault.mode === 'cloud'
       && vault.cloud?.accountId === cloudStatus.account.id
       && vault.cloud.authUserId === cloudStatus.identity.userId
       && cloudBindingCanRead(vault.cloud);
-    cloudSyncNow.disabled = !syncEligible || !syncEngine;
-    cloudSyncDetail.textContent = syncEligible ? (cachedSyncDetail || 'Ready to synchronize.') : '';
+    const encryptedPending=syncEligible && activeRole==='owner' && vault?.cloud?.protocolVersion===1;
+    cloudSyncNow.disabled = !syncEligible
+      || encryptedPending
+      || (vault?.cloud?.protocolVersion===2 ? !syncEngineV2 : !syncEngine);
+    cloudSyncDetail.textContent = syncEligible
+      ? (encryptedPending ? 'Cloud linked · end-to-end encryption setup required before first upload.' : (cachedSyncDetail || 'Ready to synchronize.'))
+      : '';
 
     if (!vault) {
       cloudVaultState.append(cloudRow('No Vault selected', 'Choose or create a local Vault before enabling cloud sync.'));
       cloudAdopt.disabled = true;
+      cloudAdopt.dataset.cloudAction='adopt';
     } else if (vault.mode === 'local') {
       cloudVaultState.append(cloudRow(vault.name, 'Local only · nothing has been uploaded.', 'local'));
       cloudAdopt.disabled = false;
+      cloudAdopt.dataset.cloudAction='adopt';
       cloudAdopt.textContent = 'Enable cloud sync for this Vault';
-    } else if (syncEligible) {
-      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · ${effectiveCloudRole(vault.cloud!)} · sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
+    } else if (syncEligible && encryptedPending) {
+      cloudVaultState.append(cloudRow(
+        vault.name,
+        'Cloud linked · no canonical content uploaded · Recovery Code and E2EE setup required.',
+        'warning',
+      ));
+      cloudAdopt.disabled = !activationV2 || !keyDistribution || !keyRegistry;
+      cloudAdopt.dataset.cloudAction='activate-encrypted';
+      cloudAdopt.textContent = 'Set up end-to-end encrypted sync';
+    } else if (syncEligible && vault.cloud!.protocolVersion===2) {
+      cloudVaultState.append(cloudRow(
+        vault.name,
+        `End-to-end encrypted · Protocol v2 · owner · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`,
+        'adopted',
+      ));
       cloudAdopt.disabled = true;
-      cloudAdopt.textContent = 'Cloud sync enabled';
+      cloudAdopt.dataset.cloudAction='activate-encrypted';
+      cloudAdopt.textContent = 'End-to-end encryption enabled';
+    } else if (syncEligible) {
+      cloudVaultState.append(cloudRow(vault.name, `Legacy cloud sync · ${effectiveCloudRole(vault.cloud!)} · protocol v1`, 'adopted'));
+      cloudAdopt.disabled = true;
+      cloudAdopt.dataset.cloudAction='adopt';
+      cloudAdopt.textContent = 'Legacy cloud sync';
     } else {
       cloudVaultState.append(cloudRow(vault.name, 'This Vault is linked to another cloud account. Local data remains available.', 'warning'));
       cloudAdopt.disabled = true;
+      cloudAdopt.dataset.cloudAction='adopt';
     }
 
     if (!cloudStatus.remoteVaults.length) {
@@ -1376,7 +1403,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           add.type = 'button';
           add.dataset.cloudAction = 'add-remote-vault';
           add.dataset.remoteVaultId = remote.id;
-          add.textContent = 'Add to this device';
+          add.disabled = remote.protocolVersion===2;
+          add.textContent = remote.protocolVersion===2 ? 'Encrypted bootstrap in I8' : 'Add to this device';
           row.append(add);
         }
         cloudRemoteVaults.append(row);
