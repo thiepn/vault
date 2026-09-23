@@ -316,7 +316,7 @@ test('I4 CAS failure is all-or-none for a multi-entity operation',async()=>{
   const beforeEvents=server.events.length;
 
   await assert.rejects(
-    ()=>server.push(await operation([
+    async()=>server.push(await operation([
       put(noteA,'note',{baseRemoteRevision:'1',ciphertext:'BBBBBBBBBBBBBBBBBBBBBB'}),
       put(noteB,'note',{baseRemoteRevision:'99',ciphertext:'CCCCCCCCCCCCCCCCCCCCCC'}),
     ])),
@@ -339,7 +339,7 @@ test('I4 validates final hierarchy, allowing parent/child creation independent o
 
   await server.push(await operation([put(folderB,'folder',{nameToken:token('G')})]));
   await assert.rejects(
-    ()=>server.push(await operation([
+    async()=>server.push(await operation([
       put(folderA,'folder',{baseRemoteRevision:'1',parentId:folderB,nameToken:token('F')}),
       put(folderB,'folder',{baseRemoteRevision:'1',parentId:folderA,nameToken:token('G')}),
     ])),
@@ -351,7 +351,7 @@ test('I4 NameToken uniqueness is final-state based and tombstones release names'
   const server=new ReferenceEncryptedServer();
   await server.push(await operation([put(noteA,'note',{nameToken:token('X')})]));
   await assert.rejects(
-    ()=>server.push(await operation([put(noteB,'note',{nameToken:token('X')})])),
+    async()=>server.push(await operation([put(noteB,'note',{nameToken:token('X')})])),
     error=>error instanceof Conflict&&error.reason==='name',
   );
 
@@ -369,7 +369,7 @@ test('I4 entity type is immutable after first accepted version',async()=>{
   const server=new ReferenceEncryptedServer();
   await server.push(await operation([put(folderA,'folder')]));
   await assert.rejects(
-    ()=>server.push(await operation([put(folderA,'note',{baseRemoteRevision:'1'})])),
+    async()=>server.push(await operation([put(folderA,'note',{baseRemoteRevision:'1'})])),
     error=>error instanceof Conflict&&error.reason==='type',
   );
 });
@@ -378,7 +378,7 @@ test('I4 stale key generation cannot create future canonical ciphertext',async()
   const server=new ReferenceEncryptedServer();
   server.activeGeneration=2;
   await assert.rejects(
-    ()=>server.push(await operation([put(noteA,'note',{keyGeneration:1})])),
+    async()=>server.push(await operation([put(noteA,'note',{keyGeneration:1})])),
     /stale key generation/,
   );
   const accepted=await server.push(await operation([put(noteA,'note',{keyGeneration:2})]));
@@ -450,8 +450,8 @@ test('I4 SQL keeps canonical content private/ciphertext-only and implements the 
     'device_vault_state',
     'blob_refs',
   ]){
-    assert.match(sql,new RegExp(String.raw`create table if not exists vault_private\\.${table}\\s*\\(`,'iu'));
-    assert.match(sql,new RegExp(String.raw`revoke all on vault_private\\.${table} from public,anon,authenticated`,'iu'));
+    assert.match(sql,new RegExp(String.raw`create table if not exists vault_private\.${table}\s*\(`,'iu'));
+    assert.match(sql,new RegExp(String.raw`revoke all on vault_private\.${table} from public,anon,authenticated`,'iu'));
   }
 
   for(const rpc of [
@@ -462,7 +462,7 @@ test('I4 SQL keeps canonical content private/ciphertext-only and implements the 
     'vault_sync_begin_bootstrap_v2',
     'vault_sync_bootstrap_page_v2',
   ]){
-    assert.match(sql,new RegExp(String.raw`create\\s+or\\s+replace\\s+function\\s+public\\.${rpc}\\s*\\(`,'iu'));
+    assert.match(sql,new RegExp(String.raw`create\s+or\s+replace\s+function\s+public\.${rpc}\s*\(`,'iu'));
   }
 
   const tables=sql.slice(
