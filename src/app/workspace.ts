@@ -1463,6 +1463,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   type WorkspaceSyncSummary = SyncRunSummary | EncryptedSyncRunSummaryV2;
   const isEncryptedSyncSummary=(summary:WorkspaceSyncSummary):summary is EncryptedSyncRunSummaryV2=>
     'deferredAttachments' in summary;
+  const isLegacySyncSummary=(summary:WorkspaceSyncSummary):summary is SyncRunSummary=>
+    !isEncryptedSyncSummary(summary);
   let lastSyncSummary: { vaultId: VaultId; summary: WorkspaceSyncSummary } | null = null;
   let cachedSyncDetail = '';
 
@@ -1642,7 +1644,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
       lastSyncSummary = { vaultId: activeVaultId, summary };
       const encryptedSummary=isEncryptedSyncSummary(summary) ? summary : null;
-      const legacySummary=encryptedSummary ? null : summary;
+      const legacySummary=isLegacySyncSummary(summary) ? summary : null;
       const localUiChanged=encryptedSummary
         ? encryptedSummary.pulledEvents>0
         : legacySummary.pulledEvents > 0 || legacySummary.conflictsPreserved > 0 || legacySummary.autoMergedMarkdown > 0;
