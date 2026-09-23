@@ -274,9 +274,10 @@ export class SyncLocalStateV2 {
       }
 
       if (existing) {
-        if (existing.ownerId !== legacyAuthUserId) throw new VaultError('ACCOUNT_MISMATCH', 'Legacy Protocol v1 cursor belongs to another authenticated user.');
-        if (existing.epoch !== epoch) throw new VaultError('PROTOCOL', 'Legacy Protocol v1 cursor belongs to another synchronization epoch.');
-        if (existing.cursor !== '0') throw new VaultError('PROTOCOL', 'Protocol v2 migration requires a zero high-watermark Protocol v1 cursor.');
+        const legacy = existing as LegacyCursorLike;
+        if (legacy.ownerId !== legacyAuthUserId) throw new VaultError('ACCOUNT_MISMATCH', 'Legacy Protocol v1 cursor belongs to another authenticated user.');
+        if (legacy.epoch !== epoch) throw new VaultError('PROTOCOL', 'Legacy Protocol v1 cursor belongs to another synchronization epoch.');
+        if (legacy.cursor !== '0') throw new VaultError('PROTOCOL', 'Protocol v2 migration requires a zero high-watermark Protocol v1 cursor.');
       }
 
       const migrated: SyncCursorRecordV2 = {
