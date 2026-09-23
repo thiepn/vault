@@ -16,6 +16,11 @@ export interface VaultKeyReadiness {
   ready:boolean;
 }
 
+export interface AuthorizedDeviceKey extends DevicePublicKeyDescriptor {
+  accountId:AccountId;
+  deviceId:DeviceId;
+}
+
 export interface DeviceAccessRequest {
   requestId:string;
   vaultId:VaultId;
@@ -33,7 +38,13 @@ export interface DeviceAccessRequest {
 export interface PendingDeviceAccess {
   requestId:string;
   challenge:string;
-  envelope:DeviceVaultKeyEnvelopeV1;
+  activeGeneration:number;
+  envelopes:DeviceVaultKeyEnvelopeV1[];
+}
+
+export interface RecoveryEnvelopeProof {
+  envelope:RecoveryVaultKeyEnvelopeV1;
+  recoveryProof:string;
 }
 
 export interface KeyRegistryPort {
@@ -48,13 +59,15 @@ export interface KeyRegistryPort {
   }):Promise<VaultKeyReadiness>;
   readiness(vaultId:VaultId,deviceId:DeviceId):Promise<VaultKeyReadiness>;
   deviceEnvelopes(vaultId:VaultId,deviceId:DeviceId):Promise<DeviceVaultKeyEnvelopeV1[]>;
-  recoveryEnvelope(vaultId:VaultId,keyGeneration:number):Promise<RecoveryVaultKeyEnvelopeV1|null>;
+  recoveryEnvelopes(vaultId:VaultId):Promise<RecoveryVaultKeyEnvelopeV1[]>;
+  authorizedDevices(vaultId:VaultId,actorDeviceId:DeviceId):Promise<AuthorizedDeviceKey[]>;
   requestAccess(vaultId:VaultId,deviceId:DeviceId,publicKeyFingerprint:string):Promise<DeviceAccessRequest>;
   listAccessRequests(vaultId:VaultId,approverDeviceId:DeviceId):Promise<DeviceAccessRequest[]>;
   approveAccessRequest(input:{
     requestId:string;
     approverDeviceId:DeviceId;
-    envelope:DeviceVaultKeyEnvelopeV1;
+    activeGeneration:number;
+    envelopes:DeviceVaultKeyEnvelopeV1[];
     expectedConfirmation:string;
   }):Promise<void>;
   pendingAccess(requestId:string,deviceId:DeviceId):Promise<PendingDeviceAccess>;
@@ -62,9 +75,23 @@ export interface KeyRegistryPort {
   recoverDevice(input:{
     vaultId:VaultId;
     deviceId:DeviceId;
-    envelope:DeviceVaultKeyEnvelopeV1;
-    recoveryProof:string;
+    activeGeneration:number;
+    envelopes:DeviceVaultKeyEnvelopeV1[];
+    recoveryProofs:readonly {keyGeneration:number;recoveryProof:string}[];
   }):Promise<VaultKeyReadiness>;
+  rotateVaultKey(input:{
+    vaultId:VaultId;
+    actorDeviceId:DeviceId;
+    fromGeneration:number;
+    toGeneration:number;
+    deviceEnvelopes:DeviceVaultKeyEnvelopeV1[];
+    recovery:RecoveryEnvelopeProof;
+  }):Promise<VaultKeyReadiness>;
+  rotateRecovery(input:{
+    vaultId:VaultId;
+    actorDeviceId:DeviceId;
+    replacements:RecoveryEnvelopeProof[];
+  }):Promise<void>;
 }
 
 function asObject(value:unknown,label:string):Record<string,unknown>{
@@ -147,6 +174,41 @@ function mapRequest(value:unknown):DeviceAccessRequest{
     expiresAt:timestamp(r.expiresAt,'Access request expiry'),
   };
 }
+function mapAuthorizedDevice(value:unknown):AuthorizedDeviceKey{
+  const r=asObject(value,'Authorized Device key');
+  if(r.algorithm!=='RSA-OAEP-3072-SHA256'||typeof r.publicSpki!=='string'){
+    throw new VaultError('PROTOCOL','Authorized Device key is invalid.');
+  }
+  return {
+    accountId:uuid(r.accountId,'Authorized Device AccountId') as AccountId,
+    deviceId:uuid(r.deviceId,'Authorized DeviceId') as DeviceId,
+    algorithm:'RSA-OAEP-3072-SHA256',
+    publicSpki:r.publicSpki,
+    fingerprint:token43(r.fingerprint,'Authorized Device fingerprint'),
+  };
+}
+function envelopeWire(envelope:DeviceVaultKeyEnvelopeV1):Record<string,unknown>{
+  return {
+    accountId:envelope.accountId,
+    vaultId:envelope.vaultId,
+    deviceId:envelope.deviceId,
+    keyGeneration:envelope.keyGeneration,
+    algorithm:envelope.algorithm,
+    publicKeyFingerprint:envelope.publicKeyFingerprint,
+    ciphertext:envelope.ciphertext,
+  };
+}
+function recoveryWire(recovery:RecoveryEnvelopeProof):Record<string,unknown>{
+  return {
+    accountId:recovery.envelope.accountId,
+    vaultId:recovery.envelope.vaultId,
+    keyGeneration:recovery.envelope.keyGeneration,
+    algorithm:recovery.envelope.algorithm,
+    nonce:recovery.envelope.nonce,
+    ciphertext:recovery.envelope.ciphertext,
+    recoveryProof:recovery.recoveryProof,
+  };
+}
 async function json(response:Response):Promise<unknown>{try{return await response.json();}catch{return null;}}
 function message(payload:unknown,fallback:string):string{
   if(payload&&typeof payload==='object'){
@@ -205,9 +267,16 @@ export class SupabaseKeyRegistry implements KeyRegistryPort {
     return value.map(mapEnvelope);
   }
 
-  async recoveryEnvelope(vaultId:VaultId,keyGeneration:number):Promise<RecoveryVaultKeyEnvelopeV1|null>{
-    const value=await this.rpc('vault_key_recovery_envelope',{p_vault_id:vaultId,p_key_generation:keyGeneration});
-    return value===null?null:mapRecoveryEnvelope(value);
+  async recoveryEnvelopes(vaultId:VaultId):Promise<RecoveryVaultKeyEnvelopeV1[]>{
+    const value=await this.rpc('vault_key_recovery_envelopes',{p_vault_id:vaultId});
+    if(!Array.isArray(value)) throw new VaultError('PROTOCOL','Recovery envelope listing is invalid.');
+    return value.map(mapRecoveryEnvelope);
+  }
+
+  async authorizedDevices(vaultId:VaultId,actorDeviceId:DeviceId):Promise<AuthorizedDeviceKey[]>{
+    const value=await this.rpc('vault_key_authorized_devices',{p_vault_id:vaultId,p_actor_device_id:actorDeviceId});
+    if(!Array.isArray(value)) throw new VaultError('PROTOCOL','Authorized Device listing is invalid.');
+    return value.map(mapAuthorizedDevice);
   }
 
   async requestAccess(vaultId:VaultId,deviceId:DeviceId,publicKeyFingerprint:string):Promise<DeviceAccessRequest>{
@@ -221,19 +290,23 @@ export class SupabaseKeyRegistry implements KeyRegistryPort {
   }
 
   async approveAccessRequest(input:Parameters<KeyRegistryPort['approveAccessRequest']>[0]):Promise<void>{
-    await this.rpc('vault_key_approve_access_request',{
-      p_request_id:input.requestId,p_approver_device_id:input.approverDeviceId,
-      p_key_generation:input.envelope.keyGeneration,p_ciphertext:input.envelope.ciphertext,
+    await this.rpc('vault_key_approve_access_request_v2',{
+      p_request_id:input.requestId,
+      p_approver_device_id:input.approverDeviceId,
+      p_active_generation:input.activeGeneration,
+      p_envelopes:input.envelopes.map(envelopeWire),
       p_expected_confirmation:input.expectedConfirmation,
     });
   }
 
   async pendingAccess(requestId:string,deviceId:DeviceId):Promise<PendingDeviceAccess>{
-    const r=asObject(await this.rpc('vault_key_pending_access',{p_request_id:requestId,p_device_id:deviceId}),'Pending Device access');
+    const r=asObject(await this.rpc('vault_key_pending_access_v2',{p_request_id:requestId,p_device_id:deviceId}),'Pending Device access');
+    if(!Array.isArray(r.envelopes)) throw new VaultError('PROTOCOL','Pending Device envelopes are invalid.');
     return {
       requestId:uuid(r.requestId,'Pending request ID'),
       challenge:token43(r.challenge,'Pending access challenge'),
-      envelope:mapEnvelope(r.envelope),
+      activeGeneration:integer(r.activeGeneration,'Pending active key generation'),
+      envelopes:r.envelopes.map(mapEnvelope),
     };
   }
 
@@ -244,10 +317,31 @@ export class SupabaseKeyRegistry implements KeyRegistryPort {
   }
 
   async recoverDevice(input:Parameters<KeyRegistryPort['recoverDevice']>[0]):Promise<VaultKeyReadiness>{
-    return mapReadiness(await this.rpc('vault_key_recover_device',{
-      p_vault_id:input.vaultId,p_device_id:input.deviceId,p_key_generation:input.envelope.keyGeneration,
-      p_ciphertext:input.envelope.ciphertext,p_public_key_fingerprint:input.envelope.publicKeyFingerprint,
-      p_recovery_proof:input.recoveryProof,
+    return mapReadiness(await this.rpc('vault_key_recover_device_v2',{
+      p_vault_id:input.vaultId,
+      p_device_id:input.deviceId,
+      p_active_generation:input.activeGeneration,
+      p_envelopes:input.envelopes.map(envelopeWire),
+      p_recovery_proofs:input.recoveryProofs,
     }));
+  }
+
+  async rotateVaultKey(input:Parameters<KeyRegistryPort['rotateVaultKey']>[0]):Promise<VaultKeyReadiness>{
+    return mapReadiness(await this.rpc('vault_key_rotate_vmk',{
+      p_vault_id:input.vaultId,
+      p_actor_device_id:input.actorDeviceId,
+      p_from_generation:input.fromGeneration,
+      p_to_generation:input.toGeneration,
+      p_device_envelopes:input.deviceEnvelopes.map(envelopeWire),
+      p_recovery:recoveryWire(input.recovery),
+    }));
+  }
+
+  async rotateRecovery(input:Parameters<KeyRegistryPort['rotateRecovery']>[0]):Promise<void>{
+    await this.rpc('vault_key_rotate_recovery',{
+      p_vault_id:input.vaultId,
+      p_actor_device_id:input.actorDeviceId,
+      p_replacements:input.replacements.map(recoveryWire),
+    });
   }
 }
