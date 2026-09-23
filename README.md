@@ -27,16 +27,17 @@ The repository currently includes browser-certified:
 - **Phase 19 — Live Presence & Collaborative Session Foundation**
 - **Phase 20 — Live CRDT Text Co-Editing & Shared Undo Foundation**
 - **Phase 21 — Best-Effort Closed-App Replication & Background Sync**
+- **Phase 22 — Semantic/Block-Aware Interactive Conflict Resolution**
 
 ## Permanent architecture program
 
-The Phase 1–21 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–22 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
 **A2 — Local Storage, Serialization & Offline Persistence** is implemented with:
 
-- IndexedDB schema v5 as the transactional local persistence layer
+- IndexedDB schema v6 as the transactional local persistence layer
 - canonical `entities` and split `noteBodies` stores alongside compatibility stores
 - stable hidden IDs for Markdown-embedded tasks
 - content-addressed SHA-256 attachment blobs
@@ -47,6 +48,7 @@ The Phase 1–21 product now runs on the **A1/A2 permanent local foundation**.
 - full-fidelity Vault archives with checksums
 - service-worker application-shell caching and cold offline PWA startup
 - worker-readable `backgroundRuntime` plus staged `remoteInbox` stores for best-effort closed-app replication
+- persistent `conflicts` store for unresolved/resolved Markdown conflict metadata and snapshots
 - compatibility mirroring so Phase 1–15 behavior remains available during the canonical-storage transition
 
 See `docs/A1_DOMAIN_MODEL.md`, `docs/A2_STORAGE_ARCHITECTURE.md`, and the ADRs under `docs/adr/`.
@@ -593,6 +595,27 @@ Background Sync is a **best-effort browser capability**. A successful registrati
 
 See `docs/PHASE21_BACKGROUND_REPLICATION.md`, `docs/PHASE_21_ACCEPTANCE.md`, and `docs/PHASE_21_RESULTS.md`.
 
+### Semantic/Block-Aware Interactive Conflict Resolution
+
+Phase 22 turns preserved Markdown conflict copies into an explicit, durable resolution workflow without weakening Vault's conservative sync rules.
+
+- Markdown conflicts with a verified remote shadow persist immutable **base / local / remote** snapshots in the schema-v6 `conflicts` store
+- conflict metadata points to both the canonical note and the preserved local conflict copy
+- Markdown is split into bounded semantic blocks: frontmatter, headings, paragraphs, lists, blockquotes, fenced code, tables, thematic breaks and spacing
+- one-sided or identical block edits are merged automatically in the resolver plan
+- genuinely overlapping regions require an explicit choice: **local**, **remote**, **base**, **both local→remote**, or **both remote→local**
+- the resolver shows the three variants and a complete resolution preview before applying
+- the canonical note may be overwritten only if it still matches the captured remote snapshot (or already matches the chosen resolution)
+- if the canonical note changed after capture, Vault refuses the resolution instead of overwriting newer work
+- an untouched preserved local copy is moved to Trash after resolution; an edited conflict copy is retained
+- resolved records keep their original snapshots and chosen `resolutionText` for audit/backup history
+- full Vault snapshots/archives include conflict metadata
+- very large notes degrade to a conservative coarse conflict region instead of unbounded block-LCS work
+
+Structural/path/delete races and non-Markdown conflicts still use the existing conservative conflict-copy workflow; Phase 22 does not guess semantics where it lacks a safe Markdown base.
+
+See `docs/PHASE22_INTERACTIVE_CONFLICTS.md`, `docs/PHASE_22_ACCEPTANCE.md`, and `docs/PHASE_22_RESULTS.md`.
+
 ## Canonical data
 
 ```text
@@ -624,7 +647,6 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 - durable/replayable CRDT operation history and a global cross-user undo timeline
 - guaranteed cross-browser closed-app execution / exact background-sync scheduling
-- semantic/block-aware interactive conflict resolution
 
 ## Development
 
@@ -641,17 +663,18 @@ npm run benchmark:sync-hardening
 npm run benchmark:realtime-wakeup
 npm run benchmark:collaboration
 npm run benchmark:crdt
+npm run benchmark:conflicts
 npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts including background-replication safety, search/graph/board/Canvas/Obsidian-migration/sync/realtime/presence/CRDT performance gates, production Vite build and real Chromium desktop/mobile acceptance.
+CI runs strict TypeScript, all core contracts including background-replication and persistent-conflict safety, search/graph/board/Canvas/Obsidian-migration/sync/realtime/presence/CRDT/conflict-planner performance gates, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.21.0-phase21**
+- Current package version: **0.22.0-phase22**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
