@@ -221,7 +221,7 @@ test('Phase 20 owner adoption does not enter a plaintext Yjs room before E2EE ac
   const joinedEditRoom=await page.evaluate(()=>((globalThis as any).__phase20RealtimeFrames as any[])
     .some(frame=>frame?.[3]==='phx_join' && String(frame?.[2]??'').startsWith('realtime:vault-edit:')));
   expect(joinedEditRoom).toBe(false);
-  await expect(page.locator('.collaboration-status')).toBeHidden();
+  await expect(page.locator('.collaboration-status')).toContainText('Presence idle');
 
   await dialog.locator('button[value="close"]').click();
   await editor.click();
