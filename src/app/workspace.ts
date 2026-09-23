@@ -1737,6 +1737,61 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (!cloudStatus.signedIn) cloudEmail.focus();
   }
 
+  async function confirmRecoveryCodeSaved(code:string):Promise<boolean>{
+    cloudVaultState.replaceChildren();
+    const heading=document.createElement('strong');
+    heading.textContent='Save your Vault Recovery Code';
+    const explanation=document.createElement('p');
+    explanation.textContent='This code is never stored by Vault or the server. If you lose every authorized device and this code, encrypted cloud data cannot be recovered.';
+    const codeBox=document.createElement('textarea');
+    codeBox.readOnly=true;
+    codeBox.rows=4;
+    codeBox.value=code;
+    codeBox.setAttribute('aria-label','Vault Recovery Code');
+    const copy=document.createElement('button');
+    copy.type='button';
+    copy.textContent='Copy Recovery Code';
+    const label=document.createElement('label');
+    const checked=document.createElement('input');
+    checked.type='checkbox';
+    label.append(checked,document.createTextNode(' I saved this Recovery Code somewhere safe.'));
+    const actions=document.createElement('div');
+    actions.className='dialog-actions';
+    const cancel=document.createElement('button');
+    cancel.type='button';
+    cancel.textContent='Cancel';
+    const confirm=document.createElement('button');
+    confirm.type='button';
+    confirm.textContent='Enable encrypted sync';
+    confirm.disabled=true;
+    actions.append(cancel,confirm);
+    cloudVaultState.append(heading,explanation,codeBox,copy,label,actions);
+    cloudAdopt.disabled=true;
+    cloudSyncNow.disabled=true;
+
+    copy.addEventListener('click',()=>{
+      void navigator.clipboard?.writeText(code).catch(()=>{
+        codeBox.focus();
+        codeBox.select();
+      });
+    });
+    checked.addEventListener('change',()=>{confirm.disabled=!checked.checked;});
+
+    return new Promise(resolve=>{
+      const finish=(value:boolean)=>{
+        cancel.removeEventListener('click',cancelHandler);
+        confirm.removeEventListener('click',confirmHandler);
+        resolve(value);
+      };
+      const cancelHandler=()=>finish(false);
+      const confirmHandler=()=>finish(true);
+      cancel.addEventListener('click',cancelHandler);
+      confirm.addEventListener('click',confirmHandler);
+      codeBox.focus();
+      codeBox.select();
+    });
+  }
+
   function migrationLine(label: string, value: string): HTMLElement {
     const row = document.createElement('div');
     row.className = 'migration-line';
@@ -4913,6 +4968,53 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refreshCloudStatus(role ? `Member changed to ${role}.` : 'Member access revoked.');
           return;
         }
+        if (action === 'activate-encrypted') {
+          if(!vault||vault.mode!=='cloud'||!vault.cloud) throw new VaultError('NOT_FOUND','Choose the cloud-linked Vault first.');
+          if(!activationV2||!keyDistribution||!keyRegistry) throw new VaultError('CONFIGURATION','Encrypted synchronization is unavailable in this browser.');
+          if(!cloudStatus.account||!cloudStatus.device) throw new VaultError('ACCOUNT_MISMATCH','Refresh the signed-in Account and Device first.');
+          if(vault.cloud.accountId!==cloudStatus.account.id||vault.cloud.deviceId!==cloudStatus.device.id){
+            throw new VaultError('ACCOUNT_MISMATCH','Encrypted setup must run on the Device that owns this local cloud binding.');
+          }
+          if(saver) await saver.flush();
+
+          let readiness=await keyRegistry.readiness(vault.id,vault.cloud.deviceId);
+          if(!readiness.ready){
+            if(readiness.deviceEnvelope||readiness.recoveryEnvelope||readiness.deviceAuthorized){
+              throw new VaultError('CONFIGURATION','Encrypted key setup is partially initialized. Do not create a second key lineage; recover or repair the existing key setup first.');
+            }
+            const recovery=await keyDistribution.generateRecoverySecret();
+            try{
+              const saved=await confirmRecoveryCodeSaved(recovery.code);
+              if(!saved){
+                renderCloudDialog('Encrypted setup cancelled. No canonical content was uploaded.');
+                return;
+              }
+              const initialized=await keyDistribution.initializeVault({
+                accountId:vault.cloud.accountId,
+                vaultId:vault.id,
+                deviceId:vault.cloud.deviceId,
+                recoverySecret:recovery.secret,
+              });
+              initialized.context.destroy();
+              readiness=initialized.readiness;
+            }finally{
+              recovery.secret.fill(0);
+            }
+          }
+
+          const activated=await activationV2.activate(vault,vault.cloud.accountId);
+          vault=activated.vault;
+          vaults=await repository.listVaults();
+          lastSyncSummary=null;
+          await backgroundBridge?.clearSession();
+          realtimeWake?.stop();
+          collaboration?.stop();
+          stopCrdtSession();
+          await refreshCloudStatus('End-to-end encryption enabled. No canonical content was uploaded during setup; press Sync now to send encrypted Notes and Folders.');
+          renderCloudIndicator();
+          renderInfo();
+          return;
+        }
         if (action === 'adopt') {
           if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud sync.');
           if (saver) await saver.flush();
@@ -4923,11 +5025,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           awaitableDevicesCache = await cloud.listDevices();
           await refreshCloudMembers();
           lastSyncSummary = null;
+          await backgroundBridge?.clearSession();
           await refreshRealtimeSubscription();
           await refreshCollaborationSubscription();
           await refreshCrdtSession();
           await refreshCloudSyncDetail();
-          renderCloudDialog('Cloud sync enabled. Nothing is uploaded until you press Sync now.');
+          renderCloudDialog('Cloud link created. Nothing was uploaded. Save a Recovery Code and enable end-to-end encryption before first sync.');
           renderCloudIndicator();
           renderInfo();
           return;
