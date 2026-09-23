@@ -22,9 +22,9 @@ const ids = [
   '019c0000-0000-7000-8000-000000000004',
 ];
 
-test('A2 schema adds canonical, background-replication and conflict-resolution stores', () => {
-  assert.equal(SCHEMA_VERSION, 6);
-  for (const store of ['entities','noteBodies','blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts']) {
+test('A2 schema adds canonical, background, conflict and CRDT-journal stores', () => {
+  assert.equal(SCHEMA_VERSION, 7);
+  for (const store of ['entities','noteBodies','blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts','crdtSessions','crdtUpdates']) {
     assert.ok(STORES.includes(store), store);
   }
 });

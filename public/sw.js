@@ -1,5 +1,5 @@
 const BACKGROUND_DB = 'vault:local';
-const BACKGROUND_SCHEMA = 6;
+const BACKGROUND_SCHEMA = 7;
 const BACKGROUND_TAG = 'vault-background-sync';
 const PERIODIC_TAG = 'vault-periodic-sync';
 
@@ -43,6 +43,23 @@ async function openBackgroundDatabase() {
         conflicts.createIndex('vaultId', 'vaultId');
         conflicts.createIndex('entryId', 'entryId');
         conflicts.createIndex('conflictEntryId', 'conflictEntryId');
+      }
+      if (event.oldVersion < 7) {
+        if (!database.objectStoreNames.contains('crdtSessions')) {
+          const sessions = database.createObjectStore('crdtSessions', { keyPath: 'id' });
+          sessions.createIndex('vaultId', 'vaultId');
+          sessions.createIndex('entryId', 'entryId');
+          sessions.createIndex('roomKey', 'roomKey');
+          sessions.createIndex('updatedAt', 'updatedAt');
+        }
+        if (!database.objectStoreNames.contains('crdtUpdates')) {
+          const updates = database.createObjectStore('crdtUpdates', { keyPath: 'id' });
+          updates.createIndex('vaultId', 'vaultId');
+          updates.createIndex('entryId', 'entryId');
+          updates.createIndex('roomKey', 'roomKey');
+          updates.createIndex('sessionId', 'sessionId');
+          updates.createIndex('createdAt', 'createdAt');
+        }
       }
     };
     request.onsuccess = () => resolve(request.result);

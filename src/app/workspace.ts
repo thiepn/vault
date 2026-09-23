@@ -50,6 +50,7 @@ import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realti
 import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
 import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-text.js';
+import { CrdtJournalStore, type CrdtJournalBase, type CrdtJournalSession, type CrdtJournalSource } from '../collaboration/crdt-journal.js';
 import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
 import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
 import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
@@ -59,7 +60,7 @@ import { buildMarkdownConflictPlan, resolveMarkdownConflictPlan, type ConflictCh
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 22 browser workspace: semantic interactive conflict resolution on the accepted Phase 1-21 + A1/A2 foundation. */
+/** Phase 23 browser workspace: durable CRDT collaboration journal on the accepted Phase 1-22 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -72,6 +73,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const syncState = new SyncLocalState(db);
   const backgroundState = new BackgroundReplicationState(db);
   const conflictStore = new MarkdownConflictStore(db);
+  const crdtJournal = new CrdtJournalStore(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
@@ -94,6 +96,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let crdtLeaderSession: string | null = null;
   let crdtRecoveryTimer: number | undefined;
   let crdtRecoveryText: string | null = null;
+  let crdtJournalSessionId: string | null = null;
+  let crdtJournalBase: CrdtJournalBase | null = null;
+  let crdtJournalWrite: Promise<void> = Promise.resolve();
   let cloudBootstrapError = '';
   let oauthCompleted = false;
   try {
@@ -157,6 +162,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let recoveryDrafts: RecoveryDraft[] = [];
   let openConflicts: MarkdownConflictRecord[] = [];
   let activeConflictId = '';
+  let journalHistory: CrdtJournalSession[] = [];
+  let journalPreviewText = '';
   let conflictChoices = new Map<string, ConflictChoice>();
   let selected: Entry | undefined;
   let saver: SaveCoordinator | undefined;
@@ -233,9 +240,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
         <button type="button" class="conflict-toggle" data-action="conflicts-open" aria-label="Open unresolved conflicts" title="Resolve sync conflicts" hidden>Conflicts <span class="conflict-count">0</span></button>
+        <button type="button" class="journal-toggle" data-action="journal-open" aria-label="Open collaboration history" title="Collaboration history" hidden>Collab history <span class="journal-count">0</span></button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 22 · Conflict resolution</span>
+        <span class="stage">Phase 23 · Collaboration journal</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -395,7 +403,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 21 adds best-effort Background Sync where the browser supports it. Phase 20 live Markdown co-editing remains foreground-only; canonical Markdown, attachments, cursor advancement and conflict resolution still use Vault's existing local-first sync protocol.</p>
+          <p class="cloud-phase-note">Phase 23 adds a bounded local collaboration journal so foreground live edits can survive reload/crash and be replayed safely from the same canonical base. Best-effort Background Sync remains transport-only; canonical Markdown, attachments, cursor advancement and conflict resolution still use Vault's existing local-first sync protocol.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
           <div class="cloud-section-heading">SHARING</div>
@@ -429,6 +437,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="dialog-buttons"><button type="button" data-recovery-action="download">Download .md</button><button type="button" data-recovery-action="recover" class="primary">Save as new note</button><button value="close">Close</button></div>
       </form>
     </dialog>
+    <dialog class="journal-dialog" aria-labelledby="journal-title">
+      <form method="dialog">
+        <div class="conflict-dialog-heading"><div><p class="eyebrow">COLLABORATION HISTORY</p><h2 id="journal-title">Replay live editing session</h2></div><button value="close" aria-label="Close collaboration history">×</button></div>
+        <p class="fineprint">These are bounded local Yjs recovery/history records tied to exact canonical bases. Replaying never changes the canonical note.</p>
+        <label for="journal-select">Session</label><select id="journal-select"></select>
+        <p class="journal-meta fineprint"></p>
+        <label for="journal-preview">Reconstructed Markdown</label><textarea id="journal-preview" class="journal-preview" readonly spellcheck="false"></textarea>
+        <p class="journal-status fineprint" role="status"></p>
+        <div class="dialog-buttons"><button type="button" data-journal-action="download">Download .md</button><button type="button" data-journal-action="recover" class="primary">Save as new note</button><button value="close">Close</button></div>
+      </form>
+    </dialog>
     <dialog class="conflict-dialog" aria-labelledby="conflict-title">
       <form method="dialog">
         <div class="conflict-dialog-heading"><div><p class="eyebrow">SYNC CONFLICT</p><h2 id="conflict-title">Resolve Markdown conflict</h2></div><button value="close" aria-label="Close conflict resolver">×</button></div>
@@ -456,6 +475,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const dialogInput = element<HTMLInputElement>('#vault-dialog-input');
   const dialogSelect = element<HTMLSelectElement>('.dialog-select');
   const recoveryDialog = element<HTMLDialogElement>('.recovery-dialog');
+  const journalDialog = element<HTMLDialogElement>('.journal-dialog');
+  const journalSelect = element<HTMLSelectElement>('#journal-select');
+  const journalMeta = element<HTMLElement>('.journal-meta');
+  const journalPreview = element<HTMLTextAreaElement>('#journal-preview');
+  const journalStatus = element<HTMLElement>('.journal-status');
   const conflictDialog = element<HTMLDialogElement>('.conflict-dialog');
   const conflictSelect = element<HTMLSelectElement>('#conflict-select');
   const conflictMeta = element<HTMLElement>('.conflict-meta');
@@ -723,13 +747,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           if (!disposed) requestCrdtSync();
         },
         onUpdate(message) {
-          if (!disposed) handleCrdtRemoteUpdate(message);
+          if (!disposed) void handleCrdtRemoteUpdate(message).catch(showError);
         },
         onSyncRequest(message) {
           if (!disposed) handleCrdtSyncRequest(message);
         },
         onSyncResponse(message) {
-          if (!disposed) handleCrdtSyncResponse(message);
+          if (!disposed) void handleCrdtSyncResponse(message).catch(showError);
         },
       },
     );
@@ -1048,6 +1072,72 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if(draft?.text===text) await repository.discardRecoveryDraft(id);
   }
 
+  function journalBaseFor(base:CrdtBaseSnapshot): CrdtJournalBase | null {
+    if(!vault?.cloud || !cloudStatus.identity || vault.cloud.authUserId!==cloudStatus.identity.userId) return null;
+    return {
+      vaultId:vault.id,
+      entryId:base.entryId,
+      ownerId:cloudStatus.identity.userId,
+      epoch:vault.cloud.epoch,
+      baseRevision:base.revision,
+      baseFingerprint:base.fingerprint,
+      baseText:base.text,
+      baseVerified:true,
+    };
+  }
+
+  function queueCrdtJournalUpdate(
+    source:CrdtJournalSource,
+    sourceSessionId:string,
+    update:Uint8Array,
+    publish=false,
+  ): Promise<void> {
+    const sessionId=crdtJournalSessionId;
+    if(!sessionId){
+      if(publish) crdtRealtime?.publishUpdate(update);
+      return Promise.resolve();
+    }
+    const operation=crdtJournalWrite.then(async()=>{
+      await crdtJournal.append(sessionId,{source,sourceSessionId,bytes:update});
+      if(publish) crdtRealtime?.publishUpdate(update);
+    });
+    crdtJournalWrite=operation.catch(error=>{
+      if(!disposed){
+        errorBox.textContent='Live collaboration journal failed. The current text is still preserved locally, but Vault paused durable CRDT transport until the note is reopened. '
+          +(error instanceof Error?error.message:'');
+        errorBox.hidden=false;
+      }
+      crdtRealtime?.stop();
+    });
+    return operation;
+  }
+
+  async function flushCrdtJournal(): Promise<void> {
+    await crdtJournalWrite.catch(()=>undefined);
+  }
+
+  async function closeCrdtJournalSession(): Promise<void> {
+    const id=crdtJournalSessionId;
+    crdtJournalSessionId=null;
+    crdtJournalBase=null;
+    await flushCrdtJournal();
+    if(id) await crdtJournal.close(id);
+  }
+
+  async function canonicalizeCrdtJournal(
+    base:CrdtJournalBase|null,
+    canonicalRevision:number|null,
+  ): Promise<void> {
+    if(!base || canonicalRevision===null || canonicalRevision<=base.baseRevision) return;
+    await flushCrdtJournal();
+    await crdtJournal.canonicalizeRoom(base,canonicalRevision);
+    await crdtJournal.prune(base.vaultId).catch(()=>undefined);
+    if(crdtJournalBase?.entryId===base.entryId && crdtJournalBase.baseRevision===base.baseRevision){
+      crdtJournalSessionId=null;
+      crdtJournalBase=null;
+    }
+  }
+
   function activeCrdtRole(): CrdtEditorRole | null {
     const role=activeCollaborationRole();
     return role==='owner' || role==='editor' ? role : null;
@@ -1124,7 +1214,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       onUpdate(update) {
         if(disposed || crdtDocument!==document) return;
         crdtLocalDirty=true;
-        crdtRealtime?.publishUpdate(update);
+        void queueCrdtJournalUpdate('local',storageSessionId,update,true).catch(()=>undefined);
         renderCollaborationState();
       },
     },seed);
@@ -1159,6 +1249,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const role=activeCrdtRole();
     if(!role || !selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
       || !vault?.cloud || !cloudStatus.identity || vault.cloud.authUserId!==cloudStatus.identity.userId){
+      await closeCrdtJournalSession();
       stopCrdtSession();
       return;
     }
@@ -1166,11 +1257,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       updateCrdtLeader();
       return;
     }
+    await closeCrdtJournalSession();
     stopCrdtSession();
     const base=await verifiedCrdtBase();
     if(!base) return;
+    const journalBase=journalBaseFor(base);
+    if(!journalBase) return;
     await clearCrdtRecoveryIfCanonical(base.entryId,base.text);
-    installCrdtDocument(base,true);
+    await crdtJournal.verifyBase(journalBase);
+    const session=await crdtJournal.ensureSession(journalBase,storageSessionId);
+    crdtJournalSessionId=session.id;
+    crdtJournalBase=journalBase;
+    const replay=await crdtJournal.replay(journalBase);
+    const document=installCrdtDocument(base,true);
+    for(const update of replay.updates) document.applyRemoteUpdate(update.bytes);
+    if(replay.updates.length && document.value!==base.text){
+      crdtLocalDirty=true;
+      queueCrdtRecovery(document.value);
+    }
     updateCrdtLeader();
     if(!crdtRealtime) return;
     await crdtRealtime.subscribe({
@@ -1191,13 +1295,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     crdtRealtime.requestSync(crdtDocument.stateVector());
   }
 
-  function handleCrdtRemoteUpdate(message:CrdtRemoteUpdate): void {
+  async function handleCrdtRemoteUpdate(message:CrdtRemoteUpdate): Promise<void> {
     if(!crdtDocument || !crdtBase) return;
     if(message.baseRevision!==crdtBase.revision || message.baseFingerprint!==crdtBase.fingerprint){
       requestCrdtSync();
       return;
     }
-    crdtDocument.applyRemoteUpdate(message.update);
+    await queueCrdtJournalUpdate('remote',message.sessionId,message.update);
+    if(crdtDocument && crdtBase?.revision===message.baseRevision && crdtBase.fingerprint===message.baseFingerprint){
+      crdtDocument.applyRemoteUpdate(message.update);
+    }
   }
 
   function handleCrdtSyncRequest(message:CrdtSyncRequest): void {
@@ -1212,18 +1319,22 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     );
   }
 
-  function handleCrdtSyncResponse(message:CrdtSyncResponse): void {
+  async function handleCrdtSyncResponse(message:CrdtSyncResponse): Promise<void> {
     if(!crdtDocument || !crdtBase || !selected || selected.kind!=='markdown') return;
     updateCrdtLeader();
     if(!crdtLeaderSession || message.sessionId!==crdtLeaderSession) return;
     const sameBase=message.baseRevision===crdtBase.revision && message.baseFingerprint===crdtBase.fingerprint;
     if(!message.replace && sameBase){
-      crdtDocument.applyRemoteUpdate(message.update);
+      await queueCrdtJournalUpdate('sync',message.sessionId,message.update);
+      if(crdtDocument && crdtBase?.revision===message.baseRevision && crdtBase.fingerprint===message.baseFingerprint){
+        crdtDocument.applyRemoteUpdate(message.update);
+      }
       return;
     }
     if(crdtLocalDirty){
       queueCrdtRecovery(crdtDocument.value);
-      void persistCrdtRecoveryNow().catch(showError);
+      await persistCrdtRecoveryNow().catch(()=>undefined);
+      await closeCrdtJournalSession();
       stopCrdtSession();
       errorBox.textContent='Live co-editing paused because another editor is based on a different canonical revision. Your local draft is preserved; synchronize it before rejoining live editing.';
       errorBox.hidden=false;
@@ -1235,6 +1346,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       fingerprint:message.baseFingerprint,
       text:'',
     };
+    const replacementJournalBase=journalBaseFor(replacementBase);
+    await closeCrdtJournalSession();
+    if(!replacementJournalBase){
+      stopCrdtSession();
+      return;
+    }
+    replacementJournalBase.baseVerified=false;
+    replacementJournalBase.baseText='';
+    const replacementSession=await crdtJournal.ensureSession(replacementJournalBase,storageSessionId);
+    crdtJournalSessionId=replacementSession.id;
+    crdtJournalBase=replacementJournalBase;
+    await queueCrdtJournalUpdate('sync',message.sessionId,message.update);
     const replacement=installCrdtDocument(replacementBase,false);
     replacement.applyRemoteUpdate(message.update);
     crdtLocalDirty=false;
@@ -1253,6 +1376,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await saver?.flush();
       await clearCrdtRecoveryDraft(selected.id);
     }
+    await closeCrdtJournalSession();
     stopCrdtSession();
   }
 
@@ -1509,10 +1633,25 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (saver) await saver.flush();
     const activeVaultId = vault.id;
     const selectedId = selected?.id;
+    const journalBaseBeforeSync = crdtJournalBase ? { ...crdtJournalBase } : null;
+    const journalTextBeforeSync = crdtDocument?.value ?? null;
     if (!background) cloudMessage.textContent = 'Synchronizing canonical files and attachments…';
     cloudSyncNow.disabled = true;
     try {
       const summary = await syncEngine.sync(vault, cloudStatus.identity.userId);
+      if(journalBaseBeforeSync && journalTextBeforeSync!==null){
+        const shadow=await syncState.shadow(
+          journalBaseBeforeSync.entryId,
+          journalBaseBeforeSync.ownerId,
+          journalBaseBeforeSync.epoch,
+        );
+        if(shadow?.snapshot.kind==='markdown'
+          && shadow.snapshot.deletedAt===null
+          && shadow.snapshot.text===journalTextBeforeSync
+          && shadow.snapshot.revision>journalBaseBeforeSync.baseRevision){
+          await canonicalizeCrdtJournal(journalBaseBeforeSync,shadow.snapshot.revision);
+        }
+      }
       lastSyncSummary = { vaultId: activeVaultId, summary };
       const localUiChanged = summary.pulledEvents > 0 || summary.conflictsPreserved > 0 || summary.autoMergedMarkdown > 0;
       if (vault?.id === activeVaultId && (!background || localUiChanged)) {
@@ -1525,6 +1664,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
       }
       if (vault?.id === activeVaultId && selected?.id === selectedId && summary.pushedOperations > 0 && crdtDocument) {
+        await closeCrdtJournalSession();
         stopCrdtSession();
         await refreshCrdtSession();
       } else if (vault?.id === activeVaultId && !crdtDocument) {
@@ -1587,6 +1727,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (crdtDocument && selected?.kind === 'markdown') {
           crdtRecoveryText = currentMarkdownText();
           await persistCrdtRecoveryNow().catch(() => undefined);
+          await closeCrdtJournalSession().catch(() => undefined);
           stopCrdtSession();
         }
       }
@@ -3184,6 +3325,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       entries = await repository.listEntries(vault.id, true);
       dirtyIds = new Set((await repository.listDirtyEntries(vault.id)).map(item => item.entryId));
       openConflicts = await conflictStore.listOpen(vault.id);
+      journalHistory = (await crdtJournal.listHistory(vault.id)).filter(session=>session.updateCount>0);
       if (knowledgeVaultId !== vault.id) {
         await knowledge.loadVault(vault.id, entries);
         knowledgeVaultId = vault.id;
@@ -3223,9 +3365,83 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.export-obsidian"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator(); renderConflictIndicator();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator(); renderConflictIndicator(); renderJournalIndicator();
     if (graphOpen) renderGraph();
   }
+  function renderJournalIndicator(): void {
+    const button=element<HTMLButtonElement>('[data-action="journal-open"]');
+    const count=journalHistory.length;
+    button.hidden=!vault;
+    button.disabled=!vault || (count===0 && !crdtJournalSessionId);
+    element<HTMLElement>('.journal-count').textContent=String(count);
+    button.title=count
+      ? `Replay ${count} retained collaboration session${count===1?'':'s'}`
+      : 'No retained collaboration updates yet';
+  }
+
+  async function reconstructJournalSession(session:CrdtJournalSession): Promise<string> {
+    const updates=await crdtJournal.replaySession(session.id);
+    const document=new CrdtTextDocument({
+      entryId:session.entryId,
+      revision:session.baseRevision,
+      fingerprint:session.baseFingerprint,
+      text:session.baseText,
+    });
+    try{
+      for(const update of updates) document.applyRemoteUpdate(update.bytes);
+      return document.value;
+    }finally{
+      document.destroy();
+    }
+  }
+
+  async function showJournalSelection(): Promise<void> {
+    const session=journalHistory.find(item=>item.id===journalSelect.value) ?? journalHistory[0];
+    if(!session){
+      journalPreviewText='';
+      journalPreview.value='';
+      journalMeta.textContent='There is no retained collaboration history in this Vault.';
+      journalStatus.textContent='';
+      for(const button of root.querySelectorAll<HTMLButtonElement>('[data-journal-action]')) button.disabled=true;
+      return;
+    }
+    journalSelect.value=session.id;
+    journalStatus.textContent='Reconstructing Yjs session…';
+    try{
+      journalPreviewText=await reconstructJournalSession(session);
+      journalPreview.value=journalPreviewText;
+      const canonical=session.canonicalRevision===null ? 'not yet canonicalized' : `canonical revision ${session.canonicalRevision}`;
+      journalMeta.textContent=
+        `Base revision ${session.baseRevision} · ${session.status} · ${canonical} · ${session.updateCount} update${session.updateCount===1?'':'s'} · ${session.byteSize.toLocaleString()} bytes · ${new Date(session.updatedAt).toLocaleString()}`;
+      journalStatus.textContent=`${journalPreviewText.length.toLocaleString()} reconstructed characters`;
+      for(const button of root.querySelectorAll<HTMLButtonElement>('[data-journal-action]')) button.disabled=false;
+    }catch(error){
+      journalPreviewText='';
+      journalPreview.value='';
+      journalStatus.textContent=error instanceof Error?error.message:'Collaboration history could not be reconstructed.';
+      for(const button of root.querySelectorAll<HTMLButtonElement>('[data-journal-action]')) button.disabled=true;
+    }
+  }
+
+  async function openJournalHistory(): Promise<void> {
+    if(!vault) return;
+    await flushCrdtJournal();
+    journalHistory=(await crdtJournal.listHistory(vault.id)).filter(session=>session.updateCount>0);
+    journalSelect.replaceChildren();
+    for(const session of journalHistory){
+      const source=entries.find(entry=>entry.id===session.entryId);
+      const state=session.canonicalRevision===null?session.status:`canonical r${session.canonicalRevision}`;
+      journalSelect.add(new Option(
+        `${source?.name??'Unavailable note'} · base r${session.baseRevision} · ${state} · ${new Date(session.updatedAt).toLocaleString()}`,
+        session.id,
+      ));
+    }
+    renderJournalIndicator();
+    await showJournalSelection();
+    journalDialog.showModal();
+    if(journalHistory.length) journalSelect.focus();
+  }
+
   function renderConflictIndicator(): void {
     const button = element<HTMLButtonElement>('[data-action="conflicts-open"]');
     const count = openConflicts.length;
@@ -5050,6 +5266,31 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (Number.isInteger(from) && Number.isInteger(to)) perform(() => convertUnlinkedMention(button.dataset.unlinkedSource as EntryId, from, to, term));
       return;
     }
+    if (button.dataset.journalAction) {
+      const session=journalHistory.find(item=>item.id===journalSelect.value);
+      if(!session || !journalPreviewText) return;
+      if(button.dataset.journalAction==='download'){
+        download('collaboration-history.md',journalPreviewText,'text/markdown;charset=utf-8');
+        return;
+      }
+      perform(async()=>{
+        if(!vault) return;
+        const source=entries.find(item=>item.id===session.entryId);
+        const name=await ask(
+          'Recover collaboration history as a new note',
+          'New filename',
+          `${source?.name.replace(/\.md$/i,'')??'Note'} collaboration recovery`,
+        );
+        if(name===null) return;
+        const recovered=await repository.createEntry(vault.id,source?.parentId??null,name,'markdown',journalPreviewText);
+        showingTrash=false;
+        await refresh();
+        await openEntry(recovered.id,true);
+        journalDialog.close('recovered');
+        editor.focus();
+      });
+      return;
+    }
     if (button.dataset.recoveryAction) {
       const draft = recoveryDrafts.find(item => item.id === recoverySelect.value); if (!draft) return;
       if (button.dataset.recoveryAction === 'download') { download('recovery-draft.md', draft.text, 'text/markdown;charset=utf-8'); return; }
@@ -5183,6 +5424,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (action === 'export-draft') { downloadDraft(); return; }
     perform(async () => {
       if (action === 'recovery') { await openRecovery(); return; }
+      if (action === 'journal-open') { await openJournalHistory(); return; }
       if (action === 'conflicts-open') { await openConflictResolver(); return; }
       if (action === 'vault-rename') {
         if (!vault) return;
@@ -5523,6 +5765,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }, { signal: abort.signal });
 
   recoverySelect.addEventListener('change', showRecoverySelection, { signal: abort.signal });
+  journalSelect.addEventListener('change', () => { void showJournalSelection(); }, { signal: abort.signal });
   conflictSelect.addEventListener('change', () => {
     activeConflictId = conflictSelect.value;
     conflictChoices.clear();
@@ -5688,11 +5931,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     disposed = true;
     abort.abort();
     const recoveryFlush = persistCrdtRecoveryNow().catch(() => undefined);
+    const journalFlush = closeCrdtJournalSession().catch(() => undefined);
     const canonicalFlush = (saver?.flush() ?? Promise.resolve()).catch(() => undefined);
     if (dialog.open) dialog.close('cancel');
     if (cloudDialog.open) cloudDialog.close('close');
     if (migrationDialog.open) migrationDialog.close('cancel');
     if (recoveryDialog.open) recoveryDialog.close();
+    if (journalDialog.open) journalDialog.close();
     if (conflictDialog.open) conflictDialog.close();
     if (quickDialog.open) quickDialog.close();
     if (templateDialog.open) templateDialog.close('cancel');
@@ -5709,7 +5954,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
     attachmentObjectUrls.clear();
     crossTab.close();
-    void Promise.all([recoveryFlush, canonicalFlush]).finally(() => {
+    void Promise.all([recoveryFlush, journalFlush, canonicalFlush]).finally(() => {
       a2.close();
       db.close();
     });

@@ -2,13 +2,13 @@ import { VaultError } from '../domain/errors.js';
 import type { Principal } from '../domain/model.js';
 
 /**
- * Schema v6 extends the A2 persistence foundation with interactive Markdown
- * conflict records while retaining worker-readable background replication state.
+ * Schema v7 extends the A2 persistence foundation with a bounded durable CRDT
+ * collaboration journal while retaining interactive conflict/background state.
  * Phase 1–11 stores stay intact while canonical entities/note bodies/blobs are
  * populated and verified before a later cut-over. This makes upgrade rollback
  * possible without re-identifying existing content.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 export const STORES = [
   'vaults',
   'entries',
@@ -29,6 +29,8 @@ export const STORES = [
   'backgroundRuntime',
   'remoteInbox',
   'conflicts',
+  'crdtSessions',
+  'crdtUpdates',
 ] as const;
 export type StoreName = typeof STORES[number];
 
@@ -104,6 +106,20 @@ export async function openDatabase(name = databaseName({ kind: 'local' })): Prom
         conflicts.createIndex('vaultId', 'vaultId');
         conflicts.createIndex('entryId', 'entryId');
         conflicts.createIndex('conflictEntryId', 'conflictEntryId');
+      }
+      if (event.oldVersion < 7) {
+        const sessions = db.createObjectStore('crdtSessions', { keyPath: 'id' });
+        sessions.createIndex('vaultId', 'vaultId');
+        sessions.createIndex('entryId', 'entryId');
+        sessions.createIndex('roomKey', 'roomKey');
+        sessions.createIndex('updatedAt', 'updatedAt');
+
+        const updates = db.createObjectStore('crdtUpdates', { keyPath: 'id' });
+        updates.createIndex('vaultId', 'vaultId');
+        updates.createIndex('entryId', 'entryId');
+        updates.createIndex('roomKey', 'roomKey');
+        updates.createIndex('sessionId', 'sessionId');
+        updates.createIndex('createdAt', 'createdAt');
       }
     };
     req.onsuccess = () => {
