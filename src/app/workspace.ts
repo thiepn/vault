@@ -3722,6 +3722,125 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const openCopy = element<HTMLButtonElement>('[data-conflict-action="open-copy"]');
     const openCanonical = element<HTMLButtonElement>('[data-conflict-action="open-canonical"]');
     const resolveButton = element<HTMLButtonElement>('[data-conflict-action="resolve"]');
+    const keepLocal = element<HTMLButtonElement>('[data-conflict-action="keep-local"]');
+    const keepRemote = element<HTMLButtonElement>('[data-conflict-action="keep-remote"]');
+    const keepBoth = element<HTMLButtonElement>('[data-conflict-action="keep-both"]');
+
+    if (record && isProtocolV2Conflict(record)) {
+      activeConflictId = record.id;
+      conflictSelect.value = record.id;
+      const pending = record.status === 'resolution-pending';
+      keepLocal.hidden = false;
+      keepRemote.hidden = false;
+      keepBoth.hidden = false;
+      keepLocal.disabled = pending;
+      keepRemote.disabled = pending;
+      keepBoth.disabled = pending;
+      openCopy.textContent = 'Open mine';
+      openCanonical.textContent = 'Open remote item';
+      openCopy.disabled = !entries.some(entry => entry.id === record.entryId);
+      openCanonical.disabled = !entries.some(entry => entry.id === record.remote.entryId);
+      const title = entries.find(entry => entry.id === record.entryId)?.name ?? record.local.name;
+      conflictMeta.textContent = title
+        + ' · ' + record.kind.replace(/-/gu, ' ')
+        + ' · remote revision ' + record.remoteRevision
+        + ' · ' + new Date(record.updatedAt).toLocaleString();
+      conflictIntro.textContent = record.kind === 'delete-edit'
+        ? 'One device deleted this item while another edited it. Both authored states are preserved.'
+        : record.kind === 'name'
+          ? 'Multiple devices produced incompatible names or the same path. Vault will not silently choose a winner.'
+          : record.kind === 'parent'
+            ? 'This item moved differently on multiple devices. Choose the hierarchy you want to keep.'
+            : record.kind === 'markdown'
+              ? 'Mine and remote changed overlapping Markdown. Review the exact BASE/Mine/Remote regions below.'
+              : 'Vault preserved the synchronized base, your current local state, and the latest remote state.';
+
+      const stateText = (value: typeof record.base | typeof record.local | typeof record.remote): string => {
+        if (!value) return '(no synchronized base)';
+        if (value.entityType === 'note') return value.text ?? '';
+        return [
+          'Folder: ' + value.name,
+          'Parent: ' + (value.parentId ?? 'Vault root'),
+          'State: ' + (value.deletedAt ? 'Deleted' : 'Active'),
+        ].join('\n');
+      };
+
+      if (record.entityType === 'note' && record.kind === 'markdown') {
+        const plan = buildMarkdownConflictPlan(record.base?.text ?? '', record.local.text ?? '', record.remote.text ?? '');
+        if (plan.degraded) {
+          const warning = document.createElement('p');
+          warning.className = 'conflict-warning';
+          warning.textContent = 'This Note is very large, so Vault is using a conservative coarse conflict region.';
+          conflictHunks.append(warning);
+        }
+        for (const segment of plan.segments) {
+          if (segment.kind === 'unchanged') continue;
+          const article = document.createElement('article');
+          article.className = 'conflict-hunk ' + (segment.kind === 'conflict' ? 'needs-choice' : 'auto');
+          article.dataset.segmentId = segment.id;
+          const header = document.createElement('header');
+          const heading = document.createElement('strong');
+          heading.textContent = segment.label;
+          const badge = document.createElement('span');
+          badge.className = 'conflict-hunk-badge';
+          badge.textContent = segment.kind === 'conflict' ? 'Needs decision' : 'Auto-mergeable';
+          header.append(heading, badge);
+          article.append(header);
+          const variants = document.createElement('div');
+          variants.className = 'conflict-variants';
+          variants.append(
+            conflictVariant('Base', segment.base, 'base'),
+            conflictVariant('Mine', segment.local, 'local'),
+            conflictVariant('Remote', segment.remote, 'remote'),
+          );
+          article.append(variants);
+          if (segment.kind === 'conflict') {
+            const label = document.createElement('label');
+            label.textContent = 'Resolution for this region';
+            const select = document.createElement('select');
+            select.className = 'conflict-choice';
+            select.dataset.segmentId = segment.id;
+            select.setAttribute('aria-label', 'Resolution for ' + segment.label);
+            select.add(new Option('Choose…', ''));
+            select.add(new Option('Mine', 'local'));
+            select.add(new Option('Remote', 'remote'));
+            select.add(new Option('Base', 'base'));
+            select.add(new Option('Mine then remote', 'both-local-remote'));
+            select.add(new Option('Remote then mine', 'both-remote-local'));
+            const chosen = conflictChoices.get(segment.id);
+            if (chosen) select.value = chosen;
+            label.append(select);
+            article.append(label);
+          }
+          conflictHunks.append(article);
+        }
+        resolveButton.hidden = false;
+        updateConflictPreview();
+      } else {
+        const variants = document.createElement('div');
+        variants.className = 'conflict-variants';
+        variants.append(
+          conflictVariant('Base', stateText(record.base), 'base'),
+          conflictVariant('Mine', stateText(record.local), 'local'),
+          conflictVariant('Remote', stateText(record.remote), 'remote'),
+        );
+        conflictHunks.append(variants);
+        conflictPreview.value = '';
+        resolveButton.hidden = true;
+        resolveButton.disabled = true;
+        conflictStatus.textContent = pending
+          ? 'Resolution saved. Waiting for the ordered sync event before this conflict closes.'
+          : 'Choose Mine, Remote, or Keep both. Vault will checkpoint and rebase before the next encrypted push.';
+      }
+      return;
+    }
+
+    keepLocal.hidden = true;
+    keepRemote.hidden = true;
+    keepBoth.hidden = true;
+    openCopy.textContent = 'Open local copy';
+    openCanonical.textContent = 'Open canonical note';
+    conflictIntro.textContent = 'Vault preserved the local version as a conflict copy and applied the remote version canonically. Review only overlapping Markdown regions below.';
 
     if (!record) {
       activeConflictId = '';
