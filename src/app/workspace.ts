@@ -1609,10 +1609,25 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (saver) await saver.flush();
     const activeVaultId = vault.id;
     const selectedId = selected?.id;
+    const journalBaseBeforeSync = crdtJournalBase ? { ...crdtJournalBase } : null;
+    const journalTextBeforeSync = crdtDocument?.value ?? null;
     if (!background) cloudMessage.textContent = 'Synchronizing canonical files and attachments…';
     cloudSyncNow.disabled = true;
     try {
       const summary = await syncEngine.sync(vault, cloudStatus.identity.userId);
+      if(journalBaseBeforeSync && journalTextBeforeSync!==null){
+        const shadow=await syncState.shadow(
+          journalBaseBeforeSync.entryId,
+          journalBaseBeforeSync.ownerId,
+          journalBaseBeforeSync.epoch,
+        );
+        if(shadow?.snapshot.kind==='markdown'
+          && shadow.snapshot.deletedAt===null
+          && shadow.snapshot.text===journalTextBeforeSync
+          && shadow.snapshot.revision>journalBaseBeforeSync.baseRevision){
+          await canonicalizeCrdtJournal(journalBaseBeforeSync,shadow.snapshot.revision);
+        }
+      }
       lastSyncSummary = { vaultId: activeVaultId, summary };
       const localUiChanged = summary.pulledEvents > 0 || summary.conflictsPreserved > 0 || summary.autoMergedMarkdown > 0;
       if (vault?.id === activeVaultId && (!background || localUiChanged)) {
@@ -1625,6 +1640,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
       }
       if (vault?.id === activeVaultId && selected?.id === selectedId && summary.pushedOperations > 0 && crdtDocument) {
+        await closeCrdtJournalSession();
         stopCrdtSession();
         await refreshCrdtSession();
       } else if (vault?.id === activeVaultId && !crdtDocument) {
