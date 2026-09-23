@@ -610,7 +610,12 @@ begin
       v_wire,
       array['protocolVersion','operationId','accountId','vaultId','deviceId','mutations']
     )
+    or jsonb_typeof(v_wire->'protocolVersion')<>'number'
     or (v_wire->>'protocolVersion')::integer<>2
+    or jsonb_typeof(v_wire->'operationId')<>'string'
+    or jsonb_typeof(v_wire->'accountId')<>'string'
+    or jsonb_typeof(v_wire->'vaultId')<>'string'
+    or jsonb_typeof(v_wire->'deviceId')<>'string'
     or jsonb_typeof(v_wire->'mutations')<>'array'
     or jsonb_array_length(v_wire->'mutations') not between 1 and 1000 then
     raise exception 'Invalid Protocol v2 operation envelope';
@@ -668,6 +673,11 @@ begin
         v_mutation,
         array['kind','entityId','entityType','baseRemoteRevision','schemaVersion','structural','payload']
       )
+      or jsonb_typeof(v_mutation->'kind')<>'string'
+      or jsonb_typeof(v_mutation->'entityId')<>'string'
+      or jsonb_typeof(v_mutation->'entityType')<>'string'
+      or jsonb_typeof(v_mutation->'schemaVersion')<>'number'
+      or not (jsonb_typeof(v_mutation->'baseRemoteRevision') in ('null','string'))
       or v_mutation->>'kind'<>'put'
       or not vault_private.valid_entity_type(v_mutation->>'entityType') then
       raise exception 'Invalid Protocol v2 mutation';
@@ -688,10 +698,18 @@ begin
     if not vault_private.jsonb_exact_keys(
         v_structural,array['parentId','nameToken','deleted','blobId']
       )
+      or not (jsonb_typeof(v_structural->'parentId') in ('null','string'))
+      or not (jsonb_typeof(v_structural->'nameToken') in ('null','string'))
       or jsonb_typeof(v_structural->'deleted')<>'boolean'
+      or not (jsonb_typeof(v_structural->'blobId') in ('null','string'))
       or not vault_private.jsonb_exact_keys(
         v_payload,array['encryptionVersion','keyGeneration','algorithm','nonce','ciphertext']
-      ) then
+      )
+      or jsonb_typeof(v_payload->'encryptionVersion')<>'number'
+      or jsonb_typeof(v_payload->'keyGeneration')<>'number'
+      or jsonb_typeof(v_payload->'algorithm')<>'string'
+      or jsonb_typeof(v_payload->'nonce')<>'string'
+      or jsonb_typeof(v_payload->'ciphertext')<>'string' then
       raise exception 'Invalid Protocol v2 encrypted state fields';
     end if;
 
@@ -1146,6 +1164,7 @@ begin
     where e.vault_id=p_vault_id
       and e.account_id=v_account
       and e.sequence>v_after
+      and e.sequence<=v_high
     order by e.sequence
     limit p_limit
   ) q;
@@ -1273,9 +1292,11 @@ begin
     raise exception 'Protocol v2 Vault/epoch mismatch';
   end if;
 
-  select count(*) into v_count
-  from vault_private.entity_heads h
-  where h.vault_id=p_vault_id and h.account_id=v_account;
+  select count(distinct v.entity_id) into v_count
+  from vault_private.entity_versions v
+  where v.vault_id=p_vault_id
+    and v.account_id=v_account
+    and v.sequence<=v_high;
 
   return jsonb_build_object(
     'protocolVersion',2,
