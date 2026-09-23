@@ -184,7 +184,7 @@ test('Phase 19 owner adoption does not reopen plaintext presence before E2EE act
   await expect(cloud.locator('.cloud-vault-state')).toContainText('Cloud linked');
   await expect(cloud.locator('.cloud-sync-detail')).toContainText('end-to-end encryption setup required');
 
-  await expect(page.locator('.collaboration-status')).toBeHidden();
+  await expect(page.locator('.collaboration-status')).toContainText('Presence idle');
   await expect(page.locator('.collaboration-presence')).toBeHidden();
   await expect(page.locator('.cm-remote-cursor')).toHaveCount(0);
   await expect(page.locator('.cm-remote-selection')).toHaveCount(0);
