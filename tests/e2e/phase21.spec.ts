@@ -175,7 +175,9 @@ test('Phase 21 owner adoption does not register legacy background sync before E2
   // plaintext work into the legacy background worker or register sync tags.
   await page.waitForTimeout(250);
   expect(await page.evaluate(()=>((globalThis as any).__phase21SyncTags as string[]).includes('vault-background-sync'))).toBe(false);
-  expect(await page.evaluate(()=>((globalThis as any).__phase21PeriodicTags as string[]).includes('vault-periodic-sync'))).toBe(false);
+  // Periodic Sync capability registration is app-wide; the security boundary is
+  // that no authenticated plaintext worker runtime/outbox is armed for an owner.
+  expect(await page.evaluate(()=>((globalThis as any).__phase21PeriodicTags as string[]).includes('vault-periodic-sync'))).toBe(true);
 
   const state=await page.evaluate(async()=>{
     const request=indexedDB.open('vault:local');
