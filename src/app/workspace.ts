@@ -4687,6 +4687,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   } });
 
   root.addEventListener('click', event => {
+    const conflictAction = (event.target as Element).closest<HTMLButtonElement>('[data-conflict-action]');
+    if (conflictAction?.dataset.conflictAction) {
+      const action = conflictAction.dataset.conflictAction;
+      if (action === 'resolve') {
+        perform(resolveActiveConflict);
+        return;
+      }
+      const record = activeConflictRecord();
+      if (!record) return;
+      if (action === 'open-copy' || action === 'open-canonical') {
+        const target = action === 'open-copy' ? record.conflictEntryId : record.entryId;
+        conflictDialog.close('navigate');
+        perform(() => openEntry(target, true));
+        return;
+      }
+    }
+
     const cloudAction = (event.target as Element).closest<HTMLButtonElement>('[data-cloud-action]');
     if (cloudAction?.dataset.cloudAction) {
       const action = cloudAction.dataset.cloudAction;
@@ -5166,6 +5183,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (action === 'export-draft') { downloadDraft(); return; }
     perform(async () => {
       if (action === 'recovery') { await openRecovery(); return; }
+      if (action === 'conflicts-open') { await openConflictResolver(); return; }
       if (action === 'vault-rename') {
         if (!vault) return;
         const name = await ask('Rename vault', 'Vault name', vault.name); if (name === null) return;
@@ -5505,6 +5523,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }, { signal: abort.signal });
 
   recoverySelect.addEventListener('change', showRecoverySelection, { signal: abort.signal });
+  conflictSelect.addEventListener('change', () => {
+    activeConflictId = conflictSelect.value;
+    conflictChoices.clear();
+    renderConflictSelection(false);
+  }, { signal: abort.signal });
+  conflictHunks.addEventListener('change', event => {
+    const select = (event.target as Element).closest<HTMLSelectElement>('.conflict-choice');
+    const segmentId = select?.dataset.segmentId;
+    if (!select || !segmentId) return;
+    const value = select.value;
+    if (value === 'local' || value === 'remote' || value === 'base'
+      || value === 'both-local-remote' || value === 'both-remote-local') {
+      conflictChoices.set(segmentId, value);
+    } else {
+      conflictChoices.delete(segmentId);
+    }
+    updateConflictPreview();
+  }, { signal: abort.signal });
   fileFilter.addEventListener('input', () => {
     filterText = fileFilter.value;
     renderTree();
@@ -5602,7 +5638,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }, { signal: abort.signal });
   window.addEventListener('keydown', event => {
     if (quickDialog.open) return;
-    if (dialog.open || recoveryDialog.open || cloudDialog.open || migrationDialog.open || templateDialog.open) return;
+    if (dialog.open || recoveryDialog.open || conflictDialog.open || cloudDialog.open || migrationDialog.open || templateDialog.open) return;
     if (graphOpen && event.key === 'Escape') {
       event.preventDefault();
       closeGraph();
@@ -5657,6 +5693,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (cloudDialog.open) cloudDialog.close('close');
     if (migrationDialog.open) migrationDialog.close('cancel');
     if (recoveryDialog.open) recoveryDialog.close();
+    if (conflictDialog.open) conflictDialog.close();
     if (quickDialog.open) quickDialog.close();
     if (templateDialog.open) templateDialog.close('cancel');
     searchIndex.close();
