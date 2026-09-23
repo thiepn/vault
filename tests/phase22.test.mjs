@@ -6,6 +6,7 @@ import {
   splitMarkdownBlocks,
 } from '../build/core/sync/conflict-resolution.js';
 import { MarkdownConflictStore, markdownConflictId } from '../build/core/sync/conflict-store.js';
+import { fullVaultArchiveFiles, parseFullVaultArchiveFiles } from '../build/core/services/a2-archive.js';
 
 const NL=String.fromCharCode(10);
 const TICK=String.fromCharCode(96);
@@ -154,4 +155,53 @@ test('Phase 22 resolving a conflict preserves its snapshots and removes it from 
   assert.equal(resolved.remoteText,input.remoteText);
   assert.equal((await store.listOpen(input.vaultId)).length,0);
   assert.equal((await store.get(created.id))?.status,'resolved');
+});
+
+
+test('Phase 22 full Vault archive round-trips open and resolved conflict metadata',async()=>{
+  const vaultId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const canonicalId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const copyId='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const now='2026-09-23T12:00:00.000Z';
+  const baseText=lines('Base.');
+  const localText=lines('Local.');
+  const remoteText=lines('Remote.');
+  const vault={id:vaultId,name:'Conflict Archive',createdAt:now,updatedAt:now,mode:'local'};
+  const entry=(id,name)=>({
+    id,vaultId,parentId:null,name,kind:'markdown',
+    createdAt:now,updatedAt:now,localVersion:2,deletedAt:null,
+    deletionBatch:null,activeKey:vaultId+'/root/'+name.toLowerCase(),
+  });
+  const canonical=entry(canonicalId,'Canonical.md');
+  const copy=entry(copyId,'Canonical conflict.md');
+  const conflict={
+    id:canonicalId+':2',
+    vaultId,entryId:canonicalId,conflictEntryId:copyId,
+    ownerId:'owner',epoch:'epoch',baseRevision:1,remoteRevision:2,
+    baseText,localText,remoteText,source:'pull',status:'open',
+    createdAt:now,updatedAt:now,resolvedAt:null,resolutionText:null,
+  };
+  const snapshot={
+    format:'vault-local-backup',version:2,exportedAt:now,vault,
+    entries:[canonical,copy],
+    contents:[
+      {entryId:canonicalId,text:remoteText,localVersion:2},
+      {entryId:copyId,text:localText,localVersion:2},
+    ],
+    attachments:[],recoveryDrafts:[],revisions:[],conflicts:[conflict],
+  };
+  const entities=[
+    {id:vaultId,entityType:'vault',name:vault.name,schemaVersion:1,revision:1,createdAt:now,updatedAt:now,deletedAt:null,properties:{}},
+    {id:canonicalId,entityType:'note',vaultId,title:'Canonical',folderId:null,aliases:[],noteKind:'standard',schemaVersion:1,revision:2,createdAt:now,updatedAt:now,deletedAt:null,properties:{},bodyStore:'noteBodies'},
+    {id:copyId,entityType:'note',vaultId,title:'Canonical conflict',folderId:null,aliases:[],noteKind:'standard',schemaVersion:1,revision:2,createdAt:now,updatedAt:now,deletedAt:null,properties:{},bodyStore:'noteBodies'},
+  ];
+  const bodies=[
+    {noteId:canonicalId,vaultId,revision:2,text:remoteText},
+    {noteId:copyId,vaultId,revision:2,text:localText},
+  ];
+
+  const files=await fullVaultArchiveFiles(snapshot,entities,bodies);
+  const parsed=await parseFullVaultArchiveFiles(files);
+  assert.equal(parsed.state.conflicts?.length,1);
+  assert.deepEqual(parsed.state.conflicts?.[0],conflict);
 });
