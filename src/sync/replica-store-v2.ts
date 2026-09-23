@@ -1,5 +1,5 @@
 import { VaultError } from '../domain/errors.js';
-import { canonicalIdFromEntry, entryIdFromCanonical } from '../domain/canonical.js';
+import { canonicalIdFromEntry, entryIdFromCanonical, newUuidV7 } from '../domain/canonical.js';
 import { activeKey, markdownName, validateName } from '../domain/paths.js';
 import { nextVersion } from '../domain/integrity.js';
 import type {
@@ -13,6 +13,7 @@ import type {
   VaultId,
 } from '../domain/model.js';
 import type { A2Persistence } from '../storage/a2-persistence.js';
+import { rekeyTaskIdentityMarkers } from '../tasks/markdown.js';
 import { storageDriver, type LocalStorageDriver, type StorageTransaction } from '../storage/driver.js';
 import {
   markSyncConflictResolutionInTx,
@@ -21,7 +22,7 @@ import {
   upsertSyncConflictInTx,
   type SyncConflictRecordV2,
 } from './conflict-store-v2.js';
-import { decodeOperationV2, type EncryptedEntityStructural } from './protocol-v2.js';
+import { decodeOperationV2, type EncryptedEntityStructural, type NameToken } from './protocol-v2.js';
 import type { SyncOutboxRecordV2 } from './local-state-v2.js';
 import {
   reconcileSyncEntityV2,
