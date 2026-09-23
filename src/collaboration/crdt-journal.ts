@@ -12,6 +12,7 @@ export interface CrdtJournalBase {
   epoch:string;
   baseRevision:number;
   baseFingerprint:string;
+  baseText:string;
 }
 
 export interface CrdtJournalSession extends CrdtJournalBase {
@@ -68,7 +69,7 @@ function validateBase(base:CrdtJournalBase):void{
   if(!UUID.test(base.vaultId)||!UUID.test(base.entryId)||!UUID.test(base.ownerId)||!UUID.test(base.epoch)){
     throw new VaultError('PROTOCOL','CRDT journal identity is invalid.');
   }
-  if(!Number.isSafeInteger(base.baseRevision)||base.baseRevision<1||!FP.test(base.baseFingerprint)){
+  if(!Number.isSafeInteger(base.baseRevision)||base.baseRevision<1||!FP.test(base.baseFingerprint)||typeof base.baseText!=='string'){
     throw new VaultError('PROTOCOL','CRDT journal canonical base is invalid.');
   }
 }
@@ -129,7 +130,7 @@ export class CrdtJournalStore {
       const previous=await tx.store('crdtSessions').get<CrdtJournalSession>(id);
       if(previous){
         validateSession(previous);
-        if(previous.roomKey!==roomKey||previous.status==='canonicalized') {
+        if(previous.roomKey!==roomKey||previous.baseText!==base.baseText||previous.status==='canonicalized') {
           throw new VaultError('PROTOCOL','CRDT journal session identity cannot be reused for another canonical state.');
         }
         if(previous.status==='closed'){
