@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   createDeviceVaultKeyEnvelope,
   deviceVmkConfirmation,
@@ -509,4 +510,43 @@ test('I3 Device confirmation HMAC is challenge and target scoped', async()=>{
   assert.match(a,/^[A-Za-z0-9_-]{43}$/u);
   assert.notEqual(a,b);
   assert.notEqual(a,g2);
+});
+
+
+test('I3 Supabase migration implements every multi-generation RPC used by the client', () => {
+  const sql=readFileSync(new URL('../backend/supabase/i3_device_recovery_keys.sql',import.meta.url),'utf8');
+  const required=[
+    'vault_key_register_device',
+    'vault_key_initialize_vault',
+    'vault_key_readiness',
+    'vault_key_device_envelopes',
+    'vault_key_recovery_envelopes',
+    'vault_key_authorized_devices',
+    'vault_key_request_access',
+    'vault_key_list_access_requests',
+    'vault_key_approve_access_request_v2',
+    'vault_key_pending_access_v2',
+    'vault_key_confirm_access',
+    'vault_key_recover_device_v2',
+    'vault_key_rotate_vmk',
+    'vault_key_rotate_recovery',
+  ];
+  for(const name of required){
+    assert.match(sql,new RegExp('create\\\\s+or\\\\s+replace\\\\s+function\\\\s+public\\\\.'+name+'\\\\s*\\\\(','iu'),name+' RPC is missing');
+  }
+  assert.match(sql,/create table if not exists vault_private\.vault_key_state/iu);
+  assert.match(sql,/active_generation integer not null/iu);
+  assert.match(sql,/revoke all on vault_private\.device_keys from public,anon,authenticated/iu);
+  assert.match(sql,/revoke all on vault_private\.recovery_vault_key_envelopes from public,anon,authenticated/iu);
+  assert.match(sql,/grant execute on function public\.vault_key_rotate_vmk\(uuid,uuid,integer,integer,jsonb,jsonb\) to authenticated/iu);
+  assert.match(sql,/grant execute on function public\.vault_key_rotate_recovery\(uuid,uuid,jsonb\) to authenticated/iu);
+});
+
+test('I3 active key generation is explicit Vault state, not inferred from per-Device max envelope', () => {
+  const sql=readFileSync(new URL('../backend/supabase/i3_device_recovery_keys.sql',import.meta.url),'utf8');
+  const finalReadiness=sql.lastIndexOf('create or replace function vault_private.readiness_json');
+  assert.ok(finalReadiness>=0);
+  const body=sql.slice(finalReadiness,sql.indexOf('create or replace function public.vault_key_initialize_vault',finalReadiness));
+  assert.match(body,/from vault_private\.vault_key_state/iu);
+  assert.doesNotMatch(body,/select max\(e\.key_generation\)/iu);
 });
