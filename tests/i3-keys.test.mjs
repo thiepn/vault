@@ -183,6 +183,8 @@ class FakeKeyRegistry {
   async confirmAccess(requestId,device,confirmation){
     const row=this.requests.get(requestId);
     if(!row||row.request.deviceId!==device||row.expectedConfirmation!==confirmation) throw new Error('Device key possession confirmation failed');
+    const active=this.activeGenerations.get(this.stateId(row.request.vaultId,row.request.accountId));
+    if(active!==row.activeGeneration) throw new Error('Device approval is stale after Vault key rotation');
     row.request.status='confirmed';
     this.access.add(this.accessId(row.request.vaultId,row.request.accountId,device));
     return this.readinessFor(row.request.vaultId,device);
@@ -420,6 +422,36 @@ test('I3 trusted Device approval transfers every retained VMK generation before 
 
   const stored=await localB.listEnvelopes(accountId,vaultId,deviceB);
   assert.deepEqual(stored.map(row=>row.keyGeneration),[1,2]);
+});
+
+test('I3 Device approval must be refreshed if VMK rotates before possession confirmation', async()=>{
+  const remote=new FakeKeyRegistry();
+  const localA=new MemoryDeviceKeyStore();
+  const localB=new MemoryDeviceKeyStore();
+  const serviceA=new KeyDistributionService(localA,remote);
+  const serviceB=new KeyDistributionService(localB,remote);
+  const recovery=await serviceA.generateRecoverySecret();
+  (await serviceA.initializeVault({accountId,vaultId,deviceId:deviceA,recoverySecret:recovery.secret})).context.destroy();
+
+  const request=await serviceB.requestAccess({accountId,vaultId,deviceId:deviceB});
+  await serviceA.approveAccessRequest({accountId,approverDeviceId:deviceA,request});
+  (await serviceA.rotateVaultMasterKey({
+    accountId,vaultId,actorDeviceId:deviceA,recoverySecret:recovery.secret,
+  })).context.destroy();
+
+  await assert.rejects(
+    ()=>serviceB.completePendingAccess({accountId,requestId:request.requestId,deviceId:deviceB}),
+    /stale after Vault key rotation/,
+  );
+  assert.equal(remote.readinessFor(vaultId,deviceB).deviceAuthorized,false);
+
+  await serviceA.approveAccessRequest({accountId,approverDeviceId:deviceA,request});
+  const completed=await serviceB.completePendingAccess({
+    accountId,requestId:request.requestId,deviceId:deviceB,
+  });
+  assert.equal(completed.readiness.ready,true);
+  assert.equal(completed.readiness.keyGeneration,2);
+  completed.context.destroy();
 });
 
 test('I3 wrong Device private key cannot complete another Device access request', async()=>{
