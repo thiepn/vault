@@ -10,9 +10,15 @@ export interface CrdtBaseSnapshot {
 
 export type CrdtTextSource='local'|'remote';
 
+export interface LocalCrdtTransaction {
+  beforeText:string;
+  afterText:string;
+  updates:readonly Uint8Array[];
+}
 export interface CrdtTextCallbacks {
   onText?:(text:string,source:CrdtTextSource)=>void;
   onUpdate?:(update:Uint8Array)=>void;
+  onLocalTransaction?:(transaction:LocalCrdtTransaction)=>void;
 }
 
 const SEED_ORIGIN=Symbol('vault-crdt-seed');
@@ -81,6 +87,7 @@ export class CrdtTextDocument {
   readonly undoManager:Y.UndoManager;
   readonly localOrigin={kind:'vault-local-crdt'} as const;
   private destroyed=false;
+  private captureUpdates:Uint8Array[]|null=null;
 
   constructor(
     readonly base:CrdtBaseSnapshot,
@@ -103,7 +110,9 @@ export class CrdtTextDocument {
     });
     this.doc.on('update',(update:Uint8Array,origin:unknown)=>{
       if(this.destroyed || origin===REMOTE_ORIGIN || origin===SEED_ORIGIN) return;
-      this.callbacks.onUpdate?.(update.slice());
+      const copy=update.slice();
+      if(this.captureUpdates) this.captureUpdates.push(copy);
+      this.callbacks.onUpdate?.(copy);
     });
   }
 
@@ -111,12 +120,19 @@ export class CrdtTextDocument {
 
   applyLocalText(next:string):boolean{
     if(this.destroyed) return false;
-    const splice=singleSplice(this.text.toString(),next);
+    const before=this.text.toString();
+    const splice=singleSplice(before,next);
     if(!splice) return false;
-    this.doc.transact(()=>{
-      if(splice.deleteCount) this.text.delete(splice.from,splice.deleteCount);
-      if(splice.insert) this.text.insert(splice.from,splice.insert);
-    },this.localOrigin);
+    this.captureUpdates=[];
+    try{
+      this.doc.transact(()=>{
+        if(splice.deleteCount) this.text.delete(splice.from,splice.deleteCount);
+        if(splice.insert) this.text.insert(splice.from,splice.insert);
+      },this.localOrigin);
+      this.emitLocalTransaction(before);
+    }finally{
+      this.captureUpdates=null;
+    }
     return true;
   }
 
@@ -133,14 +149,35 @@ export class CrdtTextDocument {
 
   undo():boolean{
     if(this.destroyed || this.undoManager.undoStack.length===0) return false;
-    this.undoManager.undo();
+    const before=this.text.toString();
+    this.captureUpdates=[];
+    try{
+      this.undoManager.undo();
+      this.emitLocalTransaction(before);
+    }finally{
+      this.captureUpdates=null;
+    }
     return true;
   }
 
   redo():boolean{
     if(this.destroyed || this.undoManager.redoStack.length===0) return false;
-    this.undoManager.redo();
+    const before=this.text.toString();
+    this.captureUpdates=[];
+    try{
+      this.undoManager.redo();
+      this.emitLocalTransaction(before);
+    }finally{
+      this.captureUpdates=null;
+    }
     return true;
+  }
+
+  private emitLocalTransaction(beforeText:string):void{
+    const afterText=this.text.toString();
+    const updates=this.captureUpdates?.map(update=>update.slice())??[];
+    if(beforeText===afterText||!updates.length) return;
+    this.callbacks.onLocalTransaction?.({beforeText,afterText,updates});
   }
 
   stopCapturing():void{this.undoManager.stopCapturing();}
