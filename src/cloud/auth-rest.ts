@@ -183,6 +183,14 @@ export class SupabaseRestAuth implements AuthService {
     return (await this.freshSession())?.accessToken ?? null;
   }
 
+  /** Worker-safe copy of the current browser session. The service worker gets
+   * only the same publishable-key user credentials already held by this origin;
+   * secret/service-role credentials are never accepted by Vault. */
+  async backgroundSession(): Promise<SupabaseStoredSession | null> {
+    const session=await this.freshSession();
+    return session ? {...session} : null;
+  }
+
   async identity(): Promise<AuthIdentity | null> {
     const session = await this.freshSession();
     if (!session) return null;
