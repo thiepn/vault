@@ -1,4 +1,5 @@
 import { VaultError } from '../domain/errors.js';
+import { sha256Hex as cryptoSha256Hex } from '../crypto/primitives.js';
 import { storageDriver, type LocalStorageDriver } from './driver.js';
 
 const hashPattern = /^[0-9a-f]{64}$/u;
@@ -22,11 +23,8 @@ function assertHash(hash: string): void {
   if (!hashPattern.test(hash)) throw new VaultError('CORRUPT', 'Blob hash must be lowercase SHA-256 hex.');
 }
 
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  if (!(bytes instanceof Uint8Array)) throw new VaultError('CORRUPT', 'Blob payload must be binary bytes.');
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
-}
+/** A2 compatibility export. Crypto primitives now own SHA-256 implementation. */
+export const sha256Hex = cryptoSha256Hex;
 
 export class IndexedDbBlobStore implements BlobStore {
   readonly kind = 'indexeddb' as const;
