@@ -1647,7 +1647,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       const legacySummary=isLegacySyncSummary(summary) ? summary : null;
       const localUiChanged=encryptedSummary
         ? encryptedSummary.pulledEvents>0
-        : legacySummary.pulledEvents > 0 || legacySummary.conflictsPreserved > 0 || legacySummary.autoMergedMarkdown > 0;
+        : legacySummary
+          ? legacySummary.pulledEvents > 0 || legacySummary.conflictsPreserved > 0 || legacySummary.autoMergedMarkdown > 0
+          : false;
       if (vault?.id === activeVaultId && (!background || localUiChanged)) {
         await refresh();
         if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
