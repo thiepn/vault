@@ -3405,6 +3405,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       entries = await repository.listEntries(vault.id, true);
       dirtyIds = new Set((await repository.listDirtyEntries(vault.id)).map(item => item.entryId));
       openConflicts = await conflictStore.listOpen(vault.id);
+      openSyncConflictsV2 = await syncConflictStoreV2.listOpen(vault.id);
       if (knowledgeVaultId !== vault.id) {
         await knowledge.loadVault(vault.id, entries);
         knowledgeVaultId = vault.id;
@@ -3425,6 +3426,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
     } else {
       entries = [];
+      openConflicts = [];
+      openSyncConflictsV2 = [];
       dirtyIds.clear();
       preferencesVaultId = undefined;
       knowledgeVaultId = undefined;
@@ -3449,7 +3452,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
   function renderConflictIndicator(): void {
     const button = element<HTMLButtonElement>('[data-action="conflicts-open"]');
-    const count = openConflicts.length;
+    const encrypted = vault?.mode === 'cloud' && vault.cloud?.protocolVersion === 2;
+    const count = encrypted ? openSyncConflictsV2.length : openConflicts.length;
     button.hidden = count === 0;
     button.disabled = !vault || count === 0;
     element<HTMLElement>('.conflict-count').textContent = String(count);
