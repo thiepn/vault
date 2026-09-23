@@ -1,7 +1,7 @@
 import { VaultError } from '../domain/errors.js';
 import { newId, type AccountId, type DeviceId, type Entry, type EntryId, type OperationId, type Vault } from '../domain/model.js';
 import type { VaultCryptoContext } from '../crypto/context.js';
-import { sealOperationV2, type SealedOperationV2, type SyncOperationV2 } from './protocol-v2.js';
+import { decodeOperationV2, sealOperationV2, type SealedOperationV2, type SyncOperationV2 } from './protocol-v2.js';
 import type { SyncLocalStateV2, SyncOutboxRecordV2 } from './local-state-v2.js';
 import type { EncryptedReplicaStoreV2 } from './replica-store-v2.js';
 import type { LocalRepository } from '../storage/local-repository.js';
@@ -296,7 +296,7 @@ export class EncryptedSyncEngineV2 {
         const result=await this.transport.pushV2(sealed);
         if(result.status==='conflict') throw conflictError(result.reason);
 
-        const decoded=JSON.parse(row.wire) as SyncOperationV2;
+        const decoded=decodeOperationV2(row.wire) as SyncOperationV2;
         if(decoded.mutations.length!==1||result.snapshots.length!==1
           ||result.snapshots[0]?.entityId!==decoded.mutations[0]?.entityId){
           throw new VaultError('PROTOCOL','Protocol v2 push acknowledgement does not match the queued one-entity operation.');
