@@ -286,9 +286,11 @@ export class EncryptedSyncEngineV2 {
       }
       return [row.id,decoded.mutations[0]!] as const;
     }));
-    const pendingEntity=new Map([...mutationByOperation.entries()].map(([operationId,mutation])=>[
-      mutation.entityId,{operationId,mutation},
-    ]));
+    const pendingEntity=new Map<string,{operationId:OperationId;mutation:SyncOperationV2['mutations'][number]}>(
+      [...mutationByOperation.entries()].map(([operationId,mutation])=>[
+        mutation.entityId,{operationId,mutation},
+      ]),
+    );
     const depthMemo=new Map<string,number>();
     const pendingDepth=(entityId:string,stack=new Set<string>()):number=>{
       const cached=depthMemo.get(entityId);
