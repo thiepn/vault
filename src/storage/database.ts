@@ -2,12 +2,13 @@ import { VaultError } from '../domain/errors.js';
 import type { Principal } from '../domain/model.js';
 
 /**
- * Schema v4 is the A2 additive persistence foundation.
+ * Schema v5 extends the A2 persistence foundation with worker-readable
+ * background replication runtime state and a staged remote-event inbox.
  * Phase 1–11 stores stay intact while canonical entities/note bodies/blobs are
  * populated and verified before a later cut-over. This makes upgrade rollback
  * possible without re-identifying existing content.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 export const STORES = [
   'vaults',
   'entries',
@@ -25,6 +26,8 @@ export const STORES = [
   'noteBodies',
   'blobPayloads',
   'migrationState',
+  'backgroundRuntime',
+  'remoteInbox',
 ] as const;
 export type StoreName = typeof STORES[number];
 
@@ -88,6 +91,12 @@ export async function openDatabase(name = databaseName({ kind: 'local' })): Prom
         blobs.createIndex('createdAt', 'createdAt');
 
         db.createObjectStore('migrationState', { keyPath: 'id' });
+      }
+      if (event.oldVersion < 5) {
+        db.createObjectStore('backgroundRuntime', { keyPath: 'id' });
+        const inbox = db.createObjectStore('remoteInbox', { keyPath: 'id' });
+        inbox.createIndex('vaultId', 'vaultId');
+        inbox.createIndex('vaultSequence', ['vaultId', 'sequence'], { unique: true });
       }
     };
     req.onsuccess = () => {
