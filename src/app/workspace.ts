@@ -1082,6 +1082,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       baseRevision:base.revision,
       baseFingerprint:base.fingerprint,
       baseText:base.text,
+      baseVerified:true,
     };
   }
 
@@ -1263,6 +1264,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const journalBase=journalBaseFor(base);
     if(!journalBase) return;
     await clearCrdtRecoveryIfCanonical(base.entryId,base.text);
+    await crdtJournal.verifyBase(journalBase);
     const session=await crdtJournal.ensureSession(journalBase,storageSessionId);
     crdtJournalSessionId=session.id;
     crdtJournalBase=journalBase;
@@ -1350,6 +1352,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       stopCrdtSession();
       return;
     }
+    replacementJournalBase.baseVerified=false;
+    replacementJournalBase.baseText='';
     const replacementSession=await crdtJournal.ensureSession(replacementJournalBase,storageSessionId);
     crdtJournalSessionId=replacementSession.id;
     crdtJournalBase=replacementJournalBase;
