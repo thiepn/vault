@@ -1,7 +1,7 @@
 import { VaultError } from '../domain/errors.js';
 import type { AccountId, VaultId } from '../domain/model.js';
 import { base64UrlDecode, base64UrlEncode, canonicalContext, canonicalUuid } from './encoding.js';
-import { AES_GCM_NONCE_BYTES, aes256GcmDecrypt, aes256GcmEncrypt, deriveAes256GcmKey, randomBytes, sha256 } from './primitives.js';
+import { AES_GCM_NONCE_BYTES, aes256GcmDecrypt, aes256GcmEncrypt, deriveAes256GcmKey, deriveHmacSha256Key, randomBytes, sha256, signHmacSha256 } from './primitives.js';
 import { assertVaultMasterKey } from './keys.js';
 
 export const RECOVERY_SECRET_BYTES=32;
@@ -155,4 +155,32 @@ export async function openRecoveryVaultKeyEnvelope(input:{
 export async function recoverySecretFingerprint(secret:Uint8Array):Promise<string>{
   assertRecoverySecret(secret);
   return base64UrlEncode(await sha256(concat(canonicalContext(['vault/recovery-secret-fingerprint/v1']),secret)));
+}
+
+
+/**
+ * Opaque proof used only to prove possession of the 256-bit Recovery Secret to
+ * the key-registry service. The server stores the proof, never the secret. The
+ * secret has full random entropy, so the proof is not a practical password
+ * verifier.
+ */
+export async function recoverySecretProof(input:{
+  secret:Uint8Array;
+  accountId:AccountId;
+  vaultId:VaultId;
+  keyGeneration:number;
+}):Promise<string>{
+  assertRecoverySecret(input.secret);
+  const accountId=canonicalUuid(input.accountId,'AccountId');
+  const vaultId=canonicalUuid(input.vaultId,'VaultId');
+  const keyGeneration=generation(input.keyGeneration);
+  const key=await deriveHmacSha256Key(
+    input.secret,
+    canonicalContext(['vault/recovery-proof-salt/v1',accountId]),
+    canonicalContext(['vault/recovery-proof-key/v1',accountId]),
+  );
+  return base64UrlEncode(await signHmacSha256(
+    key,
+    canonicalContext(['vault/recovery-proof/v1',accountId,vaultId,keyGeneration]),
+  ));
 }
