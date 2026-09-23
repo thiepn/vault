@@ -565,3 +565,21 @@ test('I4 server rejects non-string revision and identity fields before PostgreSQ
   assert.match(push,/jsonb_typeof\(v_mutation->'schemaVersion'\)<>'number'/u);
   assert.match(push,/jsonb_typeof\(v_payload->'keyGeneration'\)<>'number'/u);
 });
+
+
+test('I4 advisor hardening covers every encrypted-sync foreign-key path',()=>{
+  const sql=readFileSync(new URL('../backend/supabase/i4_advisor_hardening.sql',import.meta.url),'utf8');
+  for(const [index,columns] of [
+    ['accepted_operations_vault_account_idx','vault_id,account_id'],
+    ['device_access_requests_device_idx','account_id,device_id'],
+    ['device_vault_access_device_idx','account_id,device_id'],
+    ['device_vault_key_envelopes_device_idx','account_id,device_id'],
+    ['entity_heads_vault_account_idx','vault_id,account_id'],
+    ['entity_versions_vault_account_idx','vault_id,account_id'],
+    ['sync_events_vault_account_idx','vault_id,account_id'],
+    ['sync_events_version_idx','vault_id,entity_id,remote_revision'],
+  ]){
+    assert.ok(sql.includes('create index if not exists '+index));
+    assert.ok(sql.includes('('+columns+')'));
+  }
+});
