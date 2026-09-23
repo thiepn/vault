@@ -24,7 +24,18 @@ class MockSyncCloud {
   adopted=false;
   remoteVaultId='';
   remoteVaultName='';
+  protocolVersion:1|2=1;
+  calls:string[]=[];
   devices=new Map<string,string>();
+  keyReady=false;
+  keyDeviceId='';
+  keyFingerprint='';
+  keyPublicSpki='';
+  keyEnvelope:any=null;
+  v2Heads=new Map<string,any>();
+  v2Events:any[]=[];
+  v2Operations=new Map<string,{wire:string;sha:string;result:any}>();
+  v2Wires:string[]=[];
   entries=new Map<string,any>();
   events:any[]=[];
   operations=new Map<string,{sha:string;result:any}>();
@@ -53,6 +64,7 @@ class MockSyncCloud {
     await page.route(PROJECT+'/**',async route=>{
       const request=route.request();
       const url=new URL(request.url());
+      this.calls.push(request.method()+' '+url.pathname);
       if(request.method()==='OPTIONS') return route.fulfill({status:204,headers:corsHeaders,body:''});
 
       if(url.pathname==='/auth/v1/token' && url.searchParams.get('grant_type')==='password'){
@@ -86,7 +98,7 @@ class MockSyncCloud {
         return json(route,this.adopted?[{
           id:this.remoteVaultId,account_id:accountId,auth_user_id:userId,
           owner_account_id:accountId,owner_auth_user_id:userId,access_role:'owner',
-          name:this.remoteVaultName,epoch,protocol_version:1,
+          name:this.remoteVaultName,epoch,protocol_version:this.protocolVersion,
           created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
         }]:[]);
       }
@@ -105,14 +117,174 @@ class MockSyncCloud {
         this.adopted=true;
         return json(route,[{
           id:this.remoteVaultId,account_id:accountId,auth_user_id:userId,name:this.remoteVaultName,epoch,
-          protocol_version:1,created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
+          protocol_version:this.protocolVersion,created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
         }],201);
       }
       if(url.pathname==='/rest/v1/vault_cloud_vaults' && request.method()==='GET'){
         return json(route,this.adopted?[{
           id:this.remoteVaultId,account_id:accountId,auth_user_id:userId,name:this.remoteVaultName,epoch,
-          protocol_version:1,created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
+          protocol_version:this.protocolVersion,created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
         }]:[]);
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_capabilities_v2' && request.method()==='POST'){
+        return json(route,{
+          contractVersion:1,
+          protocolVersions:[1,2],
+          encryptedContentV2:{contractAvailable:true,acceptingContent:true},
+          maxMutations:1000,
+          maxPageEvents:1000,
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_key_readiness' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        return json(route,{
+          vaultId:this.remoteVaultId,
+          deviceId:body.p_device_id,
+          keyGeneration:this.keyReady?1:null,
+          deviceEnvelope:this.keyReady,
+          recoveryEnvelope:this.keyReady,
+          deviceAuthorized:this.keyReady,
+          ready:this.keyReady,
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_key_register_device' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        this.keyDeviceId=body.p_device_id;
+        this.keyFingerprint=body.p_fingerprint;
+        this.keyPublicSpki=body.p_public_spki;
+        return json(route,{registered:true});
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_key_initialize_vault' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        expect(body.p_account_id).toBe(accountId);
+        expect(body.p_vault_id).toBe(this.remoteVaultId);
+        expect(body.p_device_id).toBe(this.keyDeviceId);
+        expect(body.p_key_generation).toBe(1);
+        expect(body.p_public_key_fingerprint).toBe(this.keyFingerprint);
+        this.keyEnvelope={
+          version:1,
+          accountId,
+          vaultId:this.remoteVaultId,
+          deviceId:this.keyDeviceId,
+          keyGeneration:1,
+          algorithm:'RSA-OAEP-3072-SHA256',
+          publicKeyFingerprint:this.keyFingerprint,
+          ciphertext:body.p_device_ciphertext,
+          createdAt:now(),
+        };
+        this.keyReady=true;
+        return json(route,{
+          vaultId:this.remoteVaultId,
+          deviceId:this.keyDeviceId,
+          keyGeneration:1,
+          deviceEnvelope:true,
+          recoveryEnvelope:true,
+          deviceAuthorized:true,
+          ready:true,
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_key_device_envelopes' && request.method()==='POST'){
+        return json(route,this.keyEnvelope?[clone(this.keyEnvelope)]:[]);
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_upgrade_v2' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        expect(body.p_vault_id).toBe(this.remoteVaultId);
+        expect(body.p_device_id).toBe(this.keyDeviceId);
+        expect(this.keyReady).toBe(true);
+        this.protocolVersion=2;
+        return json(route,{vaultId:this.remoteVaultId,epoch,protocolVersion:2});
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_pull_v2' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        expect(body.p_vault_id).toBe(this.remoteVaultId);
+        expect(body.p_epoch).toBe(epoch);
+        expect(body.p_device_id).toBe(this.keyDeviceId);
+        const after=BigInt(body.p_after);
+        const selected=this.v2Events
+          .filter(event=>BigInt(event.sequence)>after)
+          .slice(0,body.p_limit??500);
+        return json(route,{
+          protocolVersion:2,
+          vaultId:this.remoteVaultId,
+          epoch,
+          after:String(body.p_after),
+          through:selected.at(-1)?.sequence??String(body.p_after),
+          highWatermark:String(this.v2Events.length),
+          events:clone(selected),
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_push_v2' && request.method()==='POST'){
+        const envelope=JSON.parse(request.postData()??'{}');
+        expect(typeof envelope.p_wire).toBe('string');
+        const wire=envelope.p_wire as string;
+        this.v2Wires.push(wire);
+        const operation=JSON.parse(wire);
+        const prior=this.v2Operations.get(operation.operationId);
+        if(prior){
+          expect(prior.wire).toBe(wire);
+          expect(prior.sha).toBe(envelope.p_sha256);
+          return json(route,clone(prior.result));
+        }
+
+        const snapshots:any[]=[];
+        const first=String(this.v2Events.length+1);
+        for(const mutation of operation.mutations){
+          const priorHead=this.v2Heads.get(mutation.entityId);
+          const revision=priorHead?Number(priorHead.remoteRevision)+1:1;
+          const sequence=String(this.v2Events.length+1);
+          const snapshot={
+            entityId:mutation.entityId,
+            vaultId:this.remoteVaultId,
+            entityType:mutation.entityType,
+            remoteRevision:String(revision),
+            sequence,
+            schemaVersion:mutation.schemaVersion,
+            structural:clone(mutation.structural),
+            payload:clone(mutation.payload),
+            operationId:operation.operationId,
+            updatedByDevice:operation.deviceId,
+            updatedAt:now(),
+          };
+          this.v2Heads.set(mutation.entityId,clone(snapshot));
+          const event={
+            sequence,
+            operationId:operation.operationId,
+            entityId:mutation.entityId,
+            entityType:mutation.entityType,
+            remoteRevision:String(revision),
+            kind:'put',
+            snapshot:clone(snapshot),
+          };
+          this.v2Events.push(event);
+          snapshots.push(snapshot);
+        }
+        const result={
+          status:'ok',
+          operationId:operation.operationId,
+          firstSequence:first,
+          through:String(this.v2Events.length),
+          snapshots,
+        };
+        this.v2Operations.set(operation.operationId,{wire,sha:envelope.p_sha256,result:clone(result)});
+        return json(route,result);
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_ack_v2' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        return json(route,{
+          vaultId:this.remoteVaultId,
+          epoch,
+          acknowledgedThrough:String(body.p_through),
+          highWatermark:String(this.v2Events.length),
+        });
       }
 
       if(url.pathname==='/rest/v1/rpc/vault_sync_pull' && request.method()==='POST'){
