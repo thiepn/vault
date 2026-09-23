@@ -17,6 +17,7 @@ import type { NoteBodyRecord, StoredEntity } from '../storage/a2-persistence.js'
 import { createPreferredBlobStore, sha256Hex } from '../storage/blob-store.js';
 import { storageDriver } from '../storage/driver.js';
 import { vaultFiles, type ExportFile } from './export.js';
+import { validateSyncConflictV2, type SyncConflictRecordV2 } from '../sync/conflict-store-v2.js';
 
 export interface VaultArchiveManifest {
   format: 'vault-archive';
@@ -42,6 +43,7 @@ export interface VaultArchiveState {
   recoveryDrafts: RecoveryDraft[];
   revisions: LocalRevision[];
   conflicts?: MarkdownConflictRecord[];
+  syncConflicts?: SyncConflictRecordV2[];
   attachments: Array<{
     entryId: string;
     mimeType: string;
@@ -164,6 +166,15 @@ function assertArchiveState(state: VaultArchiveState, manifest: VaultArchiveMani
     conflictIds.add(conflict.id);
   }
 
+  const syncConflictIds = new Set<string>();
+  for (const conflict of state.syncConflicts ?? []) {
+    validateSyncConflictV2(conflict);
+    if (conflict.vaultId !== state.vault.id || syncConflictIds.has(conflict.id) || !entryIds.has(conflict.entryId)) {
+      throw new VaultError('CORRUPT', 'Vault archive contains invalid Protocol v2 synchronization conflicts.');
+    }
+    syncConflictIds.add(conflict.id);
+  }
+
   const attachmentIds = new Set<string>();
   for (const attachment of state.attachments) {
     const entry = state.entries.find(item => item.id === attachment.entryId);
@@ -238,6 +249,7 @@ export async function fullVaultArchiveFiles(
     recoveryDrafts: snapshot.recoveryDrafts,
     revisions: snapshot.revisions ?? [],
     conflicts: snapshot.conflicts ?? [],
+    syncConflicts: snapshot.syncConflicts ?? [],
     attachments: stateAttachments,
   };
 
@@ -403,6 +415,7 @@ export async function restoreFullVaultArchive(
     'revisions',
     'drafts',
     'conflicts',
+    'syncConflicts',
     'entities',
     'noteBodies',
   ] as const;
@@ -425,6 +438,7 @@ export async function restoreFullVaultArchive(
     for (const revision of parsed.state.revisions) await tx.store('revisions').add(revision);
     for (const draft of parsed.state.recoveryDrafts) await tx.store('drafts').add(draft);
     for (const conflict of parsed.state.conflicts ?? []) await tx.store('conflicts').add(conflict);
+    for (const conflict of parsed.state.syncConflicts ?? []) await tx.store('syncConflicts').add(conflict);
     for (const entity of parsed.entities) await tx.store('entities').add(entity);
     for (const body of parsed.noteBodies) await tx.store('noteBodies').add(body);
 
