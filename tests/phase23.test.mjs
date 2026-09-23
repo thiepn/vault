@@ -130,6 +130,28 @@ test('Phase 23 closed local session reopens on the same exact room base',async()
   assert.equal(reopened.closedAt,null);
 });
 
+test('Phase 23 exact base Markdown prevents lightweight-fingerprint collision mixing',async()=>{
+  const driver=new MemoryDriver();
+  const journal=new CrdtJournalStore(driver);
+  const otherSession='77777777-7777-4777-8777-777777777777';
+  const baseA={...BASE,baseText:'hello'};
+  const baseB={...BASE,baseText:'different base'};
+  const a=await journal.ensureSession(baseA,SESSION);
+  const b=await journal.ensureSession(baseB,otherSession);
+  await journal.append(a.id,{source:'local',sourceSessionId:SESSION,bytes:new Uint8Array([1,2,3])});
+  await journal.append(b.id,{source:'local',sourceSessionId:otherSession,bytes:new Uint8Array([4,5,6])});
+
+  const replayA=await journal.replay(baseA);
+  const replayB=await journal.replay(baseB);
+  assert.deepEqual(replayA.updates.map(row=>[...row.bytes]),[[1,2,3]]);
+  assert.deepEqual(replayB.updates.map(row=>[...row.bytes]),[[4,5,6]]);
+
+  await journal.canonicalizeRoom(baseA,8);
+  const history=await journal.listHistory(VAULT,ENTRY);
+  assert.equal(history.find(row=>row.id===a.id)?.status,'canonicalized');
+  assert.equal(history.find(row=>row.id===b.id)?.status,'active');
+});
+
 test('Phase 23 canonicalized room remains in history but is excluded from crash replay',async()=>{
   const driver=new MemoryDriver();
   const journal=new CrdtJournalStore(driver);
