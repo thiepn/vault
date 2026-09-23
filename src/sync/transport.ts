@@ -5,6 +5,19 @@ import type { Cursor, SealedOperation } from './protocol.js';
 import { sha256Hex } from '../storage/blob-store.js';
 import { validatePushResult, validateRemotePage, type RemotePushResult, type RemoteReplicationPage } from './remote-types.js';
 import { validateSyncBackendCapabilities, type SyncBackendCapabilities } from './capabilities.js';
+import type { DeviceId, OperationId } from '../domain/model.js';
+import type { CanonicalEntityId } from '../domain/canonical.js';
+import type { SealedOperationV2 } from './protocol-v2.js';
+import {
+  validateBootstrapDescriptorV2,
+  validateBootstrapPageV2,
+  validateEncryptedPushResultV2,
+  validateEncryptedRemotePageV2,
+  type BootstrapDescriptorV2,
+  type BootstrapPageV2,
+  type EncryptedPushResultV2,
+  type EncryptedRemotePageV2,
+} from './remote-v2.js';
 
 type FetchLike=typeof fetch;
 
@@ -64,6 +77,67 @@ export class SupabaseSyncTransport {
   async capabilities():Promise<SyncBackendCapabilities>{
     const result=await this.rpc('vault_sync_capabilities_v2',{});
     return validateSyncBackendCapabilities(result);
+  }
+
+  async upgradeV2(vaultId:VaultId,deviceId:DeviceId):Promise<{vaultId:VaultId;epoch:string;protocolVersion:2}>{
+    const result=await this.rpc('vault_sync_upgrade_v2',{p_vault_id:vaultId,p_device_id:deviceId});
+    if(!result || typeof result!=='object') throw new VaultError('PROTOCOL','Protocol v2 upgrade response is invalid.');
+    const row=result as Record<string,unknown>;
+    if(row.vaultId!==vaultId || typeof row.epoch!=='string' || row.protocolVersion!==2){
+      throw new VaultError('PROTOCOL','Protocol v2 upgrade response does not match this Vault.');
+    }
+    return {vaultId,epoch:row.epoch,protocolVersion:2};
+  }
+
+  async pullV2(vaultId:VaultId,epoch:string,deviceId:DeviceId,after:string,limit=500):Promise<EncryptedRemotePageV2>{
+    if(!Number.isInteger(limit)||limit<1||limit>1000) throw new VaultError('PROTOCOL','Invalid Protocol v2 page size.');
+    const result=await this.rpc('vault_sync_pull_v2',{
+      p_vault_id:vaultId,p_epoch:epoch,p_device_id:deviceId,p_after:after,p_limit:limit,
+    });
+    return validateEncryptedRemotePageV2(result,{vaultId,epoch,after});
+  }
+
+  async pushV2(operation:SealedOperationV2):Promise<EncryptedPushResultV2>{
+    const result=await this.rpc('vault_sync_push_v2',{p_wire:operation.wire,p_sha256:operation.sha256});
+    return validateEncryptedPushResultV2(result,{operationId:operation.operationId as OperationId,vaultId:operation.vaultId});
+  }
+
+  async ackV2(vaultId:VaultId,epoch:string,deviceId:DeviceId,through:string):Promise<void>{
+    const result=await this.rpc('vault_sync_ack_v2',{
+      p_vault_id:vaultId,p_epoch:epoch,p_device_id:deviceId,p_through:through,
+    });
+    if(!result || typeof result!=='object') throw new VaultError('PROTOCOL','Protocol v2 acknowledgement response is invalid.');
+    const row=result as Record<string,unknown>;
+    if(row.vaultId!==vaultId || row.epoch!==epoch || row.acknowledgedThrough!==through){
+      throw new VaultError('PROTOCOL','Protocol v2 acknowledgement response does not match the durable local cursor.');
+    }
+  }
+
+  async beginBootstrapV2(vaultId:VaultId,epoch:string,deviceId:DeviceId):Promise<BootstrapDescriptorV2>{
+    const result=await this.rpc('vault_sync_begin_bootstrap_v2',{
+      p_vault_id:vaultId,p_epoch:epoch,p_device_id:deviceId,
+    });
+    return validateBootstrapDescriptorV2(result,vaultId,epoch);
+  }
+
+  async bootstrapPageV2(
+    vaultId:VaultId,
+    epoch:string,
+    deviceId:DeviceId,
+    snapshotSequence:string,
+    afterEntityId:CanonicalEntityId|null,
+    limit=250,
+  ):Promise<BootstrapPageV2>{
+    if(!Number.isInteger(limit)||limit<1||limit>1000) throw new VaultError('PROTOCOL','Invalid Protocol v2 bootstrap page size.');
+    const result=await this.rpc('vault_sync_bootstrap_page_v2',{
+      p_vault_id:vaultId,
+      p_epoch:epoch,
+      p_device_id:deviceId,
+      p_snapshot_sequence:snapshotSequence,
+      p_after_entity_id:afterEntityId,
+      p_limit:limit,
+    });
+    return validateBootstrapPageV2(result,{vaultId,epoch,snapshotSequence,afterEntityId});
   }
 
   async pull(vaultId:VaultId,epoch:string,after:Cursor,limit=500):Promise<RemoteReplicationPage>{
