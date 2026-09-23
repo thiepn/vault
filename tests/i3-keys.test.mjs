@@ -36,16 +36,18 @@ class FakeKeyRegistry {
   constructor(){
     this.deviceKeys=new Map();
     this.deviceEnvelopes=new Map();
-    this.recoveryEnvelopes=new Map();
+    this.recoveryEnvelopesById=new Map();
     this.recoveryProofs=new Map();
     this.access=new Set();
     this.requests=new Map();
+    this.activeGenerations=new Map();
   }
 
   deviceKeyId(account,device){return account+'/'+device;}
   envelopeId(vault,account,device,generation){return [vault,account,device,generation].join('/');}
   recoveryId(vault,account,generation){return [vault,account,generation].join('/');}
   accessId(vault,account,device){return [vault,account,device].join('/');}
+  stateId(vault,account){return vault+'/'+account;}
 
   async registerDeviceKey(account,device,descriptor){
     const id=this.deviceKeyId(account,device);
@@ -55,30 +57,32 @@ class FakeKeyRegistry {
   }
 
   readinessFor(vault,device){
-    const key=[...this.deviceEnvelopes.values()]
-      .filter(row=>row.vaultId===vault&&row.deviceId===device)
-      .sort((a,b)=>b.keyGeneration-a.keyGeneration)[0] ?? null;
-    const recovery=key ? this.recoveryEnvelopes.has(this.recoveryId(vault,key.accountId,key.keyGeneration)) : false;
-    const authorized=key ? this.access.has(this.accessId(vault,key.accountId,device)) : false;
+    const active=this.activeGenerations.get(this.stateId(vault,accountId)) ?? null;
+    const envelope=active===null?null:this.deviceEnvelopes.get(this.envelopeId(vault,accountId,device,active)) ?? null;
+    const recovery=active===null?false:this.recoveryEnvelopesById.has(this.recoveryId(vault,accountId,active));
+    const authorized=this.access.has(this.accessId(vault,accountId,device));
     return {
       vaultId:vault,
       deviceId:device,
-      keyGeneration:key?.keyGeneration ?? null,
-      deviceEnvelope:!!key,
+      keyGeneration:active,
+      deviceEnvelope:!!envelope,
       recoveryEnvelope:recovery,
       deviceAuthorized:authorized,
-      ready:!!key&&recovery&&authorized,
+      ready:!!envelope&&recovery&&authorized,
     };
   }
 
   async initializeVaultKeys(input){
     const deviceKey=this.deviceKeys.get(this.deviceKeyId(input.accountId,input.deviceId));
     if(!deviceKey || deviceKey.fingerprint!==input.deviceEnvelope.publicKeyFingerprint) throw new Error('Device key mismatch');
+    const stateId=this.stateId(input.vaultId,input.accountId);
+    const existingGeneration=this.activeGenerations.get(stateId);
+    if(existingGeneration!==undefined && existingGeneration!==input.deviceEnvelope.keyGeneration) throw new Error('Vault key state already initialized');
     this.deviceEnvelopes.set(
       this.envelopeId(input.vaultId,input.accountId,input.deviceId,input.deviceEnvelope.keyGeneration),
       structuredClone(input.deviceEnvelope),
     );
-    this.recoveryEnvelopes.set(
+    this.recoveryEnvelopesById.set(
       this.recoveryId(input.vaultId,input.accountId,input.recoveryEnvelope.keyGeneration),
       structuredClone(input.recoveryEnvelope),
     );
@@ -87,6 +91,7 @@ class FakeKeyRegistry {
       input.recoveryProof,
     );
     this.access.add(this.accessId(input.vaultId,input.accountId,input.deviceId));
+    this.activeGenerations.set(stateId,input.deviceEnvelope.keyGeneration);
     return this.readinessFor(input.vaultId,input.deviceId);
   }
 
@@ -95,19 +100,32 @@ class FakeKeyRegistry {
   async deviceEnvelopes(vault,device){
     return [...this.deviceEnvelopes.values()]
       .filter(row=>row.vaultId===vault&&row.deviceId===device)
+      .sort((a,b)=>a.keyGeneration-b.keyGeneration)
       .map(row=>structuredClone(row));
   }
 
-  async recoveryEnvelope(vault,generation){
-    for(const row of this.recoveryEnvelopes.values()){
-      if(row.vaultId===vault&&row.keyGeneration===generation) return structuredClone(row);
+  async recoveryEnvelopes(vault){
+    return [...this.recoveryEnvelopesById.values()]
+      .filter(row=>row.vaultId===vault&&row.accountId===accountId)
+      .sort((a,b)=>a.keyGeneration-b.keyGeneration)
+      .map(row=>structuredClone(row));
+  }
+
+  async authorizedDevices(vault,actorDevice){
+    if(!this.access.has(this.accessId(vault,accountId,actorDevice))) throw new Error('actor unauthorized');
+    const result=[];
+    for(const accessKey of this.access){
+      const [v,a,d]=accessKey.split('/');
+      if(v!==vault||a!==accountId) continue;
+      const key=this.deviceKeys.get(this.deviceKeyId(accountId,d));
+      if(key) result.push({accountId,deviceId:d,...structuredClone(key)});
     }
-    return null;
+    return result.sort((a,b)=>a.deviceId.localeCompare(b.deviceId));
   }
 
   async requestAccess(vault,device,fingerprint){
-    const key=[...this.deviceKeys.entries()].find(([id,row])=>id.endsWith('/'+device)&&row.fingerprint===fingerprint)?.[1];
-    if(!key) throw new Error('Device key mismatch');
+    const key=this.deviceKeys.get(this.deviceKeyId(accountId,device));
+    if(!key||key.fingerprint!==fingerprint) throw new Error('Device key mismatch');
     const requestId=crypto.randomUUID();
     const challenge=base64UrlEncode(randomBytes(32));
     const request={
@@ -123,7 +141,7 @@ class FakeKeyRegistry {
       createdAt:new Date().toISOString(),
       expiresAt:new Date(Date.now()+30*60_000).toISOString(),
     };
-    this.requests.set(requestId,{request,expectedConfirmation:null,envelope:null});
+    this.requests.set(requestId,{request,expectedConfirmation:null,envelopes:[],activeGeneration:null});
     return structuredClone(request);
   }
 
@@ -137,19 +155,28 @@ class FakeKeyRegistry {
   async approveAccessRequest(input){
     const row=this.requests.get(input.requestId);
     if(!row) throw new Error('request missing');
+    if(!input.envelopes.length||!input.envelopes.some(envelope=>envelope.keyGeneration===input.activeGeneration)) throw new Error('active generation missing');
     row.expectedConfirmation=input.expectedConfirmation;
-    row.envelope=structuredClone(input.envelope);
+    row.envelopes=structuredClone(input.envelopes);
+    row.activeGeneration=input.activeGeneration;
     row.request.status='approved';
-    this.deviceEnvelopes.set(
-      this.envelopeId(row.envelope.vaultId,row.envelope.accountId,row.envelope.deviceId,row.envelope.keyGeneration),
-      structuredClone(row.envelope),
-    );
+    for(const envelope of input.envelopes){
+      this.deviceEnvelopes.set(
+        this.envelopeId(envelope.vaultId,envelope.accountId,envelope.deviceId,envelope.keyGeneration),
+        structuredClone(envelope),
+      );
+    }
   }
 
   async pendingAccess(requestId,device){
     const row=this.requests.get(requestId);
-    if(!row||row.request.deviceId!==device||!row.envelope) throw new Error('pending access missing');
-    return {requestId,challenge:row.request.challenge,envelope:structuredClone(row.envelope)};
+    if(!row||row.request.deviceId!==device||!row.envelopes.length||row.activeGeneration===null) throw new Error('pending access missing');
+    return {
+      requestId,
+      challenge:row.request.challenge,
+      activeGeneration:row.activeGeneration,
+      envelopes:structuredClone(row.envelopes),
+    };
   }
 
   async confirmAccess(requestId,device,confirmation){
@@ -161,16 +188,63 @@ class FakeKeyRegistry {
   }
 
   async recoverDevice(input){
-    const proof=this.recoveryProofs.get(this.recoveryId(input.vaultId,accountId,input.envelope.keyGeneration));
-    if(proof!==input.recoveryProof) throw new Error('Recovery Secret possession proof failed');
+    const knownGenerations=(await this.recoveryEnvelopes(input.vaultId)).map(row=>row.keyGeneration);
+    const inputGenerations=input.envelopes.map(row=>row.keyGeneration).sort((a,b)=>a-b);
+    assert.deepEqual(inputGenerations,knownGenerations);
+    assert.equal(input.activeGeneration,this.activeGenerations.get(this.stateId(input.vaultId,accountId)));
+    for(const proof of input.recoveryProofs){
+      const expected=this.recoveryProofs.get(this.recoveryId(input.vaultId,accountId,proof.keyGeneration));
+      if(expected!==proof.recoveryProof) throw new Error('Recovery Secret possession proof failed');
+    }
     const key=this.deviceKeys.get(this.deviceKeyId(accountId,input.deviceId));
-    if(!key||key.fingerprint!==input.envelope.publicKeyFingerprint) throw new Error('Device key mismatch');
-    this.deviceEnvelopes.set(
-      this.envelopeId(input.vaultId,accountId,input.deviceId,input.envelope.keyGeneration),
-      structuredClone(input.envelope),
-    );
+    if(!key) throw new Error('Device key mismatch');
+    for(const envelope of input.envelopes){
+      if(key.fingerprint!==envelope.publicKeyFingerprint) throw new Error('Device key mismatch');
+      this.deviceEnvelopes.set(
+        this.envelopeId(input.vaultId,accountId,input.deviceId,envelope.keyGeneration),
+        structuredClone(envelope),
+      );
+    }
     this.access.add(this.accessId(input.vaultId,accountId,input.deviceId));
     return this.readinessFor(input.vaultId,input.deviceId);
+  }
+
+  async rotateVaultKey(input){
+    if(!this.access.has(this.accessId(input.vaultId,accountId,input.actorDeviceId))) throw new Error('actor unauthorized');
+    const stateId=this.stateId(input.vaultId,accountId);
+    assert.equal(this.activeGenerations.get(stateId),input.fromGeneration);
+    assert.equal(input.toGeneration,input.fromGeneration+1);
+    const expectedDevices=(await this.authorizedDevices(input.vaultId,input.actorDeviceId)).map(row=>row.deviceId).sort();
+    const actualDevices=input.deviceEnvelopes.map(row=>row.deviceId).sort();
+    assert.deepEqual(actualDevices,expectedDevices);
+    for(const envelope of input.deviceEnvelopes){
+      this.deviceEnvelopes.set(
+        this.envelopeId(input.vaultId,accountId,envelope.deviceId,envelope.keyGeneration),
+        structuredClone(envelope),
+      );
+    }
+    this.recoveryEnvelopesById.set(
+      this.recoveryId(input.vaultId,accountId,input.recovery.envelope.keyGeneration),
+      structuredClone(input.recovery.envelope),
+    );
+    this.recoveryProofs.set(
+      this.recoveryId(input.vaultId,accountId,input.recovery.envelope.keyGeneration),
+      input.recovery.recoveryProof,
+    );
+    this.activeGenerations.set(stateId,input.toGeneration);
+    return this.readinessFor(input.vaultId,input.actorDeviceId);
+  }
+
+  async rotateRecovery(input){
+    if(!this.access.has(this.accessId(input.vaultId,accountId,input.actorDeviceId))) throw new Error('actor unauthorized');
+    const expected=(await this.recoveryEnvelopes(input.vaultId)).map(row=>row.keyGeneration);
+    const actual=input.replacements.map(row=>row.envelope.keyGeneration).sort((a,b)=>a-b);
+    assert.deepEqual(actual,expected);
+    for(const replacement of input.replacements){
+      const id=this.recoveryId(input.vaultId,accountId,replacement.envelope.keyGeneration);
+      this.recoveryEnvelopesById.set(id,structuredClone(replacement.envelope));
+      this.recoveryProofs.set(id,replacement.recoveryProof);
+    }
   }
 }
 
@@ -291,6 +365,7 @@ test('I3 initialization becomes READY only after Device + Recovery envelopes and
   assert.equal(readiness.recoveryEnvelope,true);
   assert.equal(readiness.deviceAuthorized,true);
   assert.equal(readiness.ready,true);
+  assert.equal(readiness.keyGeneration,1);
   assert.match(recovery.code,/^VLT1-/u);
 
   const localUnlocked=await service.unlockLocal({accountId,vaultId,deviceId:deviceA});
@@ -302,31 +377,48 @@ test('I3 initialization becomes READY only after Device + Recovery envelopes and
   localUnlocked.destroy();
 });
 
-test('I3 trusted Device approval requires target private-key possession before authorization', async()=>{
+test('I3 VMK rotation advances generation and retains old generation for history', async()=>{
+  const remote=new FakeKeyRegistry();
+  const local=new MemoryDeviceKeyStore();
+  const service=new KeyDistributionService(local,remote);
+  const recovery=await service.generateRecoverySecret();
+  (await service.initializeVault({accountId,vaultId,deviceId:deviceA,recoverySecret:recovery.secret})).context.destroy();
+
+  const rotated=await service.rotateVaultMasterKey({
+    accountId,vaultId,actorDeviceId:deviceA,recoverySecret:recovery.secret,
+  });
+  assert.equal(rotated.readiness.keyGeneration,2);
+  assert.equal(rotated.readiness.ready,true);
+  rotated.context.destroy();
+
+  const retained=await local.listEnvelopes(accountId,vaultId,deviceA);
+  assert.deepEqual(retained.map(row=>row.keyGeneration),[1,2]);
+  assert.deepEqual((await remote.recoveryEnvelopes(vaultId)).map(row=>row.keyGeneration),[1,2]);
+});
+
+test('I3 trusted Device approval transfers every retained VMK generation before authorization', async()=>{
   const remote=new FakeKeyRegistry();
   const localA=new MemoryDeviceKeyStore();
   const localB=new MemoryDeviceKeyStore();
   const serviceA=new KeyDistributionService(localA,remote);
   const serviceB=new KeyDistributionService(localB,remote);
   const recovery=await serviceA.generateRecoverySecret();
-  const initialized=await serviceA.initializeVault({accountId,vaultId,deviceId:deviceA,recoverySecret:recovery.secret});
-  initialized.context.destroy();
+  (await serviceA.initializeVault({accountId,vaultId,deviceId:deviceA,recoverySecret:recovery.secret})).context.destroy();
+  (await serviceA.rotateVaultMasterKey({accountId,vaultId,actorDeviceId:deviceA,recoverySecret:recovery.secret})).context.destroy();
 
   const request=await serviceB.requestAccess({accountId,vaultId,deviceId:deviceB});
-  await serviceA.approveAccessRequest({
-    accountId,approverDeviceId:deviceA,request,keyGeneration:1,
-  });
+  await serviceA.approveAccessRequest({accountId,approverDeviceId:deviceA,request});
   assert.equal(remote.readinessFor(vaultId,deviceB).deviceAuthorized,false);
 
   const completed=await serviceB.completePendingAccess({
     accountId,requestId:request.requestId,deviceId:deviceB,
   });
   assert.equal(completed.readiness.ready,true);
-  assert.equal(completed.readiness.deviceAuthorized,true);
+  assert.equal(completed.readiness.keyGeneration,2);
   completed.context.destroy();
 
-  const stored=await localB.getEnvelope(accountId,vaultId,deviceB,1);
-  assert.ok(stored);
+  const stored=await localB.listEnvelopes(accountId,vaultId,deviceB);
+  assert.deepEqual(stored.map(row=>row.keyGeneration),[1,2]);
 });
 
 test('I3 wrong Device private key cannot complete another Device access request', async()=>{
@@ -341,41 +433,72 @@ test('I3 wrong Device private key cannot complete another Device access request'
   (await serviceA.initializeVault({accountId,vaultId,deviceId:deviceA,recoverySecret:recovery.secret})).context.destroy();
 
   const request=await serviceB.requestAccess({accountId,vaultId,deviceId:deviceB});
-  await serviceA.approveAccessRequest({accountId,approverDeviceId:deviceA,request,keyGeneration:1});
+  await serviceA.approveAccessRequest({accountId,approverDeviceId:deviceA,request});
 
   await serviceC.ensureDeviceKey(accountId,deviceC);
   const cKey=await localC.getDeviceKey(accountId,deviceC);
   const pending=await remote.pendingAccess(request.requestId,deviceB);
   await assert.rejects(
-    ()=>openDeviceVaultKeyEnvelope({envelope:pending.envelope,privateKey:cKey.privateKey}),
+    ()=>openDeviceVaultKeyEnvelope({envelope:pending.envelopes[0],privateKey:cKey.privateKey}),
     /could not be authenticated\/decrypted/,
   );
   assert.equal(remote.readinessFor(vaultId,deviceB).deviceAuthorized,false);
 });
 
-test('I3 Recovery Secret can authorize a replacement Device without the old Device private key', async()=>{
+test('I3 Recovery Secret restores all retained generations without an old Device private key', async()=>{
   const remote=new FakeKeyRegistry();
   const localA=new MemoryDeviceKeyStore();
   const localC=new MemoryDeviceKeyStore();
   const serviceA=new KeyDistributionService(localA,remote);
   const serviceC=new KeyDistributionService(localC,remote);
   const recovery=await serviceA.generateRecoverySecret();
-  const initialized=await serviceA.initializeVault({accountId,vaultId,deviceId:deviceA,recoverySecret:recovery.secret});
-  const expected=await initialized.context.nameToken(null,'Recovered.md');
-  initialized.context.destroy();
+  (await serviceA.initializeVault({accountId,vaultId,deviceId:deviceA,recoverySecret:recovery.secret})).context.destroy();
+  const active=(await serviceA.rotateVaultMasterKey({accountId,vaultId,actorDeviceId:deviceA,recoverySecret:recovery.secret}));
+  const expected=await active.context.nameToken(null,'Recovered.md');
+  active.context.destroy();
 
   const recovered=await serviceC.recoverDevice({
-    accountId,vaultId,deviceId:deviceC,keyGeneration:1,recoverySecret:await serviceC.parseRecoveryCode(recovery.code),
+    accountId,vaultId,deviceId:deviceC,recoverySecret:await serviceC.parseRecoveryCode(recovery.code),
   });
   assert.equal(recovered.readiness.ready,true);
+  assert.equal(recovered.readiness.keyGeneration,2);
   assert.equal(await recovered.context.nameToken(null,'Recovered.md'),expected);
   recovered.context.destroy();
+  assert.deepEqual((await localC.listEnvelopes(accountId,vaultId,deviceC)).map(row=>row.keyGeneration),[1,2]);
 
-  const wrong=generateRecoverySecret();
   await assert.rejects(
-    ()=>serviceC.recoverDevice({accountId,vaultId,deviceId:deviceB,keyGeneration:1,recoverySecret:wrong}),
+    ()=>new KeyDistributionService(new MemoryDeviceKeyStore(),remote).recoverDevice({
+      accountId,vaultId,deviceId:'77777777-7777-4777-8777-777777777777',recoverySecret:generateRecoverySecret(),
+    }),
     /failed authentication/,
   );
+});
+
+test('I3 Recovery Secret rotation rewraps every retained generation and invalidates the old secret', async()=>{
+  const remote=new FakeKeyRegistry();
+  const localA=new MemoryDeviceKeyStore();
+  const serviceA=new KeyDistributionService(localA,remote);
+  const first=await serviceA.generateRecoverySecret();
+  (await serviceA.initializeVault({accountId,vaultId,deviceId:deviceA,recoverySecret:first.secret})).context.destroy();
+  (await serviceA.rotateVaultMasterKey({accountId,vaultId,actorDeviceId:deviceA,recoverySecret:first.secret})).context.destroy();
+
+  const rotated=await serviceA.rotateRecoverySecret({accountId,vaultId,actorDeviceId:deviceA});
+  assert.notEqual(rotated.code,first.code);
+
+  const oldRecovery=new KeyDistributionService(new MemoryDeviceKeyStore(),remote);
+  await assert.rejects(
+    ()=>oldRecovery.recoverDevice({
+      accountId,vaultId,deviceId:deviceB,recoverySecret:first.secret,
+    }),
+    /failed authentication/,
+  );
+
+  const newRecovery=new KeyDistributionService(new MemoryDeviceKeyStore(),remote);
+  const restored=await newRecovery.recoverDevice({
+    accountId,vaultId,deviceId:deviceC,recoverySecret:rotated.secret,
+  });
+  assert.equal(restored.readiness.keyGeneration,2);
+  restored.context.destroy();
 });
 
 test('I3 Device confirmation HMAC is challenge and target scoped', async()=>{
