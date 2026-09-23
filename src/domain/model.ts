@@ -26,7 +26,7 @@ export interface CloudVaultBinding {
   projectRef: string;
   remoteVaultId: VaultId;
   epoch: string;
-  protocolVersion: 1;
+  protocolVersion: 1 | 2;
   deviceId: DeviceId;
   adoptedAt: string;
 }
