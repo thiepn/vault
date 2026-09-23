@@ -20,6 +20,7 @@
   },
   "include": [
     "src/domain/**/*.ts",
+    "src/crypto/**/*.ts",
     "src/storage/**/*.ts",
     "src/services/**/*.ts",
     "src/sync/**/*.ts",
