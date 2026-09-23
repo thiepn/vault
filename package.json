@@ -24,7 +24,8 @@
     "benchmark:sync-hardening": "npm run build:core && node scripts/benchmark-phase16.mjs",
     "benchmark:realtime-wakeup": "npm run build:core && node scripts/benchmark-phase17.mjs",
     "benchmark:collaboration": "npm run build:core && node scripts/benchmark-phase19.mjs",
-    "benchmark:crdt": "npm run build:core && node scripts/benchmark-phase20.mjs"
+    "benchmark:crdt": "npm run build:core && node scripts/benchmark-phase20.mjs",
+    "benchmark:conflicts": "npm run build:core && node scripts/benchmark-phase22.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
@@ -53,4 +54,4 @@
     "typescript": "5.8.3",
     "vite": "8.1.0"
   }
-}
+}\n
