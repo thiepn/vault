@@ -50,7 +50,7 @@ import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realti
 import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
 import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-text.js';
-import { CrdtJournalStore, type CrdtJournalBase, type CrdtJournalSource } from '../collaboration/crdt-journal.js';
+import { CrdtJournalStore, type CrdtJournalBase, type CrdtJournalSession, type CrdtJournalSource } from '../collaboration/crdt-journal.js';
 import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
 import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
 import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
@@ -162,6 +162,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let recoveryDrafts: RecoveryDraft[] = [];
   let openConflicts: MarkdownConflictRecord[] = [];
   let activeConflictId = '';
+  let journalHistory: CrdtJournalSession[] = [];
+  let journalPreviewText = '';
   let conflictChoices = new Map<string, ConflictChoice>();
   let selected: Entry | undefined;
   let saver: SaveCoordinator | undefined;
@@ -238,9 +240,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
         <button type="button" class="conflict-toggle" data-action="conflicts-open" aria-label="Open unresolved conflicts" title="Resolve sync conflicts" hidden>Conflicts <span class="conflict-count">0</span></button>
+        <button type="button" class="journal-toggle" data-action="journal-open" aria-label="Open collaboration history" title="Collaboration history" hidden>Collab history <span class="journal-count">0</span></button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 22 · Conflict resolution</span>
+        <span class="stage">Phase 23 · Collaboration journal</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -434,6 +437,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="dialog-buttons"><button type="button" data-recovery-action="download">Download .md</button><button type="button" data-recovery-action="recover" class="primary">Save as new note</button><button value="close">Close</button></div>
       </form>
     </dialog>
+    <dialog class="journal-dialog" aria-labelledby="journal-title">
+      <form method="dialog">
+        <div class="conflict-dialog-heading"><div><p class="eyebrow">COLLABORATION HISTORY</p><h2 id="journal-title">Replay live editing session</h2></div><button value="close" aria-label="Close collaboration history">×</button></div>
+        <p class="fineprint">These are bounded local Yjs recovery/history records tied to exact canonical bases. Replaying never changes the canonical note.</p>
+        <label for="journal-select">Session</label><select id="journal-select"></select>
+        <p class="journal-meta fineprint"></p>
+        <label for="journal-preview">Reconstructed Markdown</label><textarea id="journal-preview" class="journal-preview" readonly spellcheck="false"></textarea>
+        <p class="journal-status fineprint" role="status"></p>
+        <div class="dialog-buttons"><button type="button" data-journal-action="download">Download .md</button><button type="button" data-journal-action="recover" class="primary">Save as new note</button><button value="close">Close</button></div>
+      </form>
+    </dialog>
     <dialog class="conflict-dialog" aria-labelledby="conflict-title">
       <form method="dialog">
         <div class="conflict-dialog-heading"><div><p class="eyebrow">SYNC CONFLICT</p><h2 id="conflict-title">Resolve Markdown conflict</h2></div><button value="close" aria-label="Close conflict resolver">×</button></div>
@@ -461,6 +475,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const dialogInput = element<HTMLInputElement>('#vault-dialog-input');
   const dialogSelect = element<HTMLSelectElement>('.dialog-select');
   const recoveryDialog = element<HTMLDialogElement>('.recovery-dialog');
+  const journalDialog = element<HTMLDialogElement>('.journal-dialog');
+  const journalSelect = element<HTMLSelectElement>('#journal-select');
+  const journalMeta = element<HTMLElement>('.journal-meta');
+  const journalPreview = element<HTMLTextAreaElement>('#journal-preview');
+  const journalStatus = element<HTMLElement>('.journal-status');
   const conflictDialog = element<HTMLDialogElement>('.conflict-dialog');
   const conflictSelect = element<HTMLSelectElement>('#conflict-select');
   const conflictMeta = element<HTMLElement>('.conflict-meta');
@@ -3302,6 +3321,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       entries = await repository.listEntries(vault.id, true);
       dirtyIds = new Set((await repository.listDirtyEntries(vault.id)).map(item => item.entryId));
       openConflicts = await conflictStore.listOpen(vault.id);
+      journalHistory = (await crdtJournal.listHistory(vault.id)).filter(session=>session.updateCount>0);
       if (knowledgeVaultId !== vault.id) {
         await knowledge.loadVault(vault.id, entries);
         knowledgeVaultId = vault.id;
@@ -3341,9 +3361,83 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.export-obsidian"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator(); renderConflictIndicator();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator(); renderConflictIndicator(); renderJournalIndicator();
     if (graphOpen) renderGraph();
   }
+  function renderJournalIndicator(): void {
+    const button=element<HTMLButtonElement>('[data-action="journal-open"]');
+    const count=journalHistory.length;
+    button.hidden=!vault;
+    button.disabled=!vault || (count===0 && !crdtJournalSessionId);
+    element<HTMLElement>('.journal-count').textContent=String(count);
+    button.title=count
+      ? `Replay ${count} retained collaboration session${count===1?'':'s'}`
+      : 'No retained collaboration updates yet';
+  }
+
+  async function reconstructJournalSession(session:CrdtJournalSession): Promise<string> {
+    const updates=await crdtJournal.replaySession(session.id);
+    const document=new CrdtTextDocument({
+      entryId:session.entryId,
+      revision:session.baseRevision,
+      fingerprint:session.baseFingerprint,
+      text:session.baseText,
+    });
+    try{
+      for(const update of updates) document.applyRemoteUpdate(update.bytes);
+      return document.value;
+    }finally{
+      document.destroy();
+    }
+  }
+
+  async function showJournalSelection(): Promise<void> {
+    const session=journalHistory.find(item=>item.id===journalSelect.value) ?? journalHistory[0];
+    if(!session){
+      journalPreviewText='';
+      journalPreview.value='';
+      journalMeta.textContent='There is no retained collaboration history in this Vault.';
+      journalStatus.textContent='';
+      for(const button of root.querySelectorAll<HTMLButtonElement>('[data-journal-action]')) button.disabled=true;
+      return;
+    }
+    journalSelect.value=session.id;
+    journalStatus.textContent='Reconstructing Yjs session…';
+    try{
+      journalPreviewText=await reconstructJournalSession(session);
+      journalPreview.value=journalPreviewText;
+      const canonical=session.canonicalRevision===null ? 'not yet canonicalized' : `canonical revision ${session.canonicalRevision}`;
+      journalMeta.textContent=
+        `Base revision ${session.baseRevision} · ${session.status} · ${canonical} · ${session.updateCount} update${session.updateCount===1?'':'s'} · ${session.byteSize.toLocaleString()} bytes · ${new Date(session.updatedAt).toLocaleString()}`;
+      journalStatus.textContent=`${journalPreviewText.length.toLocaleString()} reconstructed characters`;
+      for(const button of root.querySelectorAll<HTMLButtonElement>('[data-journal-action]')) button.disabled=false;
+    }catch(error){
+      journalPreviewText='';
+      journalPreview.value='';
+      journalStatus.textContent=error instanceof Error?error.message:'Collaboration history could not be reconstructed.';
+      for(const button of root.querySelectorAll<HTMLButtonElement>('[data-journal-action]')) button.disabled=true;
+    }
+  }
+
+  async function openJournalHistory(): Promise<void> {
+    if(!vault) return;
+    await flushCrdtJournal();
+    journalHistory=(await crdtJournal.listHistory(vault.id)).filter(session=>session.updateCount>0);
+    journalSelect.replaceChildren();
+    for(const session of journalHistory){
+      const source=entries.find(entry=>entry.id===session.entryId);
+      const state=session.canonicalRevision===null?session.status:`canonical r${session.canonicalRevision}`;
+      journalSelect.add(new Option(
+        `${source?.name??'Unavailable note'} · base r${session.baseRevision} · ${state} · ${new Date(session.updatedAt).toLocaleString()}`,
+        session.id,
+      ));
+    }
+    renderJournalIndicator();
+    await showJournalSelection();
+    journalDialog.showModal();
+    if(journalHistory.length) journalSelect.focus();
+  }
+
   function renderConflictIndicator(): void {
     const button = element<HTMLButtonElement>('[data-action="conflicts-open"]');
     const count = openConflicts.length;
@@ -5168,6 +5262,31 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       if (Number.isInteger(from) && Number.isInteger(to)) perform(() => convertUnlinkedMention(button.dataset.unlinkedSource as EntryId, from, to, term));
       return;
     }
+    if (button.dataset.journalAction) {
+      const session=journalHistory.find(item=>item.id===journalSelect.value);
+      if(!session || !journalPreviewText) return;
+      if(button.dataset.journalAction==='download'){
+        download('collaboration-history.md',journalPreviewText,'text/markdown;charset=utf-8');
+        return;
+      }
+      perform(async()=>{
+        if(!vault) return;
+        const source=entries.find(item=>item.id===session.entryId);
+        const name=await ask(
+          'Recover collaboration history as a new note',
+          'New filename',
+          `${source?.name.replace(/\.md$/i,'')??'Note'} collaboration recovery`,
+        );
+        if(name===null) return;
+        const recovered=await repository.createEntry(vault.id,source?.parentId??null,name,'markdown',journalPreviewText);
+        showingTrash=false;
+        await refresh();
+        await openEntry(recovered.id,true);
+        journalDialog.close('recovered');
+        editor.focus();
+      });
+      return;
+    }
     if (button.dataset.recoveryAction) {
       const draft = recoveryDrafts.find(item => item.id === recoverySelect.value); if (!draft) return;
       if (button.dataset.recoveryAction === 'download') { download('recovery-draft.md', draft.text, 'text/markdown;charset=utf-8'); return; }
@@ -5301,6 +5420,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (action === 'export-draft') { downloadDraft(); return; }
     perform(async () => {
       if (action === 'recovery') { await openRecovery(); return; }
+      if (action === 'journal-open') { await openJournalHistory(); return; }
       if (action === 'conflicts-open') { await openConflictResolver(); return; }
       if (action === 'vault-rename') {
         if (!vault) return;
@@ -5641,6 +5761,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }, { signal: abort.signal });
 
   recoverySelect.addEventListener('change', showRecoverySelection, { signal: abort.signal });
+  journalSelect.addEventListener('change', () => { void showJournalSelection(); }, { signal: abort.signal });
   conflictSelect.addEventListener('change', () => {
     activeConflictId = conflictSelect.value;
     conflictChoices.clear();
@@ -5812,6 +5933,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (cloudDialog.open) cloudDialog.close('close');
     if (migrationDialog.open) migrationDialog.close('cancel');
     if (recoveryDialog.open) recoveryDialog.close();
+    if (journalDialog.open) journalDialog.close();
     if (conflictDialog.open) conflictDialog.close();
     if (quickDialog.open) quickDialog.close();
     if (templateDialog.open) templateDialog.close('cancel');
