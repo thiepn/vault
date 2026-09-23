@@ -183,6 +183,26 @@ export class SupabaseRestAuth implements AuthService {
     return (await this.freshSession())?.accessToken ?? null;
   }
 
+  /** Worker-safe copy of the current browser session. The service worker gets
+   * only the same publishable-key user credentials already held by this origin;
+   * secret/service-role credentials are never accepted by Vault. */
+  async backgroundSession(): Promise<SupabaseStoredSession | null> {
+    const session=await this.freshSession();
+    return session ? {...session} : null;
+  }
+
+  adoptBackgroundSession(session:SupabaseStoredSession): void {
+    if(!session || typeof session.accessToken!=='string' || !session.accessToken
+      || typeof session.refreshToken!=='string' || !session.refreshToken
+      || !Number.isFinite(session.expiresAt) || session.expiresAt<=0) {
+      throw new VaultError('PROTOCOL','Background authentication session is invalid.');
+    }
+    const current=this.readSession();
+    if(!current || session.expiresAt>=current.expiresAt){
+      this.writeSession({...session});
+    }
+  }
+
   async identity(): Promise<AuthIdentity | null> {
     const session = await this.freshSession();
     if (!session) return null;

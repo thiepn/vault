@@ -51,11 +51,13 @@ import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '.
 import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-text.js';
 import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
+import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
+import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 20 browser workspace: Yjs live Markdown co-editing on the accepted Phase 1-19 + A1/A2 foundation. */
+/** Phase 21 browser workspace: best-effort worker replication on the accepted Phase 1-20 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -66,10 +68,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const repository = new A2LocalRepository(db, a2);
   const cloudConfig = browserCloudConfiguration();
   const syncState = new SyncLocalState(db);
+  const backgroundState = new BackgroundReplicationState(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
   let syncCoordinator: SyncCoordinator | null = null;
+  let backgroundBridge: BackgroundReplicationBridge | null = null;
+  let backgroundStatus: BackgroundStatusRecord | null = null;
   let realtimeWake: SupabaseRealtimeWakeup | null = null;
   let realtimeStatus: RealtimeWakeStatus = 'idle';
   let collaboration: SupabaseCollaborationRealtime | null = null;
@@ -90,11 +95,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let oauthCompleted = false;
   try {
     const auth = new SupabaseRestAuth(cloudConfig, window.localStorage);
+    const workerRuntime=await backgroundState.runtime().catch(()=>null);
+    if(workerRuntime?.config.url===cloudConfig.url && workerRuntime.config.publishableKey===cloudConfig.publishableKey){
+      auth.adoptBackgroundSession(workerRuntime.session);
+    }
     cloudAuth = auth;
     const registry = new SupabaseCloudRegistry(cloudConfig, () => auth.accessToken());
     const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
     const syncReplica = new SyncReplicaStore(db, a2);
-    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository);
+    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState);
+    backgroundBridge = new BackgroundReplicationBridge(backgroundState,cloudConfig,auth,db.name);
     cloud = new CloudFoundation(
       auth,
       registry,
@@ -218,7 +228,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 20 · Live co-editing</span>
+        <span class="stage">Phase 21 · Background replication</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -352,7 +362,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="rule"></div><p class="label">CLOUD STATUS</p><p class="fineprint">Not configured. Nothing is uploaded. Signing in will not automatically upload local notes.</p>
         <button data-action="persist">Request persistent storage</button><p class="storage-message fineprint"></p>
       </aside>
-      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="collaboration-status" hidden></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB · schema 4</span></footer>
+      <footer class="statusbar"><span class="save-status" role="status">No file open</span><span class="counts"></span><span class="collaboration-status" hidden></span><span class="search-index-status">Index idle</span><span class="vault-counts"></span><span>IndexedDB · schema 5</span></footer>
     </div>
     <dialog class="form-dialog" aria-labelledby="vault-dialog-title">
       <form method="dialog"><h2 id="vault-dialog-title"></h2><label class="dialog-label" for="vault-dialog-input"></label>
@@ -378,7 +388,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 19 adds private member presence and snapshot-safe collaborator cursors. Presence and cursor metadata are ephemeral; canonical Markdown and attachments still use the existing sync/conflict protocol. Live text co-editing is not enabled.</p>
+          <p class="cloud-phase-note">Phase 21 adds best-effort Background Sync where the browser supports it. Phase 20 live Markdown co-editing remains foreground-only; canonical Markdown, attachments, cursor advancement and conflict resolution still use Vault's existing local-first sync protocol.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
           <div class="cloud-section-heading">SHARING</div>
@@ -1370,6 +1380,47 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
   let cachedSyncDetail = '';
 
+  function backgroundLabel(): string {
+    if(!backgroundBridge) return 'Background sync unavailable';
+    if(!backgroundStatus) return 'Background sync checking';
+    const suffix=backgroundStatus.lastError
+      ? ' · attention required'
+      : backgroundStatus.lastSuccessAt
+        ? ` · last ${new Date(backgroundStatus.lastSuccessAt).toLocaleTimeString()}`
+        : '';
+    if(backgroundStatus.capability==='unsupported') return `Background sync unsupported${suffix}`;
+    if(backgroundStatus.capability==='registered') return `Background sync queued${suffix}`;
+    return `Background sync available${suffix}`;
+  }
+
+  async function refreshBackgroundStatus(): Promise<void> {
+    if(!backgroundBridge){
+      backgroundStatus=null;
+      return;
+    }
+    const capability=await backgroundBridge.capability();
+    backgroundStatus=capability.status;
+  }
+
+  async function mirrorBackgroundSession(): Promise<void> {
+    if(!backgroundBridge || !cloudStatus.signedIn || !cloudStatus.identity){
+      await backgroundBridge?.clearSession();
+      await refreshBackgroundStatus();
+      return;
+    }
+    await backgroundBridge.mirrorSession(cloudStatus.identity.userId);
+    await refreshBackgroundStatus();
+    void backgroundBridge.registerPeriodic();
+  }
+
+  async function scheduleBackgroundReplication(targetVault:Vault|undefined=vault): Promise<void> {
+    if(!backgroundBridge || !syncEngine || !targetVault?.cloud || !cloudStatus.signedIn || !cloudStatus.identity) return;
+    if(targetVault.cloud.authUserId!==cloudStatus.identity.userId || !cloudBindingCanWrite(targetVault.cloud)) return;
+    await backgroundBridge.prepare(targetVault,cloudStatus.identity.userId,syncEngine);
+    backgroundStatus=await backgroundState.status();
+    if(cloudDialog.open) await refreshCloudSyncDetail();
+  }
+
   function realtimeLabel(): string {
     if (!realtimeWake) return 'Realtime unavailable';
     if (realtimeStatus === 'connected') return 'Realtime connected';
@@ -1406,9 +1457,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const cursor = await syncState.cursor(vault.id, cloudStatus.identity.userId);
     const queued = await syncState.count(vault.id);
     const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
+    const background=backgroundLabel();
     cachedSyncDetail = latest
-      ? `${realtimeLabel()} · Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
-      : `${realtimeLabel()} · Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
+      ? `${realtimeLabel()} · ${background} · Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
+      : `${realtimeLabel()} · ${background} · Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
   }
 
   async function runCurrentCloudSync(background = false, _trigger: SyncTrigger = 'manual'): Promise<SyncRunSummary> {
@@ -1420,6 +1472,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     // Manual runs do the same whenever no unsaved draft would be disturbed.
     if (background || !saver?.hasUnsavedChanges) {
       cloudStatus = await cloud.status();
+      await mirrorBackgroundSession();
       await reloadCloudBindingCache();
       await refreshRealtimeSubscription();
       await refreshCollaborationSubscription();
@@ -1441,6 +1494,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         await refresh();
         if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
       }
+      await refreshBackgroundStatus();
       await refreshCloudSyncDetail();
       if (vault?.id === activeVaultId && selected?.kind === 'markdown' && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
         element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
@@ -4220,7 +4274,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           element<HTMLElement>('.save-status').textContent = state.kind === 'saving' ? 'Saving locally\u2026' : state.kind === 'error'
             ? state.recovery === 'stored' ? 'Draft preserved \u00b7 canonical save blocked' : state.recovery === 'pending' ? 'Preserving recovery draft\u2026' : 'Not saved \u00b7 export your draft'
             : 'Saved locally \u00b7 not synced';
-          if (state.kind === 'saved-local') syncCoordinator?.request('local-change', 1200);
+          if (state.kind === 'saved-local') {
+            syncCoordinator?.request('local-change', 1200);
+            const targetVault=vault?.id===opened.vaultId ? vault : vaults.find(item=>item.id===opened.vaultId);
+            void scheduleBackgroundReplication(targetVault).catch(()=>undefined);
+          }
           if (updated) { selected = updated; const at = entries.findIndex(entry => entry.id === updated.id); if (at >= 0) entries[at] = updated; renderInfo(); void refreshKnowledgeEntry(updated.id).catch(showError); }
           element<HTMLElement>('[data-action="retry-save"]').hidden = state.kind !== 'error' || !saver?.canRetry;
           if (state.kind === 'error') {
@@ -4349,6 +4407,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           cloudMessage.textContent = 'Signing in…';
           cloudStatus = await cloud.signIn(cloudEmail.value, cloudPassword.value);
           cloudPassword.value = '';
+          await mirrorBackgroundSession();
           await reloadCloudBindingCache();
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
           await refreshCloudMembers();
@@ -4364,6 +4423,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           const result = await cloud.signUp(cloudEmail.value, cloudPassword.value);
           cloudStatus = result.status;
           cloudPassword.value = '';
+          await mirrorBackgroundSession();
           await reloadCloudBindingCache();
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
           await refreshCloudMembers();
@@ -4478,6 +4538,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await finalizeCrdtBeforeDetach();
           if (saver) await saver.flush();
           await cloud.signOut();
+          await backgroundBridge?.clearSession();
           cloudStatus = cloudEmptyStatus();
           awaitableDevicesCache = [];
           awaitableMembersCache = [];
@@ -5200,13 +5261,30 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); await refreshRealtimeSubscription(); await refreshCollaborationSubscription(); await refreshCrdtSession(); await refreshCloudSyncDetail(); syncCoordinator?.wake('focus');
     });
   }, { signal: abort.signal });
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.addEventListener('message', event => {
+      const message=event.data;
+      if(!message || (message.type!=='BACKGROUND_SYNC_COMPLETE' && message.type!=='BACKGROUND_SYNC_ERROR')) return;
+      void backgroundState.status()
+        .then(status=>{
+          backgroundStatus=status;
+          if(cloudDialog.open) return refreshCloudSyncDetail();
+        })
+        .catch(()=>undefined);
+      syncCoordinator?.wake('peer');
+    }, { signal: abort.signal });
+  }
+
   window.addEventListener('beforeunload', event => {
     if (saver?.hasUnsavedChanges || crdtRecoveryText !== null) {
       event.preventDefault();
       event.returnValue = '';
     }
   }, { signal: abort.signal });
-  window.addEventListener('online', () => syncCoordinator?.wake('online'), { signal: abort.signal });
+  window.addEventListener('online', () => {
+    syncCoordinator?.wake('online');
+    void scheduleBackgroundReplication().catch(()=>undefined);
+  }, { signal: abort.signal });
   window.addEventListener('focus', () => syncCoordinator?.wake('focus'), { signal: abort.signal });
   editorHost.addEventListener('focusout', () => syncCoordinator?.wake('focus'), { signal: abort.signal });
   document.addEventListener('visibilitychange', () => {
@@ -5226,7 +5304,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       ? (crdtRecoveryText=currentMarkdownText(), persistCrdtRecoveryNow())
       : saver.flush();
     void hiddenFlush
-      .then(() => syncCoordinator?.request('visibility', 0))
+      .then(async () => {
+        syncCoordinator?.request('visibility', 0);
+        await scheduleBackgroundReplication();
+      })
       .catch(showError);
   }, { signal: abort.signal });
   window.addEventListener('keydown', event => {

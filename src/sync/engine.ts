@@ -9,6 +9,8 @@ import type { SupabaseSyncTransport } from './transport.js';
 import { synthesizeEntryOperation } from './synthesize.js';
 import { compareVersions } from './merge.js';
 import { cloudBindingCanWrite, cloudOwnerAuthUserId, effectiveCloudRole } from '../cloud/access.js';
+import type { BackgroundReplicationState } from './background-state.js';
+import { validateRemotePage } from './remote-types.js';
 
 export interface SyncRunSummary {
   pulledEvents: number;
@@ -55,19 +57,44 @@ function conflictName(name:string):string{
 
 export class SyncEngine {
   private readonly inFlight = new Map<string, Promise<SyncRunSummary>>();
+  private readonly preparationInFlight = new Map<string, Promise<number>>();
 
   constructor(
     private readonly transport:Pick<SupabaseSyncTransport,'pull'|'push'|'uploadBlob'|'downloadBlob'>,
     private readonly state:SyncLocalState,
     private readonly replica:SyncReplicaStore,
     private readonly repository:LocalRepository,
+    private readonly background?:Pick<BackgroundReplicationState,'staged'|'removeStaged'>,
   ) {}
+
+  async prepareBackground(vault:Vault,ownerId:string):Promise<number>{
+    const binding=requireBinding(vault,ownerId);
+    if(!cloudBindingCanWrite(binding)) return 0;
+    const key=`${ownerId}:${vault.id}:${binding.epoch}`;
+    const foreground=this.inFlight.get(key);
+    if(foreground){
+      await foreground;
+      return this.state.count(vault.id);
+    }
+    const existing=this.preparationInFlight.get(key);
+    if(existing) return existing;
+    const run=(async()=>{
+      await this.state.assertPendingOwners(vault.id,ownerId);
+      await this.synthesizeDirty(vault,ownerId,binding.deviceId);
+      return this.state.count(vault.id);
+    })();
+    this.preparationInFlight.set(key,run);
+    try{return await run;}
+    finally{if(this.preparationInFlight.get(key)===run) this.preparationInFlight.delete(key);}
+  }
 
   async sync(vault:Vault,ownerId:string):Promise<SyncRunSummary>{
     const binding=requireBinding(vault,ownerId);
     const key=`${ownerId}:${vault.id}:${binding.epoch}`;
     const existing=this.inFlight.get(key);
     if(existing) return existing;
+    const preparation=this.preparationInFlight.get(key);
+    if(preparation) await preparation;
     const run=this.runSync(vault,ownerId);
     this.inFlight.set(key,run);
     try{
@@ -122,10 +149,42 @@ export class SyncEngine {
     return summary;
   }
 
+  private async consumeStaged(vault:Vault,ownerId:string,current:string,summary:SyncRunSummary):Promise<string>{
+    if(!this.background) return current;
+    const binding=requireBinding(vault,ownerId);
+    const rows=await this.background.staged(vault.id,ownerId,binding.epoch);
+    for(const row of rows){
+      const sequence=BigInt(row.sequence);
+      const applied=BigInt(current);
+      if(sequence<=applied){
+        await this.background.removeStaged(row.id);
+        continue;
+      }
+      if(sequence!==applied+1n) break;
+      const page=validateRemotePage({
+        protocolVersion:1,
+        vaultId:vault.id,
+        epoch:binding.epoch,
+        after:current,
+        through:row.sequence,
+        highWatermark:row.sequence,
+        events:[row.event],
+      },{vaultId:vault.id,epoch:binding.epoch,after:current});
+      const event=page.events[0]!;
+      await this.applyRemoteEvent(vault,ownerId,event,summary);
+      current=event.sequence;
+      await this.state.advanceCursor(vault.id,ownerId,binding.epoch,current);
+      await this.background.removeStaged(row.id);
+      summary.pulledEvents++;
+    }
+    return current;
+  }
+
   private async pullUntilCaughtUp(vault:Vault,ownerId:string,after:string,summary:SyncRunSummary){
     const binding=requireBinding(vault,ownerId);
     let current=after;
     for(let pageIndex=0;pageIndex<10_000;pageIndex++){
+      current=await this.consumeStaged(vault,ownerId,current,summary);
       const page=await this.transport.pull(vault.id,binding.epoch,current,500);
       for(const event of page.events){
         await this.applyRemoteEvent(vault,ownerId,event,summary);
