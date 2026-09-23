@@ -354,11 +354,18 @@ export function validateBootstrapPageV2(
   const nextAfterEntityId = value.nextAfterEntityId === null
     ? null
     : uuid(value.nextAfterEntityId, 'Encrypted bootstrap next EntityId') as CanonicalEntityId;
-  if (items.length === 0 && nextAfterEntityId !== null) throw new VaultError('PROTOCOL', 'Empty encrypted bootstrap page cannot advance its EntityId cursor.');
-  if (items.length > 0 && nextAfterEntityId !== items.at(-1)?.entityId) {
-    throw new VaultError('PROTOCOL', 'Encrypted bootstrap keyset cursor does not match the final returned entity.');
+  if (items.length === 0 && nextAfterEntityId !== null) {
+    throw new VaultError('PROTOCOL', 'Empty encrypted bootstrap page cannot advance its EntityId cursor.');
   }
-  if (value.done && nextAfterEntityId !== null) throw new VaultError('PROTOCOL', 'Completed encrypted bootstrap page must clear its next cursor.');
+  if (value.done) {
+    if (nextAfterEntityId !== null) {
+      throw new VaultError('PROTOCOL', 'Completed encrypted bootstrap page must clear its next cursor.');
+    }
+  } else {
+    if (items.length === 0 || nextAfterEntityId !== items.at(-1)?.entityId) {
+      throw new VaultError('PROTOCOL', 'Incomplete encrypted bootstrap page must continue from its final returned entity.');
+    }
+  }
   return {
     protocolVersion: PROTOCOL_V2_VERSION,
     vaultId: expected.vaultId,
