@@ -403,7 +403,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           <div class="cloud-vault-state"></div>
           <button type="button" class="primary cloud-adopt" data-cloud-action="adopt">Enable cloud sync for this Vault</button>
           <div class="cloud-sync-controls"><button type="button" class="primary cloud-sync-now" data-cloud-action="sync">Sync now</button><span class="cloud-sync-detail"></span></div>
-          <p class="cloud-phase-note">Phase 21 adds best-effort Background Sync where the browser supports it. Phase 20 live Markdown co-editing remains foreground-only; canonical Markdown, attachments, cursor advancement and conflict resolution still use Vault's existing local-first sync protocol.</p>
+          <p class="cloud-phase-note">Phase 23 adds a bounded local collaboration journal so foreground live edits can survive reload/crash and be replayed safely from the same canonical base. Best-effort Background Sync remains transport-only; canonical Markdown, attachments, cursor advancement and conflict resolution still use Vault's existing local-first sync protocol.</p>
           <div class="cloud-section-heading">YOUR CLOUD VAULTS</div>
           <div class="cloud-remote-vaults"></div>
           <div class="cloud-section-heading">SHARING</div>
