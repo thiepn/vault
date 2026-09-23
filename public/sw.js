@@ -1,5 +1,5 @@
 const BACKGROUND_DB = 'vault:local';
-const BACKGROUND_SCHEMA = 6;
+const BACKGROUND_SCHEMA = 7;
 const BACKGROUND_TAG = 'vault-background-sync';
 const PERIODIC_TAG = 'vault-periodic-sync';
 
@@ -43,6 +43,12 @@ async function openBackgroundDatabase() {
         conflicts.createIndex('vaultId', 'vaultId');
         conflicts.createIndex('entryId', 'entryId');
         conflicts.createIndex('conflictEntryId', 'conflictEntryId');
+      }
+      if (event.oldVersion < 7 && !database.objectStoreNames.contains('collabHistoryOutbox')) {
+        const historyOutbox = database.createObjectStore('collabHistoryOutbox', { keyPath: 'id' });
+        historyOutbox.createIndex('vaultId', 'vaultId');
+        historyOutbox.createIndex('entryId', 'entryId');
+        historyOutbox.createIndex('createdAt', 'createdAt');
       }
     };
     request.onsuccess = () => resolve(request.result);
