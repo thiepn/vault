@@ -3,3 +3,7 @@ export * from './primitives.js';
 export * from './keys.js';
 export * from './entity.js';
 export * from './context.js';
+export * from './device-keys.js';
+export * from './recovery.js';
+export * from './keyring.js';
+export * from './key-distribution.js';
