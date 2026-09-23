@@ -59,7 +59,7 @@ import { buildMarkdownConflictPlan, resolveMarkdownConflictPlan, type ConflictCh
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 21 browser workspace: best-effort worker replication on the accepted Phase 1-20 + A1/A2 foundation. */
+/** Phase 22 browser workspace: semantic interactive conflict resolution on the accepted Phase 1-21 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -235,7 +235,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <button type="button" class="conflict-toggle" data-action="conflicts-open" aria-label="Open unresolved conflicts" title="Resolve sync conflicts" hidden>Conflicts <span class="conflict-count">0</span></button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 21 · Background replication</span>
+        <span class="stage">Phase 22 · Conflict resolution</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
