@@ -3557,6 +3557,94 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (openConflicts.length) conflictSelect.focus();
   }
 
+  async function resolveActiveConflict(): Promise<void> {
+    const record = activeConflictRecord();
+    if (!record || record.status !== 'open') throw new VaultError('NOT_FOUND', 'The conflict is no longer unresolved.');
+
+    const plan = buildMarkdownConflictPlan(record.baseText, record.localText, record.remoteText);
+    const missing = plan.conflictIds.filter(id => !conflictChoices.has(id));
+    if (missing.length) throw new VaultError('STALE_WRITE', 'Choose a resolution for every conflicting Markdown region first.');
+
+    const resolvedText = plan.autoMergedText ?? resolveMarkdownConflictPlan(plan, conflictChoiceObject());
+
+    await finalizeCrdtBeforeDetach();
+    if (saver) await saver.flush();
+
+    const current = await repository.read(record.entryId);
+    if (current.entry.kind !== 'markdown' || current.entry.deletedAt !== null || !current.content) {
+      throw new VaultError('NOT_FOUND', 'The canonical Markdown note is no longer available.');
+    }
+
+    if (current.content.text !== record.remoteText && current.content.text !== resolvedText) {
+      throw new VaultError(
+        'STALE_WRITE',
+        'The canonical note changed after this conflict was captured. Sync/reopen before resolving so newer work is not overwritten.',
+      );
+    }
+
+    let canonicalChanged = false;
+    if (current.content.text !== resolvedText) {
+      if (selected?.id === record.entryId && saver) {
+        applyCurrentMarkdownText(resolvedText);
+        await saver.flush();
+        await refreshKnowledgeEntry(record.entryId);
+      } else {
+        await repository.saveMarkdown(record.entryId, resolvedText, current.entry.localVersion);
+      }
+      canonicalChanged = true;
+    }
+
+    await conflictStore.resolve(record.id, resolvedText);
+
+    let copyRetained = false;
+    try {
+      const localCopy = await repository.read(record.conflictEntryId);
+      if (localCopy.entry.deletedAt === null) {
+        if (localCopy.entry.kind === 'markdown' && localCopy.content?.text === record.localText) {
+          await repository.trash(localCopy.entry.id, localCopy.entry.localVersion);
+        } else {
+          copyRetained = true;
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof VaultError) || error.code !== 'NOT_FOUND') throw error;
+    }
+
+    const shouldOpenCanonical = selected?.id === record.entryId || selected?.id === record.conflictEntryId;
+    await refresh();
+    if (shouldOpenCanonical && entries.some(entry => entry.id === record.entryId && entry.deletedAt === null)) {
+      await openEntry(record.entryId, true);
+    }
+
+    openConflicts = vault ? await conflictStore.listOpen(vault.id) : [];
+    renderConflictIndicator();
+    syncCoordinator?.request('local-change', 0);
+    void scheduleBackgroundReplication().catch(() => undefined);
+
+    if (!openConflicts.length) {
+      conflictDialog.close('resolved');
+      element<HTMLElement>('.save-status').textContent = copyRetained
+        ? 'Conflict resolved · edited local copy retained'
+        : canonicalChanged ? 'Conflict resolved · saved locally' : 'Conflict resolved';
+      return;
+    }
+
+    conflictSelect.replaceChildren();
+    for (const item of openConflicts) {
+      const note = entries.find(entry => entry.id === item.entryId);
+      conflictSelect.add(new Option(
+        (note?.name ?? 'Unavailable note') + ' · rev ' + item.remoteRevision + ' · ' + new Date(item.createdAt).toLocaleString(),
+        item.id,
+      ));
+    }
+    activeConflictId = openConflicts[0]!.id;
+    conflictChoices.clear();
+    renderConflictSelection(false);
+    conflictStatus.textContent = copyRetained
+      ? 'Resolved. The preserved local copy was edited after capture, so Vault kept it.'
+      : 'Resolved. Continue with the next conflict.';
+  }
+
   async function openRecovery(): Promise<void> {
     if (!vault) return;
     // Recovery inspection remains available even when the current canonical writer failed.
