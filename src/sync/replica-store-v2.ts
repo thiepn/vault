@@ -36,8 +36,8 @@ export interface SyncRemoteShadowV2 {
   updatedAt: string;
 }
 
-export interface ApplyEncryptedGroupResult {
-  ownOperation: boolean;
+export interface ApplyEncryptedPageResult {
+  observedOwnOperations: number;
   appliedRemoteEntities: number;
   localChangedAfterOwnPush: number;
   cursor: string;
@@ -150,24 +150,21 @@ export class EncryptedReplicaStoreV2 {
     return localMatchesDecryptedV2(await this.read(remote.entityId),remote);
   }
 
-  async applyEventGroup(input:{
+  async applyPage(input:{
     accountId:AccountId;
     epoch:string;
     expectedAfter:string;
     through:string;
     events:readonly DecryptedSyncEntityV2[];
-  }):Promise<ApplyEncryptedGroupResult>{
+  }):Promise<ApplyEncryptedPageResult>{
     const {accountId,epoch,expectedAfter,through,events}=input;
-    if(!events.length) throw new VaultError('PROTOCOL','Protocol v2 event group cannot be empty.');
+    if(!events.length) throw new VaultError('PROTOCOL','Protocol v2 pull page cannot be empty.');
     const vaultId=events[0]!.vaultId;
-    const operationId=events[0]!.operationId;
     for(const event of events){
-      if(event.vaultId!==vaultId||event.operationId!==operationId){
-        throw new VaultError('PROTOCOL','Protocol v2 event group crosses Vault or operation identity.');
-      }
+      if(event.vaultId!==vaultId) throw new VaultError('PROTOCOL','Protocol v2 pull page crosses Vault identity.');
     }
 
-    const touched:EntryId[]=[];
+    const touched=new Set<EntryId>();
     const result=await this.driver.transaction(
       ['vaults','entries','contents','attachments','dirty','outbox','remoteShadows','syncCursors','revisions'],
       'readwrite',
@@ -184,41 +181,55 @@ export class EncryptedReplicaStoreV2 {
           protocolVersion:number;vaultId:VaultId;accountId:AccountId;epoch:string;cursor:string;
         }>(vaultId);
         if(!cursor||cursor.protocolVersion!==2||cursor.accountId!==accountId||cursor.epoch!==epoch||cursor.cursor!==expectedAfter){
-          throw new VaultError('STALE_WRITE','Protocol v2 local cursor changed before the remote operation could be committed.');
+          throw new VaultError('STALE_WRITE','Protocol v2 local cursor changed before the remote page could be committed.');
         }
 
-        const own=await tx.store('outbox').get<SyncOutboxRecordV2>(operationId as OperationId);
         const allOutbox=await tx.store('outbox').allFromIndex<SyncOutboxRecordV2>('vaultId',vaultId);
-        const ownOperation=!!own && own.protocolVersion===2 && own.accountId===accountId;
+        const ownByOperation=new Map<string,SyncOutboxRecordV2>();
+        for(const row of allOutbox){
+          if(row.protocolVersion===2&&row.accountId===accountId) ownByOperation.set(row.id,row);
+        }
 
-        if(!ownOperation){
-          for(const event of events){
-            const dirty=await tx.store('dirty').get<DirtyEntry>(event.entityId);
-            const pending=allOutbox.some(row=>{
-              if(row.protocolVersion!==2||row.accountId!==accountId) return false;
-              return decodeOperationV2(row.wire).mutations.some(mutation=>mutation.entityId===event.entityId);
-            });
-            if(dirty||pending){
-              throw new VaultError('MERGE_REQUIRED','A remote encrypted change raced local work. I6 conflict reconciliation is required before this entity can advance.');
-            }
+        // I5 synthesizes exactly one mutation per operation. Refuse to observe a
+        // partial own operation if future code ever violates that invariant.
+        for(const [operationId,row] of ownByOperation){
+          const pageEvents=events.filter(event=>event.operationId===operationId);
+          if(!pageEvents.length) continue;
+          const decoded=decodeOperationV2(row.wire);
+          if(decoded.mutations.length!==pageEvents.length){
+            throw new VaultError('PROTOCOL','Protocol v2 pull page would observe only part of a queued local operation.');
+          }
+        }
+
+        for(const event of events){
+          if(ownByOperation.has(event.operationId)) continue;
+          const dirty=await tx.store('dirty').get<DirtyEntry>(event.entityId);
+          const pending=allOutbox.some(row=>{
+            if(row.protocolVersion!==2||row.accountId!==accountId) return false;
+            return decodeOperationV2(row.wire).mutations.some(mutation=>mutation.entityId===event.entityId);
+          });
+          if(dirty||pending){
+            throw new VaultError('MERGE_REQUIRED','A remote encrypted change raced local work. I6 conflict reconciliation is required before this page can advance.');
           }
         }
 
         let appliedRemoteEntities=0;
         let localChangedAfterOwnPush=0;
+        const observedOwn=new Set<string>();
 
         for(const event of events){
           const local=await readLocalInTx(tx,event.entityId);
           const shadow=shadowFor(accountId,epoch,event);
 
-          if(ownOperation){
+          if(ownByOperation.has(event.operationId)){
+            observedOwn.add(event.operationId);
             await tx.store('remoteShadows').put(shadow);
             if(localMatchesDecryptedV2(localView(local),event)){
               await tx.store('dirty').delete(event.entityId);
             }else{
               localChangedAfterOwnPush++;
             }
-            touched.push(event.entityId);
+            touched.add(event.entityId);
             continue;
           }
 
@@ -228,14 +239,15 @@ export class EncryptedReplicaStoreV2 {
             throw new VaultError('PROTOCOL','Remote encrypted entity identity conflicts with another local entry kind or Vault.');
           }
           if(event.parentId){
-            const parent=events.find(candidate=>candidate.entityId===event.parentId)
-              ?? null;
+            const parent=events.find(candidate=>candidate.entityId===event.parentId);
             if(parent){
-              if(parent.entityType!=='folder'||parent.deleted) throw new VaultError('INVALID_PARENT','Remote operation references a deleted/non-folder parent.');
+              if(parent.entityType!=='folder'||parent.deleted){
+                throw new VaultError('INVALID_PARENT','Remote page references a deleted/non-folder parent.');
+              }
             }else{
               const existingParent=await tx.store('entries').get<Entry>(event.parentId);
               if(!existingParent||existingParent.vaultId!==vaultId||existingParent.kind!=='directory'||existingParent.deletedAt!==null){
-                throw new VaultError('INVALID_PARENT','Remote operation references a folder that is not locally available.');
+                throw new VaultError('INVALID_PARENT','Remote page references a folder that is not locally available.');
               }
             }
           }
@@ -277,10 +289,12 @@ export class EncryptedReplicaStoreV2 {
           await tx.store('dirty').delete(event.entityId);
           await tx.store('remoteShadows').put(shadow);
           appliedRemoteEntities++;
-          touched.push(event.entityId);
+          touched.add(event.entityId);
         }
 
-        if(ownOperation) await tx.store('outbox').delete(operationId as OperationId);
+        for(const operationId of observedOwn){
+          await tx.store('outbox').delete(operationId);
+        }
 
         await tx.store('syncCursors').put({
           protocolVersion:2,
@@ -291,7 +305,12 @@ export class EncryptedReplicaStoreV2 {
           updatedAt:new Date().toISOString(),
         });
 
-        return {ownOperation,appliedRemoteEntities,localChangedAfterOwnPush,cursor:through};
+        return {
+          observedOwnOperations:observedOwn.size,
+          appliedRemoteEntities,
+          localChangedAfterOwnPush,
+          cursor:through,
+        };
       },
     );
 
