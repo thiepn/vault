@@ -62,6 +62,7 @@ import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, typ
 import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
 import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
 import { MarkdownConflictStore } from '../sync/conflict-store.js';
+import { SyncConflictStoreV2, type SyncConflictRecordV2 } from '../sync/conflict-store-v2.js';
 import { buildMarkdownConflictPlan, resolveMarkdownConflictPlan, type ConflictChoice } from '../sync/conflict-resolution.js';
 
 export interface WorkspaceOptions { databaseName?: string }
@@ -81,10 +82,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const syncStateV2 = new SyncLocalStateV2(db);
   const backgroundState = new BackgroundReplicationState(db);
   const conflictStore = new MarkdownConflictStore(db);
+  const syncConflictStoreV2 = new SyncConflictStoreV2(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
   let syncEngineV2: EncryptedSyncEngineV2 | null = null;
+  let encryptedReplicaV2: EncryptedReplicaStoreV2 | null = null;
   let keyRegistry: SupabaseKeyRegistry | null = null;
   let keyDistribution: KeyDistributionService | null = null;
   let activationV2: ProtocolV2Activation | null = null;
@@ -122,8 +125,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const syncReplica = new SyncReplicaStore(db, a2);
     syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState, conflictStore);
 
-    const encryptedReplica = new EncryptedReplicaStoreV2(db, a2);
-    syncEngineV2 = new EncryptedSyncEngineV2(syncTransport, syncStateV2, encryptedReplica, repository);
+    encryptedReplicaV2 = new EncryptedReplicaStoreV2(db, a2);
+    syncEngineV2 = new EncryptedSyncEngineV2(syncTransport, syncStateV2, encryptedReplicaV2, repository);
     keyringDatabase = await openKeyringDatabase(projectRefFromUrl(cloudConfig.url));
     const keyStore = new IndexedDbDeviceKeyStore(keyringDatabase);
     keyRegistry = new SupabaseKeyRegistry(cloudConfig, () => auth.accessToken());
@@ -183,6 +186,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let entries: Entry[] = [];
   let recoveryDrafts: RecoveryDraft[] = [];
   let openConflicts: MarkdownConflictRecord[] = [];
+  let openSyncConflictsV2: SyncConflictRecordV2[] = [];
   let activeConflictId = '';
   let conflictChoices = new Map<string, ConflictChoice>();
   let selected: Entry | undefined;
@@ -458,14 +462,22 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     </dialog>
     <dialog class="conflict-dialog" aria-labelledby="conflict-title">
       <form method="dialog">
-        <div class="conflict-dialog-heading"><div><p class="eyebrow">SYNC CONFLICT</p><h2 id="conflict-title">Resolve Markdown conflict</h2></div><button value="close" aria-label="Close conflict resolver">×</button></div>
-        <p class="conflict-intro fineprint">Vault preserved the local version as a conflict copy and applied the remote version canonically. Review only the overlapping Markdown regions below; unchanged and one-sided regions are merged automatically.</p>
+        <div class="conflict-dialog-heading"><div><p class="eyebrow">SYNC CONFLICT</p><h2 id="conflict-title">Resolve sync conflict</h2></div><button value="close" aria-label="Close conflict resolver">×</button></div>
+        <p class="conflict-intro fineprint">Vault preserved every authored version. Choose how this entity should continue without silently overwriting either side.</p>
         <label for="conflict-select">Unresolved conflict</label><select id="conflict-select"></select>
         <p class="conflict-meta fineprint"></p>
         <div class="conflict-hunks"></div>
-        <label for="conflict-preview">Resolution preview</label><textarea id="conflict-preview" class="conflict-preview" readonly spellcheck="false"></textarea>
+        <label for="conflict-preview">Manual merge preview</label><textarea id="conflict-preview" class="conflict-preview" readonly spellcheck="false"></textarea>
         <p class="conflict-status fineprint" role="status"></p>
-        <div class="dialog-buttons conflict-actions"><button type="button" data-conflict-action="open-copy">Open local copy</button><button type="button" data-conflict-action="open-canonical">Open canonical note</button><button type="button" data-conflict-action="resolve" class="primary">Apply resolution</button><button value="close">Close</button></div>
+        <div class="dialog-buttons conflict-actions">
+          <button type="button" data-conflict-action="open-copy">Open local copy</button>
+          <button type="button" data-conflict-action="open-canonical">Open canonical note</button>
+          <button type="button" data-conflict-action="keep-local" hidden>Keep mine</button>
+          <button type="button" data-conflict-action="keep-remote" hidden>Use remote</button>
+          <button type="button" data-conflict-action="keep-both" hidden>Keep both</button>
+          <button type="button" data-conflict-action="resolve" class="primary">Apply manual merge</button>
+          <button value="close">Close</button>
+        </div>
       </form>
     </dialog>`;
 
@@ -486,6 +498,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const conflictDialog = element<HTMLDialogElement>('.conflict-dialog');
   const conflictSelect = element<HTMLSelectElement>('#conflict-select');
   const conflictMeta = element<HTMLElement>('.conflict-meta');
+  const conflictIntro = element<HTMLElement>('.conflict-intro');
   const conflictHunks = element<HTMLElement>('.conflict-hunks');
   const conflictPreview = element<HTMLTextAreaElement>('#conflict-preview');
   const conflictStatus = element<HTMLElement>('.conflict-status');
