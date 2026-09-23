@@ -97,6 +97,16 @@ export function canonicalIdFromEntry<K extends 'note' | 'folder' | 'attachment'>
   return asCanonicalId(entityType, entryId);
 }
 
+/** Bridge an A1 canonical file identity back into the legacy EntryId layer without changing bytes. */
+export function entryIdFromCanonical(
+  entityId: CanonicalEntityId<'note' | 'folder' | 'attachment'>,
+): EntryId {
+  if (!isStableUuid(entityId)) {
+    throw new VaultError('CORRUPT', 'Canonical file entity IDs must remain UUIDs.');
+  }
+  return entityId as unknown as EntryId;
+}
+
 export function asLocalDate(value: string): LocalDate {
   if (!localDatePattern.test(value)) {
     throw new VaultError('CORRUPT', 'A semantic local date must use YYYY-MM-DD.');
