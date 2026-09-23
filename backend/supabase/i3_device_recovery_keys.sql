@@ -10,7 +10,7 @@ create table if not exists vault_private.device_keys (
   device_id uuid not null,
   algorithm text not null check (algorithm='RSA-OAEP-3072-SHA256'),
   public_spki text not null check (char_length(public_spki) between 256 and 2048 and public_spki ~ '^[A-Za-z0-9_-]+$'),
-  fingerprint text not null check (fingerprint ~ '^[A-Za-z0-9_-]{43}$'),
+  fingerprint text not null check (char_length(fingerprint)=43 and fingerprint ~ '^[A-Za-z0-9_-]+$'),
   created_at timestamptz not null default now(),
   primary key(account_id,device_id),
   constraint device_keys_device_fk
@@ -25,8 +25,8 @@ create table if not exists vault_private.device_vault_key_envelopes (
   device_id uuid not null,
   key_generation integer not null check (key_generation>=1),
   algorithm text not null check (algorithm='RSA-OAEP-3072-SHA256'),
-  public_key_fingerprint text not null check (public_key_fingerprint ~ '^[A-Za-z0-9_-]{43}$'),
-  ciphertext text not null check (ciphertext ~ '^[A-Za-z0-9_-]{512}$'),
+  public_key_fingerprint text not null check (char_length(public_key_fingerprint)=43 and public_key_fingerprint ~ '^[A-Za-z0-9_-]+$'),
+  ciphertext text not null check (char_length(ciphertext)=512 and ciphertext ~ '^[A-Za-z0-9_-]+$'),
   created_at timestamptz not null default now(),
   primary key(vault_id,account_id,device_id,key_generation),
   constraint device_vault_envelope_membership_fk
@@ -44,9 +44,9 @@ create table if not exists vault_private.recovery_vault_key_envelopes (
   account_id uuid not null,
   key_generation integer not null check (key_generation>=1),
   algorithm text not null check (algorithm='A256GCM'),
-  nonce text not null check (nonce ~ '^[A-Za-z0-9_-]{16}$'),
-  ciphertext text not null check (ciphertext ~ '^[A-Za-z0-9_-]{64}$'),
-  recovery_proof text not null check (recovery_proof ~ '^[A-Za-z0-9_-]{43}$'),
+  nonce text not null check (char_length(nonce)=16 and nonce ~ '^[A-Za-z0-9_-]+$'),
+  ciphertext text not null check (char_length(ciphertext)=64 and ciphertext ~ '^[A-Za-z0-9_-]+$'),
+  recovery_proof text not null check (char_length(recovery_proof)=43 and recovery_proof ~ '^[A-Za-z0-9_-]+$'),
   created_at timestamptz not null default now(),
   primary key(vault_id,account_id,key_generation),
   constraint recovery_vault_envelope_membership_fk
@@ -77,9 +77,9 @@ create table if not exists vault_private.device_access_requests (
   vault_id uuid not null,
   account_id uuid not null,
   device_id uuid not null,
-  public_key_fingerprint text not null check (public_key_fingerprint ~ '^[A-Za-z0-9_-]{43}$'),
-  challenge text not null check (challenge ~ '^[A-Za-z0-9_-]{43}$'),
-  expected_confirmation text null check (expected_confirmation is null or expected_confirmation ~ '^[A-Za-z0-9_-]{43}$'),
+  public_key_fingerprint text not null check (char_length(public_key_fingerprint)=43 and public_key_fingerprint ~ '^[A-Za-z0-9_-]+$'),
+  challenge text not null check (char_length(challenge)=43 and challenge ~ '^[A-Za-z0-9_-]+$'),
+  expected_confirmation text null check (expected_confirmation is null or (char_length(expected_confirmation)=43 and expected_confirmation ~ '^[A-Za-z0-9_-]+$')),
   key_generation integer null check (key_generation is null or key_generation>=1),
   created_at timestamptz not null default now(),
   expires_at timestamptz not null,
@@ -275,7 +275,7 @@ begin
   if p_algorithm<>'RSA-OAEP-3072-SHA256'
     or p_public_spki !~ '^[A-Za-z0-9_-]+$'
     or char_length(p_public_spki) not between 256 and 2048
-    or p_fingerprint !~ '^[A-Za-z0-9_-]{43}$' then
+    or char_length(coalesce(p_fingerprint,''))<>43 or coalesce(p_fingerprint,'') !~ '^[A-Za-z0-9_-]+$' then
     raise exception 'Invalid Device public key';
   end if;
 
@@ -317,11 +317,11 @@ declare
 begin
   if v_account is null or p_account_id<>v_account then raise exception 'Account mismatch' using errcode='42501'; end if;
   if p_key_generation is null or p_key_generation<1
-    or p_device_ciphertext !~ '^[A-Za-z0-9_-]{512}$'
-    or p_public_key_fingerprint !~ '^[A-Za-z0-9_-]{43}$'
-    or p_recovery_nonce !~ '^[A-Za-z0-9_-]{16}$'
-    or p_recovery_ciphertext !~ '^[A-Za-z0-9_-]{64}$'
-    or p_recovery_proof !~ '^[A-Za-z0-9_-]{43}$' then
+    or char_length(coalesce(p_device_ciphertext,''))<>512 or coalesce(p_device_ciphertext,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_public_key_fingerprint,''))<>43 or coalesce(p_public_key_fingerprint,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_recovery_nonce,''))<>16 or coalesce(p_recovery_nonce,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_recovery_ciphertext,''))<>64 or coalesce(p_recovery_ciphertext,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_recovery_proof,''))<>43 or coalesce(p_recovery_proof,'') !~ '^[A-Za-z0-9_-]+$' then
     raise exception 'Invalid Vault key envelope payload';
   end if;
   perform vault_private.require_active_member(p_vault_id,v_account);
@@ -550,8 +550,8 @@ declare
   v_existing vault_private.device_vault_key_envelopes%rowtype;
 begin
   if v_account is null then raise exception 'Authentication required' using errcode='42501'; end if;
-  if p_key_generation is null or p_key_generation<1 or p_ciphertext !~ '^[A-Za-z0-9_-]{512}$'
-    or p_expected_confirmation !~ '^[A-Za-z0-9_-]{43}$' then raise exception 'Invalid approval payload'; end if;
+  if p_key_generation is null or p_key_generation<1 or char_length(coalesce(p_ciphertext,''))<>512 or coalesce(p_ciphertext,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_expected_confirmation,''))<>43 or coalesce(p_expected_confirmation,'') !~ '^[A-Za-z0-9_-]+$' then raise exception 'Invalid approval payload'; end if;
   select * into v_request from vault_private.device_access_requests r where r.id=p_request_id for update;
   if not found or v_request.account_id<>v_account or v_request.confirmed_at is not null
     or v_request.rejected_at is not null or v_request.expires_at<=now() then
@@ -635,7 +635,7 @@ declare
   v_request vault_private.device_access_requests%rowtype;
 begin
   if v_account is null then raise exception 'Authentication required' using errcode='42501'; end if;
-  if p_confirmation !~ '^[A-Za-z0-9_-]{43}$' then raise exception 'Invalid Device confirmation'; end if;
+  if char_length(coalesce(p_confirmation,''))<>43 or coalesce(p_confirmation,'') !~ '^[A-Za-z0-9_-]+$' then raise exception 'Invalid Device confirmation'; end if;
   perform vault_private.require_active_device(v_account,p_device_id);
   select * into v_request from vault_private.device_access_requests r
   where r.id=p_request_id and r.account_id=v_account and r.device_id=p_device_id
@@ -674,8 +674,8 @@ begin
   if v_account is null then raise exception 'Authentication required' using errcode='42501'; end if;
   perform vault_private.require_active_member(p_vault_id,v_account);
   perform vault_private.require_active_device(v_account,p_device_id);
-  if p_key_generation is null or p_key_generation<1 or p_ciphertext !~ '^[A-Za-z0-9_-]{512}$'
-    or p_public_key_fingerprint !~ '^[A-Za-z0-9_-]{43}$' or p_recovery_proof !~ '^[A-Za-z0-9_-]{43}$' then
+  if p_key_generation is null or p_key_generation<1 or char_length(coalesce(p_ciphertext,''))<>512 or coalesce(p_ciphertext,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_public_key_fingerprint,''))<>43 or coalesce(p_public_key_fingerprint,'') !~ '^[A-Za-z0-9_-]+$' or char_length(coalesce(p_recovery_proof,''))<>43 or coalesce(p_recovery_proof,'') !~ '^[A-Za-z0-9_-]+$' then
     raise exception 'Invalid recovery Device payload';
   end if;
   select * into v_key from vault_private.device_keys k where k.account_id=v_account and k.device_id=p_device_id;
@@ -860,11 +860,11 @@ begin
     raise exception 'Account mismatch' using errcode='42501';
   end if;
   if p_key_generation is null or p_key_generation<1
-    or p_device_ciphertext !~ '^[A-Za-z0-9_-]{512}$'
-    or p_public_key_fingerprint !~ '^[A-Za-z0-9_-]{43}$'
-    or p_recovery_nonce !~ '^[A-Za-z0-9_-]{16}$'
-    or p_recovery_ciphertext !~ '^[A-Za-z0-9_-]{64}$'
-    or p_recovery_proof !~ '^[A-Za-z0-9_-]{43}$' then
+    or char_length(coalesce(p_device_ciphertext,''))<>512 or coalesce(p_device_ciphertext,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_public_key_fingerprint,''))<>43 or coalesce(p_public_key_fingerprint,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_recovery_nonce,''))<>16 or coalesce(p_recovery_nonce,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_recovery_ciphertext,''))<>64 or coalesce(p_recovery_ciphertext,'') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_recovery_proof,''))<>43 or coalesce(p_recovery_proof,'') !~ '^[A-Za-z0-9_-]+$' then
     raise exception 'Invalid Vault key envelope payload';
   end if;
 
@@ -1052,7 +1052,7 @@ begin
   if p_active_generation is null or p_active_generation<1
     or jsonb_typeof(p_envelopes)<>'array'
     or jsonb_array_length(p_envelopes)<1
-    or p_expected_confirmation !~ '^[A-Za-z0-9_-]{43}$' then
+    or char_length(coalesce(p_expected_confirmation,''))<>43 or coalesce(p_expected_confirmation,'') !~ '^[A-Za-z0-9_-]+$' then
     raise exception 'Invalid multi-generation approval payload';
   end if;
 
@@ -1109,7 +1109,7 @@ begin
       or (v_item->>'deviceId') is distinct from v_request.device_id::text
       or (v_item->>'algorithm') is distinct from 'RSA-OAEP-3072-SHA256'
       or (v_item->>'publicKeyFingerprint') is distinct from v_key.fingerprint
-      or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]{512}$'
+      or char_length(coalesce(v_item->>'ciphertext',''))<>512 or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]+$'
       or not exists(
         select 1
         from vault_private.recovery_vault_key_envelopes r
@@ -1237,7 +1237,7 @@ returns jsonb
 language plpgsql
 security definer
 set search_path=''
-as $
+as $$
 declare
   v_account uuid:=vault_private.current_account_id();
   v_request vault_private.device_access_requests%rowtype;
@@ -1246,388 +1246,7 @@ begin
   if v_account is null then
     raise exception 'Authentication required' using errcode='42501';
   end if;
-  if p_confirmation !~ '^[A-Za-z0-9_-]{43}
-  p_vault_id uuid,
-  p_device_id uuid,
-  p_active_generation integer,
-  p_envelopes jsonb,
-  p_recovery_proofs jsonb
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path=''
-as $$
-declare
-  v_account uuid:=vault_private.current_account_id();
-  v_key vault_private.device_keys%rowtype;
-  v_state vault_private.vault_key_state%rowtype;
-  v_item jsonb;
-  v_generation integer;
-  v_expected_proof text;
-  v_existing vault_private.device_vault_key_envelopes%rowtype;
-  v_expected integer:=0;
-begin
-  if v_account is null then
-    raise exception 'Authentication required' using errcode='42501';
-  end if;
-  perform vault_private.require_active_member(p_vault_id,v_account);
-  perform vault_private.require_active_device(v_account,p_device_id);
-
-  if p_active_generation is null or p_active_generation<1
-    or jsonb_typeof(p_envelopes)<>'array'
-    or jsonb_typeof(p_recovery_proofs)<>'array' then
-    raise exception 'Invalid multi-generation recovery payload';
-  end if;
-
-  select * into v_state
-  from vault_private.vault_key_state s
-  where s.vault_id=p_vault_id and s.account_id=v_account
-  for update;
-  if not found or v_state.active_generation<>p_active_generation then
-    raise exception 'Recovery active generation mismatch';
-  end if;
-
-  select * into v_key
-  from vault_private.device_keys k
-  where k.account_id=v_account and k.device_id=p_device_id;
-  if not found then
-    raise exception 'Registered Device key is missing' using errcode='42501';
-  end if;
-
-  select count(*) into v_expected
-  from vault_private.recovery_vault_key_envelopes r
-  where r.vault_id=p_vault_id and r.account_id=v_account;
-
-  if jsonb_array_length(p_envelopes)<>v_expected
-    or jsonb_array_length(p_recovery_proofs)<>v_expected then
-    raise exception 'Recovery must cover every retained Vault-key generation';
-  end if;
-
-  if (
-    select count(distinct (item->>'keyGeneration')::integer)
-    from jsonb_array_elements(p_envelopes) item
-  )<>v_expected or (
-    select count(distinct (item->>'keyGeneration')::integer)
-    from jsonb_array_elements(p_recovery_proofs) item
-  )<>v_expected then
-    raise exception 'Recovery contains duplicate key generations';
-  end if;
-
-  for v_item in select value from jsonb_array_elements(p_envelopes)
-  loop
-    begin
-      v_generation:=(v_item->>'keyGeneration')::integer;
-    exception when others then
-      raise exception 'Invalid recovery Device-envelope generation';
-    end;
-
-    if (v_item->>'accountId') is distinct from v_account::text
-      or (v_item->>'vaultId') is distinct from p_vault_id::text
-      or (v_item->>'deviceId') is distinct from p_device_id::text
-      or (v_item->>'algorithm') is distinct from 'RSA-OAEP-3072-SHA256'
-      or (v_item->>'publicKeyFingerprint') is distinct from v_key.fingerprint
-      or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]{512}$' then
-      raise exception 'Invalid Device envelope in recovery';
-    end if;
-
-    select r.recovery_proof
-    into v_expected_proof
-    from vault_private.recovery_vault_key_envelopes r
-    where r.vault_id=p_vault_id
-      and r.account_id=v_account
-      and r.key_generation=v_generation;
-    if not found then
-      raise exception 'Unexpected recovery key generation';
-    end if;
-
-    if not exists(
-      select 1
-      from jsonb_array_elements(p_recovery_proofs) proof
-      where (proof->>'keyGeneration')::integer=v_generation
-        and proof->>'recoveryProof'=v_expected_proof
-    ) then
-      raise exception 'Recovery Secret possession proof failed' using errcode='42501';
-    end if;
-
-    select * into v_existing
-    from vault_private.device_vault_key_envelopes e
-    where e.vault_id=p_vault_id
-      and e.account_id=v_account
-      and e.device_id=p_device_id
-      and e.key_generation=v_generation;
-    if found then
-      if v_existing.ciphertext<>(v_item->>'ciphertext')
-        or v_existing.public_key_fingerprint<>v_key.fingerprint then
-        raise exception 'Device envelope identity is immutable';
-      end if;
-    else
-      insert into vault_private.device_vault_key_envelopes(
-        vault_id,account_id,device_id,key_generation,
-        algorithm,public_key_fingerprint,ciphertext
-      ) values(
-        p_vault_id,v_account,p_device_id,v_generation,
-        'RSA-OAEP-3072-SHA256',v_key.fingerprint,v_item->>'ciphertext'
-      );
-    end if;
-  end loop;
-
-  insert into vault_private.device_vault_access(
-    vault_id,account_id,device_id,authorized_at,revoked_at
-  ) values(
-    p_vault_id,v_account,p_device_id,now(),null
-  )
-  on conflict(vault_id,account_id,device_id) do update
-    set authorized_at=excluded.authorized_at,revoked_at=null;
-
-  return vault_private.readiness_json(p_vault_id,v_account,p_device_id);
-end;
-$$;
-
-create or replace function public.vault_key_rotate_vmk(
-  p_vault_id uuid,
-  p_actor_device_id uuid,
-  p_from_generation integer,
-  p_to_generation integer,
-  p_device_envelopes jsonb,
-  p_recovery jsonb
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path=''
-as $$
-declare
-  v_account uuid:=vault_private.current_account_id();
-  v_state vault_private.vault_key_state%rowtype;
-  v_expected_devices integer:=0;
-  v_item jsonb;
-  v_device_id uuid;
-  v_key vault_private.device_keys%rowtype;
-begin
-  if v_account is null then
-    raise exception 'Authentication required' using errcode='42501';
-  end if;
-  perform vault_private.require_authorized_device(
-    p_vault_id,v_account,p_actor_device_id
-  );
-
-  if p_from_generation is null or p_from_generation<1
-    or p_to_generation<>p_from_generation+1
-    or jsonb_typeof(p_device_envelopes)<>'array'
-    or jsonb_array_length(p_device_envelopes)<1
-    or jsonb_typeof(p_recovery)<>'object' then
-    raise exception 'Invalid VMK rotation payload';
-  end if;
-
-  select * into v_state
-  from vault_private.vault_key_state s
-  where s.vault_id=p_vault_id and s.account_id=v_account
-  for update;
-  if not found or v_state.active_generation<>p_from_generation then
-    raise exception 'Vault active key generation changed';
-  end if;
-
-  select count(*) into v_expected_devices
-  from vault_private.device_vault_access a
-  join public.vault_cloud_devices d
-    on d.account_id=a.account_id and d.id=a.device_id
-  join vault_private.device_keys k
-    on k.account_id=a.account_id and k.device_id=a.device_id
-  where a.vault_id=p_vault_id
-    and a.account_id=v_account
-    and a.revoked_at is null
-    and d.revoked_at is null;
-
-  if jsonb_array_length(p_device_envelopes)<>v_expected_devices then
-    raise exception 'VMK rotation must wrap every authorized Device';
-  end if;
-
-  if (
-    select count(distinct item->>'deviceId')
-    from jsonb_array_elements(p_device_envelopes) item
-  )<>v_expected_devices then
-    raise exception 'VMK rotation contains duplicate Devices';
-  end if;
-
-  for v_item in select value from jsonb_array_elements(p_device_envelopes)
-  loop
-    begin
-      v_device_id:=(v_item->>'deviceId')::uuid;
-    exception when others then
-      raise exception 'Invalid VMK rotation DeviceId';
-    end;
-
-    select k.* into v_key
-    from vault_private.device_vault_access a
-    join public.vault_cloud_devices d
-      on d.account_id=a.account_id and d.id=a.device_id
-    join vault_private.device_keys k
-      on k.account_id=a.account_id and k.device_id=a.device_id
-    where a.vault_id=p_vault_id
-      and a.account_id=v_account
-      and a.device_id=v_device_id
-      and a.revoked_at is null
-      and d.revoked_at is null;
-
-    if not found
-      or (v_item->>'accountId') is distinct from v_account::text
-      or (v_item->>'vaultId') is distinct from p_vault_id::text
-      or (v_item->>'keyGeneration')::integer<>p_to_generation
-      or (v_item->>'algorithm') is distinct from 'RSA-OAEP-3072-SHA256'
-      or (v_item->>'publicKeyFingerprint') is distinct from v_key.fingerprint
-      or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]{512}$' then
-      raise exception 'Invalid Device envelope in VMK rotation';
-    end if;
-
-    insert into vault_private.device_vault_key_envelopes(
-      vault_id,account_id,device_id,key_generation,
-      algorithm,public_key_fingerprint,ciphertext
-    ) values(
-      p_vault_id,v_account,v_device_id,p_to_generation,
-      'RSA-OAEP-3072-SHA256',v_key.fingerprint,v_item->>'ciphertext'
-    );
-  end loop;
-
-  if (p_recovery->>'accountId') is distinct from v_account::text
-    or (p_recovery->>'vaultId') is distinct from p_vault_id::text
-    or (p_recovery->>'keyGeneration')::integer<>p_to_generation
-    or (p_recovery->>'algorithm') is distinct from 'A256GCM'
-    or coalesce(p_recovery->>'nonce','') !~ '^[A-Za-z0-9_-]{16}$'
-    or coalesce(p_recovery->>'ciphertext','') !~ '^[A-Za-z0-9_-]{64}$'
-    or coalesce(p_recovery->>'recoveryProof','') !~ '^[A-Za-z0-9_-]{43}$' then
-    raise exception 'Invalid Recovery envelope in VMK rotation';
-  end if;
-
-  insert into vault_private.recovery_vault_key_envelopes(
-    vault_id,account_id,key_generation,algorithm,nonce,ciphertext,recovery_proof
-  ) values(
-    p_vault_id,v_account,p_to_generation,'A256GCM',
-    p_recovery->>'nonce',
-    p_recovery->>'ciphertext',
-    p_recovery->>'recoveryProof'
-  );
-
-  update vault_private.vault_key_state
-  set active_generation=p_to_generation,updated_at=now()
-  where vault_id=p_vault_id
-    and account_id=v_account
-    and active_generation=p_from_generation;
-  if not found then
-    raise exception 'Vault active key generation changed';
-  end if;
-
-  return vault_private.readiness_json(
-    p_vault_id,v_account,p_actor_device_id
-  );
-end;
-$$;
-
-create or replace function public.vault_key_rotate_recovery(
-  p_vault_id uuid,
-  p_actor_device_id uuid,
-  p_replacements jsonb
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path=''
-as $$
-declare
-  v_account uuid:=vault_private.current_account_id();
-  v_expected integer:=0;
-  v_item jsonb;
-  v_generation integer;
-begin
-  if v_account is null then
-    raise exception 'Authentication required' using errcode='42501';
-  end if;
-  perform vault_private.require_authorized_device(
-    p_vault_id,v_account,p_actor_device_id
-  );
-
-  if jsonb_typeof(p_replacements)<>'array' then
-    raise exception 'Invalid Recovery rotation payload';
-  end if;
-
-  select count(*) into v_expected
-  from vault_private.recovery_vault_key_envelopes r
-  where r.vault_id=p_vault_id and r.account_id=v_account;
-
-  if v_expected<1 or jsonb_array_length(p_replacements)<>v_expected then
-    raise exception 'Recovery rotation must rewrap every retained generation';
-  end if;
-
-  if (
-    select count(distinct (item->>'keyGeneration')::integer)
-    from jsonb_array_elements(p_replacements) item
-  )<>v_expected then
-    raise exception 'Recovery rotation contains duplicate generations';
-  end if;
-
-  for v_item in select value from jsonb_array_elements(p_replacements)
-  loop
-    begin
-      v_generation:=(v_item->>'keyGeneration')::integer;
-    exception when others then
-      raise exception 'Invalid Recovery rotation generation';
-    end;
-
-    if (v_item->>'accountId') is distinct from v_account::text
-      or (v_item->>'vaultId') is distinct from p_vault_id::text
-      or (v_item->>'algorithm') is distinct from 'A256GCM'
-      or coalesce(v_item->>'nonce','') !~ '^[A-Za-z0-9_-]{16}$'
-      or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]{64}$'
-      or coalesce(v_item->>'recoveryProof','') !~ '^[A-Za-z0-9_-]{43}$'
-      or not exists(
-        select 1
-        from vault_private.recovery_vault_key_envelopes r
-        where r.vault_id=p_vault_id
-          and r.account_id=v_account
-          and r.key_generation=v_generation
-      ) then
-      raise exception 'Invalid Recovery replacement';
-    end if;
-
-    update vault_private.recovery_vault_key_envelopes
-    set nonce=v_item->>'nonce',
-        ciphertext=v_item->>'ciphertext',
-        recovery_proof=v_item->>'recoveryProof',
-        created_at=now()
-    where vault_id=p_vault_id
-      and account_id=v_account
-      and key_generation=v_generation;
-  end loop;
-
-  return jsonb_build_object('rotated',true);
-end;
-$$;
-
--- Legacy single-generation approval/recovery RPCs are not part of the I3
--- application contract after this migration.
-revoke execute on function public.vault_key_approve_access_request(uuid,uuid,integer,text,text)
-  from authenticated;
-revoke execute on function public.vault_key_pending_access(uuid,uuid)
-  from authenticated;
-revoke execute on function public.vault_key_recover_device(uuid,uuid,integer,text,text,text)
-  from authenticated;
-
-revoke all on function public.vault_key_recovery_envelopes(uuid) from public,anon;
-revoke all on function public.vault_key_authorized_devices(uuid,uuid) from public,anon;
-revoke all on function public.vault_key_approve_access_request_v2(uuid,uuid,integer,jsonb,text) from public,anon;
-revoke all on function public.vault_key_pending_access_v2(uuid,uuid) from public,anon;
-revoke all on function public.vault_key_recover_device_v2(uuid,uuid,integer,jsonb,jsonb) from public,anon;
-revoke all on function public.vault_key_rotate_vmk(uuid,uuid,integer,integer,jsonb,jsonb) from public,anon;
-revoke all on function public.vault_key_rotate_recovery(uuid,uuid,jsonb) from public,anon;
-
-grant execute on function public.vault_key_recovery_envelopes(uuid) to authenticated;
-grant execute on function public.vault_key_authorized_devices(uuid,uuid) to authenticated;
-grant execute on function public.vault_key_approve_access_request_v2(uuid,uuid,integer,jsonb,text) to authenticated;
-grant execute on function public.vault_key_pending_access_v2(uuid,uuid) to authenticated;
-grant execute on function public.vault_key_recover_device_v2(uuid,uuid,integer,jsonb,jsonb) to authenticated;
-grant execute on function public.vault_key_rotate_vmk(uuid,uuid,integer,integer,jsonb,jsonb) to authenticated;
-grant execute on function public.vault_key_rotate_recovery(uuid,uuid,jsonb) to authenticated;
- then
+  if char_length(coalesce(p_confirmation,''))<>43 or coalesce(p_confirmation,'') !~ '^[A-Za-z0-9_-]+$' then
     raise exception 'Invalid Device confirmation';
   end if;
   perform vault_private.require_active_device(v_account,p_device_id);
@@ -1689,7 +1308,7 @@ grant execute on function public.vault_key_rotate_recovery(uuid,uuid,jsonb) to a
     v_request.vault_id,v_account,p_device_id
   );
 end;
-$;
+$$;
 
 create or replace function public.vault_key_recover_device_v2(
   p_vault_id uuid,
@@ -1772,7 +1391,7 @@ begin
       or (v_item->>'deviceId') is distinct from p_device_id::text
       or (v_item->>'algorithm') is distinct from 'RSA-OAEP-3072-SHA256'
       or (v_item->>'publicKeyFingerprint') is distinct from v_key.fingerprint
-      or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]{512}$' then
+      or char_length(coalesce(v_item->>'ciphertext',''))<>512 or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]+$' then
       raise exception 'Invalid Device envelope in recovery';
     end if;
 
@@ -1921,7 +1540,7 @@ begin
       or (v_item->>'keyGeneration')::integer<>p_to_generation
       or (v_item->>'algorithm') is distinct from 'RSA-OAEP-3072-SHA256'
       or (v_item->>'publicKeyFingerprint') is distinct from v_key.fingerprint
-      or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]{512}$' then
+      or char_length(coalesce(v_item->>'ciphertext',''))<>512 or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]+$' then
       raise exception 'Invalid Device envelope in VMK rotation';
     end if;
 
@@ -1938,9 +1557,9 @@ begin
     or (p_recovery->>'vaultId') is distinct from p_vault_id::text
     or (p_recovery->>'keyGeneration')::integer<>p_to_generation
     or (p_recovery->>'algorithm') is distinct from 'A256GCM'
-    or coalesce(p_recovery->>'nonce','') !~ '^[A-Za-z0-9_-]{16}$'
-    or coalesce(p_recovery->>'ciphertext','') !~ '^[A-Za-z0-9_-]{64}$'
-    or coalesce(p_recovery->>'recoveryProof','') !~ '^[A-Za-z0-9_-]{43}$' then
+    or char_length(coalesce(p_recovery->>'nonce',''))<>16 or coalesce(p_recovery->>'nonce','') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_recovery->>'ciphertext',''))<>64 or coalesce(p_recovery->>'ciphertext','') !~ '^[A-Za-z0-9_-]+$'
+    or char_length(coalesce(p_recovery->>'recoveryProof',''))<>43 or coalesce(p_recovery->>'recoveryProof','') !~ '^[A-Za-z0-9_-]+$' then
     raise exception 'Invalid Recovery envelope in VMK rotation';
   end if;
 
@@ -2021,9 +1640,9 @@ begin
     if (v_item->>'accountId') is distinct from v_account::text
       or (v_item->>'vaultId') is distinct from p_vault_id::text
       or (v_item->>'algorithm') is distinct from 'A256GCM'
-      or coalesce(v_item->>'nonce','') !~ '^[A-Za-z0-9_-]{16}$'
-      or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]{64}$'
-      or coalesce(v_item->>'recoveryProof','') !~ '^[A-Za-z0-9_-]{43}$'
+      or char_length(coalesce(v_item->>'nonce',''))<>16 or coalesce(v_item->>'nonce','') !~ '^[A-Za-z0-9_-]+$'
+      or char_length(coalesce(v_item->>'ciphertext',''))<>64 or coalesce(v_item->>'ciphertext','') !~ '^[A-Za-z0-9_-]+$'
+      or char_length(coalesce(v_item->>'recoveryProof',''))<>43 or coalesce(v_item->>'recoveryProof','') !~ '^[A-Za-z0-9_-]+$'
       or not exists(
         select 1
         from vault_private.recovery_vault_key_envelopes r

@@ -175,7 +175,7 @@ function validatePayload(value: unknown): EncryptedPayloadV1 {
   };
 }
 
-function validateMutation(value: unknown): EncryptedEntityMutation {
+export function validateEncryptedEntityMutationV2(value: unknown): EncryptedEntityMutation {
   if (!record(value)) throw new VaultError('PROTOCOL', 'Encrypted entity mutation is invalid.');
   exactKeys(
     value,
@@ -219,7 +219,7 @@ export function validateOperationV2(value: unknown): asserts value is SyncOperat
   }
   const seen = new Set<string>();
   for (const raw of value.mutations) {
-    const mutation = validateMutation(raw);
+    const mutation = validateEncryptedEntityMutationV2(raw);
     if (seen.has(mutation.entityId)) throw new VaultError('PROTOCOL', 'One Protocol v2 operation cannot mutate an entity more than once.');
     seen.add(mutation.entityId);
   }

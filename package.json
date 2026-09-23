@@ -11,7 +11,7 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "build:core": "tsc -p tsconfig.core.json",
-    "test": "npm run build:core && node --test tests/phase1.test.mjs tests/phase2.test.mjs tests/phase3.test.mjs tests/phase4.test.mjs tests/phase5.test.mjs tests/phase6.test.mjs tests/phase7.test.mjs tests/phase8.test.mjs tests/phase9.test.mjs tests/phase10.test.mjs tests/phase11.test.mjs tests/phase12.test.mjs tests/phase13.test.mjs tests/phase14.test.mjs tests/phase15.test.mjs tests/phase16.test.mjs tests/phase17.test.mjs tests/phase18.test.mjs tests/phase19.test.mjs tests/phase20.test.mjs tests/phase21.test.mjs tests/phase22.test.mjs tests/a1-domain.test.mjs tests/a2-storage.test.mjs tests/i1-protocol-v2.test.mjs tests/i2-crypto.test.mjs tests/i3-keys.test.mjs",
+    "test": "npm run build:core && node --test tests/phase1.test.mjs tests/phase2.test.mjs tests/phase3.test.mjs tests/phase4.test.mjs tests/phase5.test.mjs tests/phase6.test.mjs tests/phase7.test.mjs tests/phase8.test.mjs tests/phase9.test.mjs tests/phase10.test.mjs tests/phase11.test.mjs tests/phase12.test.mjs tests/phase13.test.mjs tests/phase14.test.mjs tests/phase15.test.mjs tests/phase16.test.mjs tests/phase17.test.mjs tests/phase18.test.mjs tests/phase19.test.mjs tests/phase20.test.mjs tests/phase21.test.mjs tests/phase22.test.mjs tests/a1-domain.test.mjs tests/a2-storage.test.mjs tests/i1-protocol-v2.test.mjs tests/i2-crypto.test.mjs tests/i3-keys.test.mjs tests/i4-remote-state.test.mjs",
     "test:e2e": "playwright test",
     "preview": "vite preview --host 127.0.0.1",
     "benchmark:search": "npm run build:core && node scripts/benchmark-phase4.mjs",
@@ -25,7 +25,8 @@
     "benchmark:realtime-wakeup": "npm run build:core && node scripts/benchmark-phase17.mjs",
     "benchmark:collaboration": "npm run build:core && node scripts/benchmark-phase19.mjs",
     "benchmark:crdt": "npm run build:core && node scripts/benchmark-phase20.mjs",
-    "benchmark:conflicts": "npm run build:core && node scripts/benchmark-phase22.mjs"
+    "benchmark:conflicts": "npm run build:core && node scripts/benchmark-phase22.mjs",
+    "benchmark:i4-remote-state": "npm run build:core && node scripts/benchmark-i4.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
