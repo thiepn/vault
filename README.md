@@ -26,16 +26,17 @@ The repository currently includes browser-certified:
 - **Phase 18 — Shared Vaults, Membership & Permission Architecture**
 - **Phase 19 — Live Presence & Collaborative Session Foundation**
 - **Phase 20 — Live CRDT Text Co-Editing & Shared Undo Foundation**
+- **Phase 21 — Best-Effort Closed-App Replication & Background Sync**
 
 ## Permanent architecture program
 
-The Phase 1–20 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–21 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
 **A2 — Local Storage, Serialization & Offline Persistence** is implemented with:
 
-- IndexedDB schema v4 as the transactional local persistence layer
+- IndexedDB schema v5 as the transactional local persistence layer
 - canonical `entities` and split `noteBodies` stores alongside compatibility stores
 - stable hidden IDs for Markdown-embedded tasks
 - content-addressed SHA-256 attachment blobs
@@ -45,6 +46,7 @@ The Phase 1–20 product now runs on the **A1/A2 permanent local foundation**.
 - persistent-storage requests and quota/health support
 - full-fidelity Vault archives with checksums
 - service-worker application-shell caching and cold offline PWA startup
+- worker-readable `backgroundRuntime` plus staged `remoteInbox` stores for best-effort closed-app replication
 - compatibility mirroring so Phase 1–15 behavior remains available during the canonical-storage transition
 
 See `docs/A1_DOMAIN_MODEL.md`, `docs/A2_STORAGE_ARCHITECTURE.md`, and the ADRs under `docs/adr/`.
@@ -573,6 +575,24 @@ Yjs is an **ephemeral collaboration layer**, not a second durable note database.
 
 See `docs/PHASE20_CRDT_EDITING.md` and `docs/PHASE_20_ACCEPTANCE.md`.
 
+### Best-Effort Closed-App Replication & Background Sync
+
+Phase 21 extends Vault's replication transport into the service worker where the browser exposes Background Sync / Periodic Background Sync.
+
+- durable local saves can seal the existing protocol-v1 outbox and request one-shot `vault-background-sync`
+- optional `vault-periodic-sync` registration is requested with a 12-hour minimum interval hint
+- the worker can refresh the same end-user Supabase session, upload referenced attachment blobs, and submit already-sealed outbox operations
+- successful worker pushes **do not** delete outbox rows; foreground sync later correlates the authoritative server event, records the remote shadow, advances the applied cursor, and acknowledges the operation
+- the worker may pull ordered remote events, but writes them only to the schema-v5 `remoteInbox` staging store
+- the worker never writes canonical Markdown/content stores, never advances `syncCursors`, and never performs conflict resolution
+- foreground SyncEngine consumes staged inbox events before its next network pull and applies the normal Phase 15/16 conflict rules
+- worker completion/error messages wake the existing foreground SyncCoordinator when a Vault window is open
+- explicit sign-out clears worker-readable auth runtime
+
+Background Sync is a **best-effort browser capability**. A successful registration means Vault asked the browser to run the task; it does not guarantee execution time, frequency, or cross-browser support. Unsupported browsers continue using normal foreground, realtime, focus/online/visibility, and explicit Sync paths.
+
+See `docs/PHASE21_BACKGROUND_REPLICATION.md`, `docs/PHASE_21_ACCEPTANCE.md`, and `docs/PHASE_21_RESULTS.md`.
+
 ## Canonical data
 
 ```text
@@ -603,7 +623,7 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 ## Not implemented yet
 
 - durable/replayable CRDT operation history and a global cross-user undo timeline
-- guaranteed closed-app service-worker replication
+- guaranteed cross-browser closed-app execution / exact background-sync scheduling
 - semantic/block-aware interactive conflict resolution
 
 ## Development
@@ -625,13 +645,13 @@ npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts, search/graph/board/Canvas/Obsidian-migration/sync/realtime/presence/CRDT performance gates, production Vite build and real Chromium desktop/mobile acceptance.
+CI runs strict TypeScript, all core contracts including background-replication safety, search/graph/board/Canvas/Obsidian-migration/sync/realtime/presence/CRDT performance gates, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.20.0-phase20**
+- Current package version: **0.21.0-phase21**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
