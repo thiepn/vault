@@ -450,6 +450,227 @@ export class EncryptedReplicaStoreV2 {
     });
   }
 
+  async resolveConflict(input:{
+    vaultId:VaultId;
+    entryId:EntryId;
+    accountId:AccountId;
+    epoch:string;
+    resolution:'keep-local'|'keep-remote'|'manual'|'keep-both';
+    manualText?:string;
+  }):Promise<{conflict:SyncConflictRecordV2;createdCopyId:EntryId|null}>{
+    const {vaultId,entryId,accountId,epoch,resolution}=input;
+    const touched=new Set<EntryId>();
+    const result=await this.driver.transaction(
+      ['vaults','entries','contents','attachments','dirty','outbox','remoteShadows','revisions','syncConflicts'],
+      'readwrite',
+      async tx=>{
+        const vault=await tx.store('vaults').get<Vault>(vaultId);
+        if(!vault||vault.mode!=='cloud'||!vault.cloud||vault.cloud.protocolVersion!==2
+          ||vault.cloud.accountId!==accountId||vault.cloud.epoch!==epoch){
+          throw new VaultError('ACCOUNT_MISMATCH','Conflict resolution no longer matches the active encrypted Vault.');
+        }
+        const conflict=await openSyncConflictInTx(tx,vaultId,entryId);
+        if(!conflict) throw new VaultError('NOT_FOUND','The encrypted synchronization conflict is no longer open.');
+        if(conflict.accountId!==accountId||conflict.epoch!==epoch){
+          throw new VaultError('ACCOUNT_MISMATCH','Conflict resolution belongs to another Account/epoch.');
+        }
+
+        const currentLocal=await readLocalInTx(tx,entryId);
+        if(!currentLocal) throw new VaultError('CORRUPT','The conflicted local entity no longer exists.');
+        const refreshed:SyncConflictRecordV2={
+          ...conflict,
+          local:stateFromLocal(currentLocal),
+          updatedAt:new Date().toISOString(),
+        };
+        await updateSyncConflictInTx(tx,refreshed);
+
+        const allOutbox=await tx.store('outbox').allFromIndex<SyncOutboxRecordV2>('vaultId',vaultId);
+        await removePendingForEntity(tx,allOutbox,accountId,entryId);
+
+        const sameIdentity=refreshed.remote.entryId===entryId;
+        const remoteShadow=shadowFromConflictRemote(accountId,epoch,refreshed);
+        const emptyPage=new Map<EntryId,DecryptedSyncEntityV2>();
+        let createdCopyId:EntryId|null=null;
+
+        if(resolution==='keep-remote'){
+          if(sameIdentity){
+            const written=await writeState(tx,refreshed.remote,currentLocal,emptyPage);
+            await tx.store('remoteShadows').put(remoteShadow);
+            await tx.store('dirty').delete(entryId);
+            touched.add(written.entry.id);
+          }else{
+            // Revert a previously-synced local entity to BASE. A local-only
+            // concurrent create is retained as a recoverable local tombstone.
+            if(refreshed.base){
+              const reverted=await writeState(tx,refreshed.base,currentLocal,emptyPage);
+              await tx.store('dirty').delete(entryId);
+              touched.add(reverted.entry.id);
+            }else{
+              const discarded:SyncEntityStateV2={
+                ...refreshed.local,
+                deletedAt:new Date().toISOString(),
+                updatedAt:new Date().toISOString(),
+              };
+              const reverted=await writeState(tx,discarded,currentLocal,emptyPage);
+              await tx.store('dirty').delete(entryId);
+              touched.add(reverted.entry.id);
+            }
+            const existingRemote=await readLocalInTx(tx,refreshed.remote.entryId);
+            const remoteWritten=await writeState(tx,refreshed.remote,existingRemote,emptyPage);
+            await tx.store('remoteShadows').put(remoteShadow);
+            await tx.store('dirty').delete(refreshed.remote.entryId);
+            touched.add(remoteWritten.entry.id);
+          }
+          const resolved=await markSyncConflictResolutionInTx(tx,refreshed,{
+            status:'resolved',resolution:'keep-remote',
+          });
+          return {conflict:resolved,createdCopyId};
+        }
+
+        if(resolution==='manual'){
+          if(!sameIdentity||refreshed.entityType!=='note'||typeof input.manualText!=='string'){
+            throw new VaultError('PROTOCOL','Manual merge currently requires one conflicted Note identity and explicit Markdown.');
+          }
+          const manualState:SyncEntityStateV2={
+            ...refreshed.local,
+            text:input.manualText,
+            updatedAt:new Date().toISOString(),
+          };
+          const written=await writeState(tx,manualState,currentLocal,emptyPage);
+          await tx.store('remoteShadows').put(remoteShadow);
+          await ensureDirty(tx,written);
+          touched.add(written.entry.id);
+          const pending=await markSyncConflictResolutionInTx(tx,refreshed,{
+            status:'resolution-pending',resolution:'manual',resolutionText:input.manualText,
+          });
+          return {conflict:pending,createdCopyId};
+        }
+
+        if(resolution==='keep-local'){
+          if(sameIdentity){
+            await tx.store('remoteShadows').put(remoteShadow);
+            await ensureDirty(tx,currentLocal);
+            const pending=await markSyncConflictResolutionInTx(tx,refreshed,{
+              status:'resolution-pending',resolution:'keep-local',
+            });
+            return {conflict:pending,createdCopyId};
+          }
+
+          // Different-ID name collision: first move the already-remote entity
+          // aside. The local winner remains blocked until that rename's own
+          // ordered event is observed, then the next sync pass can create it.
+          const remoteExisting=await readLocalInTx(tx,refreshed.remote.entryId);
+          const safeRemoteName=await conflictSafeName(tx,refreshed.remote,refreshed.remote.entryId);
+          const movedRemote:SyncEntityStateV2={
+            ...refreshed.remote,
+            name:safeRemoteName,
+            updatedAt:new Date().toISOString(),
+          };
+          const moved=await writeState(tx,movedRemote,remoteExisting,emptyPage);
+          await tx.store('remoteShadows').put(remoteShadow);
+          await ensureDirty(tx,moved);
+          touched.add(moved.entry.id);
+          await ensureDirty(tx,currentLocal);
+          const pending=await markSyncConflictResolutionInTx(tx,refreshed,{
+            status:'resolution-pending',resolution:'keep-local',
+          });
+          return {conflict:pending,createdCopyId};
+        }
+
+        // KEEP BOTH
+        if(!sameIdentity){
+          const safeLocalName=await conflictSafeName(tx,refreshed.local,entryId);
+          const renamedLocal:SyncEntityStateV2={
+            ...refreshed.local,
+            name:safeLocalName,
+            updatedAt:new Date().toISOString(),
+          };
+          const renamed=await writeState(tx,renamedLocal,currentLocal,emptyPage);
+          await ensureDirty(tx,renamed);
+          touched.add(renamed.entry.id);
+
+          const remoteExisting=await readLocalInTx(tx,refreshed.remote.entryId);
+          const remoteWritten=await writeState(tx,refreshed.remote,remoteExisting,emptyPage);
+          await tx.store('remoteShadows').put(remoteShadow);
+          await tx.store('dirty').delete(refreshed.remote.entryId);
+          touched.add(remoteWritten.entry.id);
+
+          const resolved=await markSyncConflictResolutionInTx(tx,refreshed,{
+            status:'resolved',resolution:'keep-both',
+          });
+          return {conflict:resolved,createdCopyId};
+        }
+
+        const localState=refreshed.local;
+        const copyId=newUuidV7() as EntryId;
+        const safeName=await conflictSafeName(tx,{...localState,entryId:copyId},copyId);
+        const timestamp=new Date().toISOString();
+        const copyState:SyncEntityStateV2={
+          ...localState,
+          entryId:copyId,
+          name:safeName,
+          createdAt:timestamp,
+          updatedAt:timestamp,
+          text:localState.entityType==='note'
+            ? rekeyTaskIdentityMarkers(localState.text!).text
+            : null,
+        };
+
+        const originalWritten=await writeState(tx,refreshed.remote,currentLocal,emptyPage);
+        await tx.store('remoteShadows').put(remoteShadow);
+        await tx.store('dirty').delete(entryId);
+        touched.add(originalWritten.entry.id);
+
+        const copyWritten=await writeState(tx,copyState,null,emptyPage);
+        await ensureDirty(tx,copyWritten);
+        touched.add(copyWritten.entry.id);
+        createdCopyId=copyId;
+
+        if(copyState.entityType==='folder'){
+          const entries=await tx.store('entries').allFromIndex<Entry>('vaultId',vaultId);
+          for(const child of entries){
+            if(child.id===entryId||child.id===copyId||child.parentId!==entryId)continue;
+            const childLocal=await readLocalInTx(tx,child.id);
+            if(!childLocal)continue;
+            const childName=child.name;
+            const childKey=child.deletedAt===null?activeKey(vaultId,copyId,childName):undefined;
+            if(childKey){
+              const collision=await tx.store('entries').fromIndex<Entry>('activeKey',childKey);
+              if(collision&&collision.id!==child.id)throw new VaultError('COLLISION','Keep Both folder copy collides with a child path.');
+            }
+            const updatedChild:Entry={
+              ...child,
+              parentId:copyId,
+              updatedAt:timestamp,
+              localVersion:nextVersion(child.localVersion),
+              ...(childKey?{activeKey:childKey}:{activeKey:undefined}),
+            };
+            await tx.store('entries').put(updatedChild);
+            if(child.kind==='markdown'){
+              const body=await tx.store('contents').get<MarkdownContent>(child.id);
+              if(body)await tx.store('contents').put({...body,localVersion:updatedChild.localVersion});
+            }
+            await ensureDirty(tx,{entry:updatedChild,text:childLocal.text});
+            touched.add(child.id);
+          }
+        }
+
+        const resolved=await markSyncConflictResolutionInTx(tx,refreshed,{
+          status:'resolved',resolution:'keep-both',
+        });
+        return {conflict:resolved,createdCopyId};
+      },
+    );
+
+    if(this.a2){
+      for(const id of touched){
+        try{await this.a2.syncEntry(id);}
+        catch(error){await this.a2.markRepairNeeded(error).catch(()=>undefined);}
+      }
+    }
+    return result;
+  }
+
   async applyPage(input:{
     accountId:AccountId;
     epoch:string;
