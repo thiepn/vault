@@ -158,7 +158,7 @@ async function confirmTextDialog(page:Page,value:string){
   await expect(dialog).not.toBeVisible();
 }
 
-test('Phase 19 shows private collaborator presence/cursors and hides stale offsets after local divergence',async({page},testInfo)=>{
+test('Phase 19 owner adoption does not reopen plaintext presence before E2EE activation',async({page},testInfo)=>{
   test.skip(testInfo.project.name!=='chromium-desktop');
   await installRealtimeFake(page);
   await mockCloud(page);
@@ -181,20 +181,18 @@ test('Phase 19 shows private collaborator presence/cursors and hides stale offse
   await cloud.locator('[data-cloud-action="sign-in"]').click();
   await expect(cloud.locator('.cloud-signed-in')).toBeVisible();
   await cloud.locator('[data-cloud-action="adopt"]').click();
-  await expect(cloud.locator('.cloud-vault-state')).toContainText('Cloud adopted');
+  await expect(cloud.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(cloud.locator('.cloud-sync-detail')).toContainText('end-to-end encryption setup required');
 
-  await expect(page.locator('.collaboration-status')).toContainText('Presence connected');
-  await expect(page.locator('.collaboration-presence')).toContainText('Editor · 6666');
-  await expect(page.locator('.cm-remote-cursor')).toHaveCount(1);
-  await expect(page.locator('.cm-remote-cursor-label')).toHaveText('Editor 6666');
-  await expect(page.locator('.cm-remote-selection')).toHaveCount(1);
+  await expect(page.locator('.collaboration-status')).toBeHidden();
+  await expect(page.locator('.collaboration-presence')).toBeHidden();
+  await expect(page.locator('.cm-remote-cursor')).toHaveCount(0);
+  await expect(page.locator('.cm-remote-selection')).toHaveCount(0);
 
   await cloud.locator('button[value="close"]').click();
-  await expect(cloud).not.toBeVisible();
-
   await editor.click();
   await page.keyboard.press('End');
   await page.keyboard.type('!');
+  await expect(editor).toContainText(NOTE_TEXT+'!');
   await expect(page.locator('.cm-remote-cursor')).toHaveCount(0);
-  await expect(page.locator('.cm-remote-selection')).toHaveCount(0);
 });
