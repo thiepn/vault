@@ -279,6 +279,41 @@ export class EncryptedSyncEngineV2 {
   ):Promise<void>{
     requireV2Binding(vault,accountId);
     const rows=await this.state.pending(vault.id,accountId);
+    const mutationByOperation=new Map(rows.map(row=>{
+      const decoded=decodeOperationV2(row.wire);
+      if(decoded.mutations.length!==1){
+        throw new VaultError('PROTOCOL','I5 outbox rows must contain exactly one encrypted entity mutation.');
+      }
+      return [row.id,decoded.mutations[0]!] as const;
+    }));
+    const pendingEntity=new Map([...mutationByOperation.entries()].map(([operationId,mutation])=>[
+      mutation.entityId,{operationId,mutation},
+    ]));
+    const depthMemo=new Map<string,number>();
+    const pendingDepth=(entityId:string,stack=new Set<string>()):number=>{
+      const cached=depthMemo.get(entityId);
+      if(cached!==undefined)return cached;
+      if(stack.has(entityId))throw new VaultError('CYCLE','Pending encrypted operations contain a folder cycle.');
+      const row=pendingEntity.get(entityId);
+      if(!row||!row.mutation.structural.parentId){depthMemo.set(entityId,0);return 0;}
+      stack.add(entityId);
+      const depth=1+pendingDepth(row.mutation.structural.parentId,stack);
+      stack.delete(entityId);
+      depthMemo.set(entityId,depth);
+      return depth;
+    };
+    rows.sort((left,right)=>{
+      const a=mutationByOperation.get(left.id)!;
+      const b=mutationByOperation.get(right.id)!;
+      const deletedA=a.structural.deleted;
+      const deletedB=b.structural.deleted;
+      if(deletedA!==deletedB)return deletedA?1:-1;
+      const da=pendingDepth(a.entityId);
+      const db=pendingDepth(b.entityId);
+      if(deletedA&&deletedB)return db-da||left.createdAt.localeCompare(right.createdAt)||left.id.localeCompare(right.id);
+      return da-db||left.createdAt.localeCompare(right.createdAt)||left.id.localeCompare(right.id);
+    });
+
     for(const row of rows){
       // Accepted rows wait for their ordered pull event. Re-pushing them is
       // unnecessary; a lost *push response* never sets acceptedAt, so that case
