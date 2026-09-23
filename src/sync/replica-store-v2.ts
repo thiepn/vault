@@ -747,6 +747,21 @@ export class EncryptedReplicaStoreV2 {
                 resolutionText:conflict.resolutionText,
               });
             }
+            // Keep Local for a different-ID name collision first renames the
+            // remote competitor. Observing that exact rename unblocks the local
+            // winner for the next synthesis pass.
+            const allConflicts=await tx.store('syncConflicts').getAll<SyncConflictRecordV2>();
+            for(const related of allConflicts){
+              if(related.vaultId!==vaultId
+                ||related.status!=='resolution-pending'
+                ||related.resolution!=='keep-local'
+                ||related.entryId===event.entityId
+                ||related.remote.entryId!==event.entityId) continue;
+              await markSyncConflictResolutionInTx(tx,related,{
+                status:'resolved',
+                resolution:'keep-local',
+              });
+            }
             if(localMatchesDecryptedV2(localView(local),event)){
               await tx.store('dirty').delete(event.entityId);
             }else{
