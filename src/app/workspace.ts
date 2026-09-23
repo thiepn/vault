@@ -1429,7 +1429,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   let awaitableDevicesCache: Awaited<ReturnType<CloudFoundation['listDevices']>> = [];
   let awaitableMembersCache: Awaited<ReturnType<CloudFoundation['listMembers']>> = [];
-  let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
+  type WorkspaceSyncSummary = SyncRunSummary | EncryptedSyncRunSummaryV2;
+  let lastSyncSummary: { vaultId: VaultId; summary: WorkspaceSyncSummary } | null = null;
   let cachedSyncDetail = '';
 
   function backgroundLabel(): string {
@@ -1506,26 +1507,38 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cachedSyncDetail = '';
       return;
     }
+    const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
+    if(vault.cloud.protocolVersion===2){
+      const cursor=await syncStateV2.cursor(vault.id,vault.cloud.accountId);
+      const queued=await syncStateV2.count(vault.id,vault.cloud.accountId);
+      const encrypted=latest && 'deferredAttachments' in latest ? latest : null;
+      cachedSyncDetail=encrypted
+        ? `End-to-end encrypted · Protocol v2 · Cursor ${encrypted.cursor} · ${encrypted.pulledEvents} pulled · ${encrypted.pushedOperations} pushed · ${encrypted.deferredAttachments} attachment${encrypted.deferredAttachments===1?'':'s'} local-only · ${queued} queued`
+        : `End-to-end encrypted · Protocol v2 · Cursor ${cursor?.cursor ?? '0'} · Notes/Folders sync · attachments remain local until I7 · ${queued} queued`;
+      return;
+    }
     const cursor = await syncState.cursor(vault.id, cloudStatus.identity.userId);
     const queued = await syncState.count(vault.id);
-    const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
+    const legacy=latest && !('deferredAttachments' in latest) ? latest : null;
     const background=backgroundLabel();
-    cachedSyncDetail = latest
-      ? `${realtimeLabel()} · ${background} · Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
+    cachedSyncDetail = legacy
+      ? `${realtimeLabel()} · ${background} · Cursor ${legacy.cursor} · ${legacy.pulledEvents} pulled · ${legacy.pushedOperations} pushed · ${legacy.autoMergedMarkdown} auto-merged · ${legacy.conflictsPreserved} conflicts preserved · ${legacy.uploadedBlobs}↑/${legacy.downloadedBlobs}↓ blobs · ${queued} queued`
       : `${realtimeLabel()} · ${background} · Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
   }
 
-  async function runCurrentCloudSync(background = false, _trigger: SyncTrigger = 'manual'): Promise<SyncRunSummary> {
-    if (!syncEngine || !cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
+  async function runCurrentCloudSync(background = false, _trigger: SyncTrigger = 'manual'): Promise<WorkspaceSyncSummary> {
+    if (!cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
       throw new VaultError('CONFIGURATION', 'Cloud synchronization is unavailable.');
     }
-    // Background runs occur only with a clean editor, so they can cheaply
-    // reconcile server-authoritative membership before touching sync state.
-    // Manual runs do the same whenever no unsaved draft would be disturbed.
     if (background || !saver?.hasUnsavedChanges) {
       cloudStatus = await cloud.status();
-      await mirrorBackgroundSession();
       await reloadCloudBindingCache();
+      if(vault?.cloud?.protocolVersion===1){
+        await mirrorBackgroundSession();
+      }else{
+        await backgroundBridge?.clearSession();
+        await refreshBackgroundStatus();
+      }
       await refreshRealtimeSubscription();
       await refreshCollaborationSubscription();
     }
@@ -1536,12 +1549,62 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (saver) await saver.flush();
     const activeVaultId = vault.id;
     const selectedId = selected?.id;
-    if (!background) cloudMessage.textContent = 'Synchronizing canonical files and attachments…';
+    if (!background) {
+      cloudMessage.textContent = vault.cloud.protocolVersion===2
+        ? 'Synchronizing end-to-end encrypted Notes and Folders…'
+        : 'Synchronizing canonical files and attachments…';
+    }
     cloudSyncNow.disabled = true;
     try {
-      const summary = await syncEngine.sync(vault, cloudStatus.identity.userId);
+      let summary:WorkspaceSyncSummary;
+      if(vault.cloud.protocolVersion===2){
+        if(!syncEngineV2||!keyDistribution||!keyRegistry){
+          throw new VaultError('CONFIGURATION','Encrypted synchronization is unavailable in this browser.');
+        }
+        if(effectiveCloudRole(vault.cloud)!=='owner'){
+          throw new VaultError('PERMISSION','I5 encrypted synchronization is owner-only until cross-Account E2EE sharing is implemented.');
+        }
+        const readiness=await keyRegistry.readiness(vault.id,vault.cloud.deviceId);
+        if(!readiness.ready||readiness.keyGeneration===null){
+          throw new VaultError('PERMISSION','This Device does not have an active encrypted Vault key.');
+        }
+        await keyDistribution.refreshDeviceEnvelopes({
+          accountId:vault.cloud.accountId,
+          vaultId:vault.id,
+          deviceId:vault.cloud.deviceId,
+        });
+        const contexts=new Map<number,VaultCryptoContext>();
+        const contextFor=async(generation:number):Promise<VaultCryptoContext>=>{
+          const existing=contexts.get(generation);
+          if(existing)return existing;
+          const opened=await keyDistribution!.unlockLocal({
+            accountId:vault!.cloud!.accountId,
+            vaultId:vault!.id,
+            deviceId:vault!.cloud!.deviceId,
+            keyGeneration:generation,
+          });
+          contexts.set(generation,opened);
+          return opened;
+        };
+        try{
+          const active=await contextFor(readiness.keyGeneration);
+          summary=await syncEngineV2.sync(vault,vault.cloud.accountId,{
+            active:async()=>active,
+            forGeneration:contextFor,
+          });
+        }finally{
+          for(const context of contexts.values()) context.destroy();
+        }
+      }else{
+        if(!syncEngine) throw new VaultError('CONFIGURATION','Legacy synchronization is unavailable.');
+        summary=await syncEngine.sync(vault,cloudStatus.identity.userId);
+      }
+
       lastSyncSummary = { vaultId: activeVaultId, summary };
-      const localUiChanged = summary.pulledEvents > 0 || summary.conflictsPreserved > 0 || summary.autoMergedMarkdown > 0;
+      const isEncrypted='deferredAttachments' in summary;
+      const localUiChanged=isEncrypted
+        ? summary.pulledEvents>0
+        : summary.pulledEvents > 0 || summary.conflictsPreserved > 0 || summary.autoMergedMarkdown > 0;
       if (vault?.id === activeVaultId && (!background || localUiChanged)) {
         await refresh();
         if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
@@ -1549,33 +1612,40 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await refreshBackgroundStatus();
       await refreshCloudSyncDetail();
       if (vault?.id === activeVaultId && selected?.kind === 'markdown' && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
-        element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
+        element<HTMLElement>('.save-status').textContent = isEncrypted && summary.deferredAttachments>0
+          ? 'Saved locally · Notes/Folders encrypted-synced · attachments local'
+          : 'Saved locally · synced';
       }
-      if (vault?.id === activeVaultId && selected?.id === selectedId && summary.pushedOperations > 0 && crdtDocument) {
-        stopCrdtSession();
-        await refreshCrdtSession();
-      } else if (vault?.id === activeVaultId && !crdtDocument) {
-        await refreshCrdtSession();
+      if(!isEncrypted){
+        if (vault?.id === activeVaultId && selected?.id === selectedId && summary.pushedOperations > 0 && crdtDocument) {
+          stopCrdtSession();
+          await refreshCrdtSession();
+        } else if (vault?.id === activeVaultId && !crdtDocument) {
+          await refreshCrdtSession();
+        }
       }
       if (!background) {
-        renderCloudDialog(
-          `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.autoMergedMarkdown} auto-merged, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`,
-        );
+        renderCloudDialog(isEncrypted
+          ? `Encrypted sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.localChangedAfterOwnPush} newer local edit${summary.localChangedAfterOwnPush===1?'':'s'} preserved, ${summary.deferredAttachments} attachment${summary.deferredAttachments===1?'':'s'} deferred to I7.`
+          : `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.autoMergedMarkdown} auto-merged, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`);
       } else if (cloudDialog.open) {
         renderCloudDialog();
       }
       renderCloudIndicator();
       return summary;
     } finally {
-      const eligible = !!vault && !!syncEngine && cloudStatus.signedIn && !!cloudStatus.identity
-        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud);
+      const eligible = !!vault && cloudStatus.signedIn && !!cloudStatus.identity
+        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId
+        && cloudBindingCanRead(vault.cloud)
+        && (vault.cloud?.protocolVersion===2 ? !!syncEngineV2 : !!syncEngine);
       cloudSyncNow.disabled = !eligible;
     }
   }
 
   syncCoordinator = new SyncCoordinator({
-    eligible: () => !!syncEngine && !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
+    eligible: () => !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
       && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud)
+      && (vault.cloud?.protocolVersion===2 ? !!syncEngineV2 : !!syncEngine)
       && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus() && !cloudDialog.open,
     key: () => {
       if (!cloudStatus.identity || !vault?.cloud) return null;
