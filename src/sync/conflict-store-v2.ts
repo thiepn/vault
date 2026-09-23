@@ -87,6 +87,38 @@ export async function openSyncConflictInTx(
   return open[0]!;
 }
 
+
+export async function updateSyncConflictInTx(
+  tx:StorageTransaction,
+  record:SyncConflictRecordV2,
+):Promise<void>{
+  validateSyncConflictV2(record);
+  await tx.store('syncConflicts').put(record);
+}
+
+export async function markSyncConflictResolutionInTx(
+  tx:StorageTransaction,
+  record:SyncConflictRecordV2,
+  input:{
+    status:'resolution-pending'|'resolved';
+    resolution:SyncConflictResolutionV2;
+    resolutionText?:string|null;
+  },
+):Promise<SyncConflictRecordV2>{
+  const timestamp=new Date().toISOString();
+  const updated:SyncConflictRecordV2={
+    ...record,
+    status:input.status,
+    resolution:input.resolution,
+    resolutionText:input.resolutionText??null,
+    updatedAt:timestamp,
+    resolvedAt:input.status==='resolved'?timestamp:null,
+  };
+  validateSyncConflictV2(updated);
+  await tx.store('syncConflicts').put(updated);
+  return updated;
+}
+
 export interface UpsertSyncConflictV2 {
   vaultId:VaultId;
   entryId:EntryId;
