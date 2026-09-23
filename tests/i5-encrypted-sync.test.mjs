@@ -408,3 +408,12 @@ test('I5 activation upgrades server before local cursor/binding and is retry-saf
   assert.equal(result.vault.cloud.protocolVersion,2);
   assert.deepEqual(order,['capabilities','preflight','server','local-cursor','binding']);
 });
+
+
+test('I5 capability migration enables ciphertext ingestion only after client cutover',()=>{
+  const sql=readFileSync(new URL('../backend/supabase/i5_enable_encrypted_content.sql',import.meta.url),'utf8');
+  assert.match(sql,/'acceptingContent', true/u);
+  assert.match(sql,/'contractAvailable', true/u);
+  assert.match(sql,/grant execute on function public\.vault_sync_capabilities_v2\(\) to authenticated/iu);
+  assert.doesNotMatch(sql,/name text|markdown_text|mime_type|blob_sha256/iu);
+});
