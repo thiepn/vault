@@ -95,6 +95,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let oauthCompleted = false;
   try {
     const auth = new SupabaseRestAuth(cloudConfig, window.localStorage);
+    const workerRuntime=await backgroundState.runtime().catch(()=>null);
+    if(workerRuntime?.config.url===cloudConfig.url && workerRuntime.config.publishableKey===cloudConfig.publishableKey){
+      auth.adoptBackgroundSession(workerRuntime.session);
+    }
     cloudAuth = auth;
     const registry = new SupabaseCloudRegistry(cloudConfig, () => auth.accessToken());
     const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
@@ -1468,6 +1472,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     // Manual runs do the same whenever no unsaved draft would be disturbed.
     if (background || !saver?.hasUnsavedChanges) {
       cloudStatus = await cloud.status();
+      await mirrorBackgroundSession();
       await reloadCloudBindingCache();
       await refreshRealtimeSubscription();
       await refreshCollaborationSubscription();
@@ -4401,6 +4406,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           cloudMessage.textContent = 'Signing in…';
           cloudStatus = await cloud.signIn(cloudEmail.value, cloudPassword.value);
           cloudPassword.value = '';
+          await mirrorBackgroundSession();
           await reloadCloudBindingCache();
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
           await refreshCloudMembers();
@@ -4416,6 +4422,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           const result = await cloud.signUp(cloudEmail.value, cloudPassword.value);
           cloudStatus = result.status;
           cloudPassword.value = '';
+          await mirrorBackgroundSession();
           await reloadCloudBindingCache();
           awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
           await refreshCloudMembers();
@@ -4530,6 +4537,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await finalizeCrdtBeforeDetach();
           if (saver) await saver.flush();
           await cloud.signOut();
+          await backgroundBridge?.clearSession();
           cloudStatus = cloudEmptyStatus();
           awaitableDevicesCache = [];
           awaitableMembersCache = [];
@@ -5258,7 +5266,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       event.returnValue = '';
     }
   }, { signal: abort.signal });
-  window.addEventListener('online', () => syncCoordinator?.wake('online'), { signal: abort.signal });
+  window.addEventListener('online', () => {
+    syncCoordinator?.wake('online');
+    void scheduleBackgroundReplication().catch(()=>undefined);
+  }, { signal: abort.signal });
   window.addEventListener('focus', () => syncCoordinator?.wake('focus'), { signal: abort.signal });
   editorHost.addEventListener('focusout', () => syncCoordinator?.wake('focus'), { signal: abort.signal });
   document.addEventListener('visibilitychange', () => {
@@ -5278,7 +5289,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       ? (crdtRecoveryText=currentMarkdownText(), persistCrdtRecoveryNow())
       : saver.flush();
     void hiddenFlush
-      .then(() => syncCoordinator?.request('visibility', 0))
+      .then(async () => {
+        syncCoordinator?.request('visibility', 0);
+        await scheduleBackgroundReplication();
+      })
       .catch(showError);
   }, { signal: abort.signal });
   window.addEventListener('keydown', event => {
