@@ -1,4 +1,5 @@
 import { VaultError } from '../domain/errors.js';
+import { canonicalIdFromEntry } from '../domain/canonical.js';
 import { activeKey, markdownName, validateName } from '../domain/paths.js';
 import { nextVersion } from '../domain/integrity.js';
 import type {
@@ -54,7 +55,7 @@ function shadowFor(accountId:AccountId,epoch:string,remote:DecryptedSyncEntityV2
     remoteRevision:remote.remoteRevision,
     remoteSequence:remote.sequence,
     structural:{
-      parentId:remote.parentId,
+      parentId:remote.parentId ? canonicalIdFromEntry('folder',remote.parentId) : null,
       nameToken:remote.nameToken,
       deleted:remote.deleted,
       blobId:null,
@@ -206,7 +207,9 @@ export class EncryptedReplicaStoreV2 {
           const dirty=await tx.store('dirty').get<DirtyEntry>(event.entityId);
           const pending=allOutbox.some(row=>{
             if(row.protocolVersion!==2||row.accountId!==accountId) return false;
-            return decodeOperationV2(row.wire).mutations.some(mutation=>mutation.entityId===event.entityId);
+            return decodeOperationV2(row.wire).mutations.some(mutation=>
+              mutation.entityType===event.entityType
+              && mutation.entityId===canonicalIdFromEntry(event.entityType,event.entityId));
           });
           if(dirty||pending){
             throw new VaultError('MERGE_REQUIRED','A remote encrypted change raced local work. I6 conflict reconciliation is required before this page can advance.');
