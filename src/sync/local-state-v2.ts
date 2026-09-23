@@ -19,6 +19,8 @@ export interface SyncOutboxRecordV2 {
   createdAt: string;
   attempt: number;
   nextAttemptAt: string;
+  acceptedAt?: string | null;
+  acceptedThrough?: string | null;
 }
 
 export interface SyncCursorRecordV2 {
@@ -88,6 +90,8 @@ export class SyncLocalStateV2 {
       createdAt: now,
       attempt: 0,
       nextAttemptAt: now,
+      acceptedAt: null,
+      acceptedThrough: null,
     };
 
     return this.driver.transaction(['outbox'], 'readwrite', async tx => {
@@ -145,6 +149,21 @@ export class SyncLocalStateV2 {
     if (!rows.length) return;
     await this.driver.transaction(['outbox'], 'readwrite', async tx => {
       for (const row of rows) await tx.store('outbox').delete(row.id);
+    });
+  }
+
+  async markAccepted(id: OperationId, through: string): Promise<void> {
+    bigintCursor(through);
+    await this.driver.transaction(['outbox'], 'readwrite', async tx => {
+      const row = await tx.store('outbox').get<SyncOutboxRecordV2>(id);
+      if (!row) return;
+      if (row.protocolVersion !== 2) throw new VaultError('PROTOCOL', 'Cannot accept a legacy outbox row through Protocol v2.');
+      const next: SyncOutboxRecordV2 = {
+        ...row,
+        acceptedAt: row.acceptedAt ?? new Date().toISOString(),
+        acceptedThrough: through,
+      };
+      await tx.store('outbox').put(next);
     });
   }
 
