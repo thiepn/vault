@@ -25,7 +25,8 @@
     "benchmark:realtime-wakeup": "npm run build:core && node scripts/benchmark-phase17.mjs",
     "benchmark:collaboration": "npm run build:core && node scripts/benchmark-phase19.mjs",
     "benchmark:crdt": "npm run build:core && node scripts/benchmark-phase20.mjs",
-    "benchmark:conflicts": "npm run build:core && node scripts/benchmark-phase22.mjs"
+    "benchmark:conflicts": "npm run build:core && node scripts/benchmark-phase22.mjs",
+    "benchmark:i4-remote-state": "npm run build:core && node scripts/benchmark-i4.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
