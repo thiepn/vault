@@ -209,7 +209,16 @@ export class CrdtJournalStore {
     ]);
     for(const session of sessions) validateSession(session);
     for(const update of updates) validateUpdate(update);
-    const activeSessions=sessions.filter(session=>session.status!=='canonicalized');
+    const activeSessions=sessions.filter(session=>
+      session.status!=='canonicalized'
+      && session.vaultId===base.vaultId
+      && session.entryId===base.entryId
+      && session.ownerId===base.ownerId
+      && session.epoch===base.epoch
+      && session.baseRevision===base.baseRevision
+      && session.baseFingerprint===base.baseFingerprint
+      && session.baseText===base.baseText
+    );
     const activeIds=new Set(activeSessions.map(session=>session.id));
     const activeUpdates=updates
       .filter(update=>activeIds.has(update.sessionId))
@@ -242,7 +251,8 @@ export class CrdtJournalStore {
       const timestamp=new Date().toISOString();
       for(const session of sessions){
         validateSession(session);
-        if(session.status==='canonicalized') continue;
+        if(session.status==='canonicalized' || session.baseText!==base.baseText
+          || session.ownerId!==base.ownerId || session.epoch!==base.epoch) continue;
         await tx.store('crdtSessions').put({
           ...session,
           status:'canonicalized',
@@ -268,9 +278,24 @@ export class CrdtJournalStore {
     const session=await this.driver.transaction(['crdtSessions'],'readonly',tx=>tx.store('crdtSessions').get<CrdtJournalSession>(sessionId));
     if(!session) throw new VaultError('NOT_FOUND','CRDT collaboration session was not found.');
     validateSession(session);
-    const rows=await this.driver.transaction(['crdtUpdates'],'readonly',tx=>tx.store('crdtUpdates').allFromIndex<CrdtJournalUpdate>('roomKey',session.roomKey));
+    const [sessions,rows]=await this.driver.transaction(['crdtSessions','crdtUpdates'],'readonly',async tx=>[
+      await tx.store('crdtSessions').allFromIndex<CrdtJournalSession>('roomKey',session.roomKey),
+      await tx.store('crdtUpdates').allFromIndex<CrdtJournalUpdate>('roomKey',session.roomKey),
+    ]);
+    for(const candidate of sessions) validateSession(candidate);
     for(const row of rows) validateUpdate(row);
-    return rows.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
+    const compatibleIds=new Set(sessions
+      .filter(candidate=>
+        candidate.baseText===session.baseText
+        && candidate.ownerId===session.ownerId
+        && candidate.epoch===session.epoch
+        && candidate.baseRevision===session.baseRevision
+        && candidate.baseFingerprint===session.baseFingerprint
+      )
+      .map(candidate=>candidate.id));
+    return rows
+      .filter(row=>compatibleIds.has(row.sessionId))
+      .sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
   }
 
   async prune(
