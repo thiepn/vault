@@ -997,6 +997,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function refreshCollaborationSubscription(): Promise<void> {
     const role = activeCollaborationRole();
     if (!collaboration || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud || vault.cloud.protocolVersion!==1
+      || effectiveCloudRole(vault.cloud)==='owner'
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud) || !role) {
       await finalizeCrdtBeforeDetach();
       collaboration?.stop();
@@ -1167,6 +1168,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if(!selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
       || collaborationStatus!=='connected' || !collaborationPresenceReady
       || !vault?.cloud || !cloudStatus.signedIn || !cloudStatus.identity || !activeCrdtRole()
+      || effectiveCloudRole(vault.cloud)==='owner'
       || vault.cloud.authUserId!==cloudStatus.identity.userId || !saver) return null;
     if(await syncState.isDirty(selected.id)) return null;
     if((await syncState.pendingForEntry(vault.id,cloudStatus.identity.userId,selected.id)).length) return null;
@@ -1185,7 +1187,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function refreshCrdtSession(): Promise<void> {
     const role=activeCrdtRole();
     if(!role || !selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
-      || !vault?.cloud || !cloudStatus.identity || vault.cloud.authUserId!==cloudStatus.identity.userId){
+      || !vault?.cloud || !cloudStatus.identity || effectiveCloudRole(vault.cloud)==='owner'
+      || vault.cloud.authUserId!==cloudStatus.identity.userId){
       stopCrdtSession();
       return;
     }
@@ -1516,6 +1519,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function refreshRealtimeSubscription(): Promise<void> {
     if (!realtimeWake || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud || vault.cloud.protocolVersion!==1
+      || effectiveCloudRole(vault.cloud)==='owner'
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
       realtimeWake?.stop();
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
@@ -1564,7 +1568,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (background || !saver?.hasUnsavedChanges) {
       cloudStatus = await cloud.status();
       await reloadCloudBindingCache();
-      if(vault?.cloud?.protocolVersion===1){
+      if(vault?.cloud?.protocolVersion===1 && effectiveCloudRole(vault.cloud)!=='owner'){
         await mirrorBackgroundSession();
       }else{
         await backgroundBridge?.clearSession();
