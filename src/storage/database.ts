@@ -2,13 +2,13 @@ import { VaultError } from '../domain/errors.js';
 import type { Principal } from '../domain/model.js';
 
 /**
- * Schema v5 extends the A2 persistence foundation with worker-readable
- * background replication runtime state and a staged remote-event inbox.
+ * Schema v6 extends the A2 persistence foundation with interactive Markdown
+ * conflict records while retaining worker-readable background replication state.
  * Phase 1–11 stores stay intact while canonical entities/note bodies/blobs are
  * populated and verified before a later cut-over. This makes upgrade rollback
  * possible without re-identifying existing content.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 export const STORES = [
   'vaults',
   'entries',
@@ -28,6 +28,7 @@ export const STORES = [
   'migrationState',
   'backgroundRuntime',
   'remoteInbox',
+  'conflicts',
 ] as const;
 export type StoreName = typeof STORES[number];
 
@@ -97,6 +98,12 @@ export async function openDatabase(name = databaseName({ kind: 'local' })): Prom
         const inbox = db.createObjectStore('remoteInbox', { keyPath: 'id' });
         inbox.createIndex('vaultId', 'vaultId');
         inbox.createIndex('vaultSequence', ['vaultId', 'sequence'], { unique: true });
+      }
+      if (event.oldVersion < 6) {
+        const conflicts = db.createObjectStore('conflicts', { keyPath: 'id' });
+        conflicts.createIndex('vaultId', 'vaultId');
+        conflicts.createIndex('entryId', 'entryId');
+        conflicts.createIndex('conflictEntryId', 'conflictEntryId');
       }
     };
     req.onsuccess = () => {
