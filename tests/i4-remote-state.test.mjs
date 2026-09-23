@@ -422,6 +422,33 @@ test('I4 bootstrap remains an exact as-of high-watermark snapshot while later wr
   assert.equal(oldNote.payload.ciphertext,'AAAAAAAAAAAAAAAAAAAAAA');
 });
 
+test('I4 bootstrap cursor is present only when another EntityId page remains',async()=>{
+  const server=new ReferenceEncryptedServer();
+  await server.push(await operation([put(noteA,'note'),put(noteB,'note')]));
+  const descriptor=server.bootstrap();
+
+  const continuing=server.bootstrapPage(descriptor.snapshotSequence,null,1);
+  const validatedContinuing=validateBootstrapPageV2(continuing,{
+    vaultId,epoch,snapshotSequence:descriptor.snapshotSequence,afterEntityId:null,
+  });
+  assert.equal(validatedContinuing.done,false);
+  assert.equal(validatedContinuing.nextAfterEntityId,validatedContinuing.items.at(-1).entityId);
+
+  const finalPage=server.bootstrapPage(
+    descriptor.snapshotSequence,
+    validatedContinuing.nextAfterEntityId,
+    10,
+  );
+  const validatedFinal=validateBootstrapPageV2(finalPage,{
+    vaultId,
+    epoch,
+    snapshotSequence:descriptor.snapshotSequence,
+    afterEntityId:validatedContinuing.nextAfterEntityId,
+  });
+  assert.equal(validatedFinal.done,true);
+  assert.equal(validatedFinal.nextAfterEntityId,null);
+});
+
 test('I4 bootstrap validator enforces strict EntityId keyset order and fixed high watermark',async()=>{
   const server=new ReferenceEncryptedServer();
   await server.push(await operation([put(noteA,'note'),put(noteB,'note')]));
