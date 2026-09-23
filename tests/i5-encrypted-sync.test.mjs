@@ -11,6 +11,7 @@ import { EncryptedSyncEngineV2 } from '../build/core/sync/engine-v2.js';
 import { ProtocolV2Activation } from '../build/core/sync/activation-v2.js';
 import { decodeOperationV2 } from '../build/core/sync/protocol-v2.js';
 import { LocalRepository } from '../build/core/storage/local-repository.js';
+import { legacyPlaintextCloudChannelAllowed } from '../build/core/cloud/access.js';
 
 const accountId='11111111-1111-4111-8111-111111111111';
 const vaultId='22222222-2222-4222-8222-222222222222';
@@ -453,4 +454,14 @@ test('I5 capability migration enables ciphertext ingestion only after client cut
   assert.match(sql,/'contractAvailable', true/u);
   assert.match(sql,/grant execute on function public\.vault_sync_capabilities_v2\(\) to authenticated/iu);
   assert.doesNotMatch(sql,/name text|markdown_text|mime_type|blob_sha256/iu);
+});
+
+
+test('I5 canonical owner is never eligible for a legacy plaintext cloud channel',()=>{
+  const ownerV1=cloudVault(1).cloud;
+  const ownerV2=cloudVault(2).cloud;
+  const sharedV1={...ownerV1,accessRole:'editor',ownerAccountId:'99999999-9999-4999-8999-999999999999'};
+  assert.equal(legacyPlaintextCloudChannelAllowed(ownerV1),false);
+  assert.equal(legacyPlaintextCloudChannelAllowed(ownerV2),false);
+  assert.equal(legacyPlaintextCloudChannelAllowed(sharedV1),true);
 });
