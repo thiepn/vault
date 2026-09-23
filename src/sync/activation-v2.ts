@@ -5,6 +5,7 @@ import type { VaultKeyReadiness } from '../cloud/key-registry.js';
 import type { SupabaseSyncTransport } from './transport.js';
 import type { SyncLocalStateV2 } from './local-state-v2.js';
 import { encryptedProtocolV2Status } from './capabilities.js';
+import { withVaultExclusiveLock } from '../storage/coordination.js';
 
 export interface ProtocolV2ActivationResult {
   vault:Vault;
@@ -20,6 +21,7 @@ export class ProtocolV2Activation {
   ){}
 
   async activate(vault:Vault,accountId:AccountId):Promise<ProtocolV2ActivationResult>{
+    return withVaultExclusiveLock(`protocol-v2-activation:${vault.id}`,async()=>{
     if(vault.mode!=='cloud'||!vault.cloud) throw new VaultError('PROTOCOL','Only an adopted cloud Vault can activate Protocol v2.');
     const binding=vault.cloud;
     if(binding.accountId!==accountId) throw new VaultError('ACCOUNT_MISMATCH','Vault cloud binding belongs to another AccountId.');
@@ -65,5 +67,6 @@ export class ProtocolV2Activation {
     await this.state.migrateEmptyV1State(migration);
     const updated=await this.vaults.updateCloudProtocol(vault.id,2);
     return {vault:updated,readiness:ready};
+    });
   }
 }
