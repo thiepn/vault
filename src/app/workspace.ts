@@ -3931,21 +3931,34 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function openConflictResolver(): Promise<void> {
     if (!vault) return;
-    try { await saver?.flush(); } catch { /* Preserve the editor failure separately; conflict inspection remains safe. */ }
-    openConflicts = await conflictStore.listOpen(vault.id);
+    try { await saver?.flush(); } catch { /* Conflict inspection remains safe even when the current editor cannot flush. */ }
     conflictSelect.replaceChildren();
-    for (const record of openConflicts) {
-      const canonical = entries.find(entry => entry.id === record.entryId);
-      conflictSelect.add(new Option(
-        (canonical?.name ?? 'Unavailable note') + ' · rev ' + record.remoteRevision + ' · ' + new Date(record.createdAt).toLocaleString(),
-        record.id,
-      ));
+
+    if (encryptedConflictMode()) {
+      openSyncConflictsV2 = await syncConflictStoreV2.listOpen(vault.id);
+      for (const record of openSyncConflictsV2) {
+        conflictSelect.add(new Option(
+          record.local.name + ' · ' + record.kind.replace(/-/gu, ' ') + ' · rev ' + record.remoteRevision,
+          record.id,
+        ));
+      }
+      activeConflictId = openSyncConflictsV2[0]?.id ?? '';
+    } else {
+      openConflicts = await conflictStore.listOpen(vault.id);
+      for (const record of openConflicts) {
+        const canonical = entries.find(entry => entry.id === record.entryId);
+        conflictSelect.add(new Option(
+          (canonical?.name ?? 'Unavailable note') + ' · rev ' + record.remoteRevision + ' · ' + new Date(record.createdAt).toLocaleString(),
+          record.id,
+        ));
+      }
+      activeConflictId = openConflicts[0]?.id ?? '';
     }
-    activeConflictId = openConflicts[0]?.id ?? '';
+
     renderConflictIndicator();
     renderConflictSelection(true);
     conflictDialog.showModal();
-    if (openConflicts.length) conflictSelect.focus();
+    if (conflictSelect.options.length) conflictSelect.focus();
   }
 
   async function resolveActiveConflict(): Promise<void> {
