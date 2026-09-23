@@ -50,6 +50,8 @@ jobs:
         run: npm run benchmark:crdt
       - name: Conflict resolver benchmark
         run: npm run benchmark:conflicts
+      - name: Encrypted remote-state benchmark
+        run: npm run benchmark:i4-remote-state
       - name: Production build
         run: npm run build
       - name: Install Chromium
