@@ -57,6 +57,7 @@ function conflictName(name:string):string{
 
 export class SyncEngine {
   private readonly inFlight = new Map<string, Promise<SyncRunSummary>>();
+  private readonly preparationInFlight = new Map<string, Promise<number>>();
 
   constructor(
     private readonly transport:Pick<SupabaseSyncTransport,'pull'|'push'|'uploadBlob'|'downloadBlob'>,
@@ -69,9 +70,22 @@ export class SyncEngine {
   async prepareBackground(vault:Vault,ownerId:string):Promise<number>{
     const binding=requireBinding(vault,ownerId);
     if(!cloudBindingCanWrite(binding)) return 0;
-    await this.state.assertPendingOwners(vault.id,ownerId);
-    await this.synthesizeDirty(vault,ownerId,binding.deviceId);
-    return this.state.count(vault.id);
+    const key=`${ownerId}:${vault.id}:${binding.epoch}`;
+    const foreground=this.inFlight.get(key);
+    if(foreground){
+      await foreground;
+      return this.state.count(vault.id);
+    }
+    const existing=this.preparationInFlight.get(key);
+    if(existing) return existing;
+    const run=(async()=>{
+      await this.state.assertPendingOwners(vault.id,ownerId);
+      await this.synthesizeDirty(vault,ownerId,binding.deviceId);
+      return this.state.count(vault.id);
+    })();
+    this.preparationInFlight.set(key,run);
+    try{return await run;}
+    finally{if(this.preparationInFlight.get(key)===run) this.preparationInFlight.delete(key);}
   }
 
   async sync(vault:Vault,ownerId:string):Promise<SyncRunSummary>{
@@ -79,6 +93,8 @@ export class SyncEngine {
     const key=`${ownerId}:${vault.id}:${binding.epoch}`;
     const existing=this.inFlight.get(key);
     if(existing) return existing;
+    const preparation=this.preparationInFlight.get(key);
+    if(preparation) await preparation;
     const run=this.runSync(vault,ownerId);
     this.inFlight.set(key,run);
     try{
