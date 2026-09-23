@@ -73,6 +73,18 @@ export class BackgroundReplicationState {
     });
   }
 
+  async putStatus(record:BackgroundStatusRecord):Promise<void>{
+    if(record.id!=='status' || !['unsupported','available','registered'].includes(record.capability)
+      || !validDate(record.lastAttemptAt) || !validDate(record.lastSuccessAt)
+      || !(record.lastError===null || typeof record.lastError==='string')
+      || !Number.isSafeInteger(record.stagedEvents) || record.stagedEvents<0
+      || !Number.isSafeInteger(record.pushedOperations) || record.pushedOperations<0
+      || !Number.isFinite(Date.parse(record.updatedAt))) {
+      throw new VaultError('PROTOCOL','Background replication status is invalid.');
+    }
+    await this.driver.transaction(['backgroundRuntime'],'readwrite',tx=>tx.store('backgroundRuntime').put(structuredClone(record)));
+  }
+
   async status():Promise<BackgroundStatusRecord|null>{
     return this.driver.transaction(['backgroundRuntime'],'readonly',async tx=>{
       const row=await tx.store('backgroundRuntime').get<BackgroundStatusRecord>('status');
