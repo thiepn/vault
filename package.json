@@ -1,6 +1,6 @@
 {
   "name": "@thiepn/vault",
-  "version": "0.19.0-phase19",
+  "version": "0.20.0-phase20",
   "private": true,
   "type": "module",
   "description": "Vault — browser-first Markdown knowledge system",
@@ -11,7 +11,7 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "build:core": "tsc -p tsconfig.core.json",
-    "test": "npm run build:core && node --test tests/phase1.test.mjs tests/phase2.test.mjs tests/phase3.test.mjs tests/phase4.test.mjs tests/phase5.test.mjs tests/phase6.test.mjs tests/phase7.test.mjs tests/phase8.test.mjs tests/phase9.test.mjs tests/phase10.test.mjs tests/phase11.test.mjs tests/phase12.test.mjs tests/phase13.test.mjs tests/phase14.test.mjs tests/phase15.test.mjs tests/phase16.test.mjs tests/phase17.test.mjs tests/phase18.test.mjs tests/phase19.test.mjs tests/a1-domain.test.mjs tests/a2-storage.test.mjs",
+    "test": "npm run build:core && node --test tests/phase1.test.mjs tests/phase2.test.mjs tests/phase3.test.mjs tests/phase4.test.mjs tests/phase5.test.mjs tests/phase6.test.mjs tests/phase7.test.mjs tests/phase8.test.mjs tests/phase9.test.mjs tests/phase10.test.mjs tests/phase11.test.mjs tests/phase12.test.mjs tests/phase13.test.mjs tests/phase14.test.mjs tests/phase15.test.mjs tests/phase16.test.mjs tests/phase17.test.mjs tests/phase18.test.mjs tests/phase19.test.mjs tests/phase20.test.mjs tests/a1-domain.test.mjs tests/a2-storage.test.mjs",
     "test:e2e": "playwright test",
     "preview": "vite preview --host 127.0.0.1",
     "benchmark:search": "npm run build:core && node scripts/benchmark-phase4.mjs",
@@ -23,7 +23,8 @@
     "benchmark:replication": "npm run build:core && node scripts/benchmark-phase15.mjs",
     "benchmark:sync-hardening": "npm run build:core && node scripts/benchmark-phase16.mjs",
     "benchmark:realtime-wakeup": "npm run build:core && node scripts/benchmark-phase17.mjs",
-    "benchmark:collaboration": "npm run build:core && node scripts/benchmark-phase19.mjs"
+    "benchmark:collaboration": "npm run build:core && node scripts/benchmark-phase19.mjs",
+    "benchmark:crdt": "npm run build:core && node scripts/benchmark-phase20.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
@@ -42,7 +43,8 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "@codemirror/autocomplete": "6.20.3",
-    "yaml": "2.9.1"
+    "yaml": "2.9.1",
+    "yjs": "13.6.32"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

@@ -160,6 +160,7 @@ export class SupabaseCollaborationRealtime {
   ){}
 
   get currentStatus():CollaborationStatus{return this.status;}
+  get currentTopic():string|null{return this.desired?.topic ?? null;}
   get participants():readonly CollaborationPresence[]{return this.flattenPresence();}
 
   async subscribe(input:CollaborationSessionInput):Promise<void>{
