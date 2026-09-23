@@ -598,8 +598,9 @@ test('I3 SQL keeps the E2EE key lineage owner-only until cross-Account sharing i
 
 test('I3 SQL avoids counted base64url regex quantifiers that exceed PostgreSQL ARE limits', () => {
   const sql=readFileSync(new URL('../backend/supabase/i3_device_recovery_keys.sql',import.meta.url),'utf8');
-  assert.doesNotMatch(sql,/\^[A-Za-z0-9_-\]\+\{\d+\}/u);
-  assert.doesNotMatch(sql,/\{512\}/u);
+  assert.doesNotMatch(sql,/\{\d+\}/u);
   assert.match(sql,/char_length\(coalesce\(p_device_ciphertext,''\)\)<>512/u);
-  assert.match(sql,/char_length\(ciphertext\)=512 and ciphertext ~ '\^\[A-Za-z0-9_-\]\+\$'/u);
+  assert.ok(sql.includes("char_length(ciphertext)=512 and ciphertext ~ '^[A-Za-z0-9_-]+
+});
+"));
 });
