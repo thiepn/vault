@@ -1288,7 +1288,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const adopted = vault?.mode === 'cloud';
     const role=adopted ? effectiveCloudRole(vault?.cloud) : null;
     button.dataset.cloudState = adopted ? 'adopted' : 'local';
-    button.textContent = adopted ? 'Cloud ✓' : 'Cloud';
+    button.textContent = adopted ? (vault?.cloud?.protocolVersion===2 ? 'Encrypted ✓' : 'Cloud ✓') : 'Cloud';
     const label = element<HTMLElement>('.storage-scope-label');
     label.textContent = adopted ? `Stored locally · cloud adopted · ${role}` : 'Stored in this browser';
   }
@@ -1496,6 +1496,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function scheduleBackgroundReplication(targetVault:Vault|undefined=vault): Promise<void> {
     if(!backgroundBridge || !syncEngine || !targetVault?.cloud || targetVault.cloud.protocolVersion!==1 || !cloudStatus.signedIn || !cloudStatus.identity) return;
+    // I5 never stages owner canonical content into the legacy plaintext worker.
+    // Existing shared-v1 compatibility remains isolated until cross-Account E2EE.
+    if(effectiveCloudRole(targetVault.cloud)==='owner') return;
     if(targetVault.cloud.authUserId!==cloudStatus.identity.userId || !cloudBindingCanWrite(targetVault.cloud)) return;
     await backgroundBridge.prepare(targetVault,cloudStatus.identity.userId,syncEngine);
     backgroundStatus=await backgroundState.status();
@@ -1624,6 +1627,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           for(const context of contexts.values()) context.destroy();
         }
       }else{
+        if(effectiveCloudRole(vault.cloud)==='owner'){
+          throw new VaultError('CONFIGURATION','Complete end-to-end encryption setup before the first canonical cloud sync.');
+        }
         if(!syncEngine) throw new VaultError('CONFIGURATION','Legacy synchronization is unavailable.');
         summary=await syncEngine.sync(vault,cloudStatus.identity.userId);
       }
@@ -1673,7 +1679,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   syncCoordinator = new SyncCoordinator({
     eligible: () => !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
       && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud)
-      && (vault.cloud?.protocolVersion===2 ? !!syncEngineV2 : !!syncEngine)
+      && (vault.cloud?.protocolVersion===2
+        ? !!syncEngineV2 && effectiveCloudRole(vault.cloud)==='owner'
+        : !!syncEngine && effectiveCloudRole(vault.cloud)!=='owner')
       && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus() && !cloudDialog.open,
     key: () => {
       if (!cloudStatus.identity || !vault?.cloud) return null;
@@ -5938,6 +5946,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     attachmentObjectUrls.clear();
     crossTab.close();
     void Promise.all([recoveryFlush, canonicalFlush]).finally(() => {
+      keyringDatabase?.close();
       a2.close();
       db.close();
     });
