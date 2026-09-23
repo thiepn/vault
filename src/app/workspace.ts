@@ -3615,10 +3615,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (parentId) collapsed.delete(parentId);
     if (wasSelected) await openEntry(moved.id);
   }
-  function activeConflictRecord(): MarkdownConflictRecord | undefined {
+  function encryptedConflictMode(): boolean {
+    return vault?.mode === 'cloud' && vault.cloud?.protocolVersion === 2;
+  }
+
+  function activeConflictRecord(): MarkdownConflictRecord | SyncConflictRecordV2 | undefined {
+    if (encryptedConflictMode()) {
+      return openSyncConflictsV2.find(item => item.id === activeConflictId)
+        ?? openSyncConflictsV2.find(item => item.id === conflictSelect.value)
+        ?? openSyncConflictsV2[0];
+    }
     return openConflicts.find(item => item.id === activeConflictId)
       ?? openConflicts.find(item => item.id === conflictSelect.value)
       ?? openConflicts[0];
+  }
+
+  function isProtocolV2Conflict(record: MarkdownConflictRecord | SyncConflictRecordV2): record is SyncConflictRecordV2 {
+    return 'protocolVersion' in record && record.protocolVersion === 2;
   }
 
   function conflictVariant(title: string, text: string, className: string): HTMLElement {
