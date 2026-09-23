@@ -7,6 +7,7 @@ export interface VaultRepository {
   adoptCloud(vaultId: VaultId, binding: CloudVaultBinding): Promise<Vault>;
   createCloudReplica(name: string, binding: CloudVaultBinding): Promise<Vault>;
   updateCloudAccess(vaultId: VaultId, access: { accessRole: CloudVaultRole; ownerAccountId: CloudVaultBinding['accountId']; ownerAuthUserId: string }): Promise<Vault>;
+  updateCloudProtocol(vaultId: VaultId, protocolVersion: CloudVaultBinding['protocolVersion']): Promise<Vault>;
   snapshot(vaultId: VaultId): Promise<VaultSnapshot>;
 }
 export interface FileRepository {
