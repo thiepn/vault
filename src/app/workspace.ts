@@ -1703,6 +1703,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         if (crdtDocument && selected?.kind === 'markdown') {
           crdtRecoveryText = currentMarkdownText();
           await persistCrdtRecoveryNow().catch(() => undefined);
+          await closeCrdtJournalSession().catch(() => undefined);
           stopCrdtSession();
         }
       }
@@ -5804,6 +5805,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     disposed = true;
     abort.abort();
     const recoveryFlush = persistCrdtRecoveryNow().catch(() => undefined);
+    const journalFlush = closeCrdtJournalSession().catch(() => undefined);
     const canonicalFlush = (saver?.flush() ?? Promise.resolve()).catch(() => undefined);
     if (dialog.open) dialog.close('cancel');
     if (cloudDialog.open) cloudDialog.close('close');
@@ -5825,7 +5827,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     for (const url of attachmentObjectUrls.values()) URL.revokeObjectURL(url);
     attachmentObjectUrls.clear();
     crossTab.close();
-    void Promise.all([recoveryFlush, canonicalFlush]).finally(() => {
+    void Promise.all([recoveryFlush, journalFlush, canonicalFlush]).finally(() => {
       a2.close();
       db.close();
     });
