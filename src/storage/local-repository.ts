@@ -2,7 +2,7 @@ import { VaultError } from '../domain/errors.js';
 import { activeKey, markdownName, validateName } from '../domain/paths.js';
 import { assertMarkdownContent, assertVersion, nextVersion } from '../domain/integrity.js';
 import { VaultTree } from '../domain/tree.js';
-import { newId, type AttachmentContent, type AttachmentSnapshot, type CloudVaultBinding, type DirtyEntry, type Entry, type EntryId, type EntryWithContent, type LocalRevision, type MarkdownContent, type RecoveryDraft, type Vault, type VaultId, type VaultSnapshot } from '../domain/model.js';
+import { newId, type AttachmentContent, type AttachmentSnapshot, type CloudVaultBinding, type DirtyEntry, type Entry, type EntryId, type EntryWithContent, type LocalRevision, type MarkdownConflictRecord, type MarkdownContent, type RecoveryDraft, type Vault, type VaultId, type VaultSnapshot } from '../domain/model.js';
 import { normalizeAttachmentMimeType, validateAttachmentBytes, validateAttachmentName } from '../media/attachments.js';
 import { cloudBindingCanWrite } from '../cloud/access.js';
 import type { FileRepository, RevisionRepository, VaultRepository } from '../services/ports.js';
@@ -448,7 +448,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     return this.driver.transaction(['dirty'], 'readonly', tx => tx.store('dirty').allFromIndex<DirtyEntry>('vaultId', vaultId));
   }
   async snapshot(vaultId: VaultId): Promise<VaultSnapshot> {
-    return this.driver.transaction(['vaults', 'entries', 'contents', 'attachments', 'drafts', 'revisions'], 'readonly', async tx => {
+    return this.driver.transaction(['vaults', 'entries', 'contents', 'attachments', 'drafts', 'revisions', 'conflicts'], 'readonly', async tx => {
       const vault = await tx.store('vaults').get<Vault>(vaultId);
       if (!vault) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
       const entries = await tx.store('entries').allFromIndex<Entry>('vaultId', vaultId);
@@ -466,7 +466,8 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       }));
       const recoveryDrafts = await tx.store('drafts').allFromIndex<RecoveryDraft>('vaultId', vaultId);
       const revisions = await tx.store('revisions').allFromIndex<LocalRevision>('vaultId', vaultId);
-      return { format: 'vault-local-backup', version: 2, exportedAt: now(), vault, entries, contents, attachments, recoveryDrafts, revisions };
+      const conflicts = await tx.store('conflicts').allFromIndex<MarkdownConflictRecord>('vaultId', vaultId);
+      return { format: 'vault-local-backup', version: 2, exportedAt: now(), vault, entries, contents, attachments, recoveryDrafts, revisions, conflicts };
     });
   }
 }

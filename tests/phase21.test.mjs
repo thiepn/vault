@@ -6,6 +6,7 @@ import { SyncLocalState } from '../build/core/sync/local-state.js';
 import { SyncReplicaStore } from '../build/core/sync/replica-store.js';
 import { SyncEngine } from '../build/core/sync/engine.js';
 import { BackgroundReplicationState } from '../build/core/sync/background-state.js';
+import { SCHEMA_VERSION, STORES } from '../build/core/storage/database.js';
 
 class MemoryStore {
   constructor(data,name){this.data=data;this.name=name;}
@@ -137,11 +138,11 @@ test('Phase 21 background runtime stores user credentials/config separately from
   assert.equal(await background.runtime(),null);
 });
 
-test('Phase 21 schema v5 has dedicated worker runtime and staged inbox stores',async()=>{
+test('Phase 21 schema keeps dedicated worker runtime and staged inbox stores after later schema upgrades',async()=>{
+  assert.ok(SCHEMA_VERSION >= 5);
+  assert.ok(STORES.includes('backgroundRuntime'));
+  assert.ok(STORES.includes('remoteInbox'));
   const source=await readFile(new URL('../src/storage/database.ts',import.meta.url),'utf8');
-  assert.match(source,/SCHEMA_VERSION = 5/u);
-  assert.match(source,/'backgroundRuntime'/u);
-  assert.match(source,/'remoteInbox'/u);
   assert.match(source,/inbox\.createIndex\('vaultId'/u);
 });
 

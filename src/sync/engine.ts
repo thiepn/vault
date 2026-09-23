@@ -11,6 +11,7 @@ import { compareVersions } from './merge.js';
 import { cloudBindingCanWrite, cloudOwnerAuthUserId, effectiveCloudRole } from '../cloud/access.js';
 import type { BackgroundReplicationState } from './background-state.js';
 import { validateRemotePage } from './remote-types.js';
+import type { MarkdownConflictStore } from './conflict-store.js';
 
 export interface SyncRunSummary {
   pulledEvents: number;
@@ -65,6 +66,7 @@ export class SyncEngine {
     private readonly replica:SyncReplicaStore,
     private readonly repository:LocalRepository,
     private readonly background?:Pick<BackgroundReplicationState,'staged'|'removeStaged'>,
+    private readonly conflicts?:Pick<MarkdownConflictStore,'forRemote'|'record'>,
   ) {}
 
   async prepareBackground(vault:Vault,ownerId:string):Promise<number>{
@@ -232,7 +234,7 @@ export class SyncEngine {
         return;
       }
       if(await this.tryMergeMarkdown(vault,ownerId,event.snapshot,summary)) return;
-      await this.preserveConflictAndApply(vault,ownerId,event.snapshot,summary);
+      await this.preserveConflictAndApply(vault,ownerId,event.snapshot,summary,'pull');
       return;
     }
 
@@ -271,7 +273,13 @@ export class SyncEngine {
     return true;
   }
 
-  private async preserveConflictAndApply(vault:Vault,ownerId:string,snapshot:RemoteEntrySnapshot,summary:SyncRunSummary):Promise<void>{
+  private async preserveConflictAndApply(
+    vault:Vault,
+    ownerId:string,
+    snapshot:RemoteEntrySnapshot,
+    summary:SyncRunSummary,
+    source:'pull'|'push',
+  ):Promise<void>{
     const binding=requireBinding(vault,ownerId);
     const local=await this.replica.read(snapshot.entryId);
     if(!local){
@@ -281,8 +289,47 @@ export class SyncEngine {
     await this.state.dropEntryOperations(vault.id,ownerId,snapshot.entryId);
 
     if(local.entry.deletedAt===null){
+      const baseRecord=snapshot.kind==='markdown' && local.entry.kind==='markdown' && local.text!==null && snapshot.text!==null
+        ? await this.state.shadow(snapshot.entryId,ownerId,binding.epoch)
+        : null;
+      const canRecord=!!this.conflicts
+        && baseRecord?.snapshot.kind==='markdown'
+        && baseRecord.snapshot.text!==null
+        && baseRecord.snapshot.deletedAt===null;
+
+      if(canRecord){
+        const existing=await this.conflicts!.forRemote(snapshot.entryId,snapshot.revision);
+        if(existing?.status==='open'){
+          await this.applySnapshot(vault,ownerId,snapshot,summary);
+          summary.conflictsPreserved++;
+          return;
+        }
+      }
+
       const duplicate=await this.repository.duplicate(local.entry.id,local.entry.localVersion);
-      await this.repository.move(duplicate.id,duplicate.parentId,conflictName(duplicate.name),duplicate.localVersion);
+      const preserved=await this.repository.move(
+        duplicate.id,
+        duplicate.parentId,
+        conflictName(duplicate.name),
+        duplicate.localVersion,
+      );
+
+      if(canRecord && baseRecord){
+        await this.conflicts!.record({
+          vaultId:vault.id,
+          entryId:snapshot.entryId,
+          conflictEntryId:preserved.id,
+          ownerId,
+          epoch:binding.epoch,
+          baseRevision:baseRecord.snapshot.revision,
+          remoteRevision:snapshot.revision,
+          baseText:baseRecord.snapshot.text!,
+          localText:local.text!,
+          remoteText:snapshot.text!,
+          source,
+        });
+      }
+
       await this.applySnapshot(vault,ownerId,snapshot,summary);
       summary.conflictsPreserved++;
       return;
@@ -369,7 +416,7 @@ export class SyncEngine {
             throw new VaultError('COLLISION','Remote synchronization found a path conflict. Rename one local item before syncing again.');
           }
           if(!await this.tryMergeMarkdown(vault,ownerId,result.current,summary)){
-            await this.preserveConflictAndApply(vault,ownerId,result.current,summary);
+            await this.preserveConflictAndApply(vault,ownerId,result.current,summary,'push');
           }
           await this.state.acknowledge(row.id);
           continue;

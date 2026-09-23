@@ -1,5 +1,5 @@
 import { VaultError, explainError } from '../domain/errors.js';
-import type { DeviceId, Entry, EntryId, RecoveryDraft, Vault, VaultId } from '../domain/model.js';
+import type { DeviceId, Entry, EntryId, MarkdownConflictRecord, RecoveryDraft, Vault, VaultId } from '../domain/model.js';
 import { VaultTree } from '../domain/tree.js';
 import { openDatabase } from '../storage/database.js';
 import { A2LocalRepository, A2Persistence } from '../storage/a2-persistence.js';
@@ -53,11 +53,13 @@ import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-t
 import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
 import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
 import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
+import { MarkdownConflictStore } from '../sync/conflict-store.js';
+import { buildMarkdownConflictPlan, resolveMarkdownConflictPlan, type ConflictChoice } from '../sync/conflict-resolution.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
 
-/** Phase 21 browser workspace: best-effort worker replication on the accepted Phase 1-20 + A1/A2 foundation. */
+/** Phase 22 browser workspace: semantic interactive conflict resolution on the accepted Phase 1-21 + A1/A2 foundation. */
 export async function mountWorkspace(root: HTMLElement, options: WorkspaceOptions = {}): Promise<() => void> {
   const db = await openDatabase(options.databaseName);
   const storageSessionId = crypto.randomUUID();
@@ -69,6 +71,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const cloudConfig = browserCloudConfiguration();
   const syncState = new SyncLocalState(db);
   const backgroundState = new BackgroundReplicationState(db);
+  const conflictStore = new MarkdownConflictStore(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
@@ -103,7 +106,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const registry = new SupabaseCloudRegistry(cloudConfig, () => auth.accessToken());
     const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
     const syncReplica = new SyncReplicaStore(db, a2);
-    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState);
+    syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState, conflictStore);
     backgroundBridge = new BackgroundReplicationBridge(backgroundState,cloudConfig,auth,db.name);
     cloud = new CloudFoundation(
       auth,
@@ -152,6 +155,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let vault: Vault | undefined;
   let entries: Entry[] = [];
   let recoveryDrafts: RecoveryDraft[] = [];
+  let openConflicts: MarkdownConflictRecord[] = [];
+  let activeConflictId = '';
+  let conflictChoices = new Map<string, ConflictChoice>();
   let selected: Entry | undefined;
   let saver: SaveCoordinator | undefined;
   let showingTrash = false;
@@ -226,9 +232,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
+        <button type="button" class="conflict-toggle" data-action="conflicts-open" aria-label="Open unresolved conflicts" title="Resolve sync conflicts" hidden>Conflicts <span class="conflict-count">0</span></button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
-        <span class="stage">Phase 21 · Background replication</span>
+        <span class="stage">Phase 22 · Conflict resolution</span>
       </header>
       <aside class="sidebar" aria-label="Vault files">
         <label class="label" for="vault-vault">VAULT</label>
@@ -421,6 +428,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <label for="recovery-text">Preserved Markdown</label><textarea id="recovery-text" readonly spellcheck="false"></textarea>
         <div class="dialog-buttons"><button type="button" data-recovery-action="download">Download .md</button><button type="button" data-recovery-action="recover" class="primary">Save as new note</button><button value="close">Close</button></div>
       </form>
+    </dialog>
+    <dialog class="conflict-dialog" aria-labelledby="conflict-title">
+      <form method="dialog">
+        <div class="conflict-dialog-heading"><div><p class="eyebrow">SYNC CONFLICT</p><h2 id="conflict-title">Resolve Markdown conflict</h2></div><button value="close" aria-label="Close conflict resolver">×</button></div>
+        <p class="conflict-intro fineprint">Vault preserved the local version as a conflict copy and applied the remote version canonically. Review only the overlapping Markdown regions below; unchanged and one-sided regions are merged automatically.</p>
+        <label for="conflict-select">Unresolved conflict</label><select id="conflict-select"></select>
+        <p class="conflict-meta fineprint"></p>
+        <div class="conflict-hunks"></div>
+        <label for="conflict-preview">Resolution preview</label><textarea id="conflict-preview" class="conflict-preview" readonly spellcheck="false"></textarea>
+        <p class="conflict-status fineprint" role="status"></p>
+        <div class="dialog-buttons conflict-actions"><button type="button" data-conflict-action="open-copy">Open local copy</button><button type="button" data-conflict-action="open-canonical">Open canonical note</button><button type="button" data-conflict-action="resolve" class="primary">Apply resolution</button><button value="close">Close</button></div>
+      </form>
     </dialog>`;
 
   function element<T extends Element>(selector: string): T {
@@ -437,6 +456,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const dialogInput = element<HTMLInputElement>('#vault-dialog-input');
   const dialogSelect = element<HTMLSelectElement>('.dialog-select');
   const recoveryDialog = element<HTMLDialogElement>('.recovery-dialog');
+  const conflictDialog = element<HTMLDialogElement>('.conflict-dialog');
+  const conflictSelect = element<HTMLSelectElement>('#conflict-select');
+  const conflictMeta = element<HTMLElement>('.conflict-meta');
+  const conflictHunks = element<HTMLElement>('.conflict-hunks');
+  const conflictPreview = element<HTMLTextAreaElement>('#conflict-preview');
+  const conflictStatus = element<HTMLElement>('.conflict-status');
   const cloudDialog = element<HTMLDialogElement>('.cloud-dialog');
   const cloudMessage = element<HTMLElement>('.cloud-message');
   const cloudSignedOut = element<HTMLElement>('.cloud-signed-out');
@@ -3158,6 +3183,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await loadTreePreferences();
       entries = await repository.listEntries(vault.id, true);
       dirtyIds = new Set((await repository.listDirtyEntries(vault.id)).map(item => item.entryId));
+      openConflicts = await conflictStore.listOpen(vault.id);
       if (knowledgeVaultId !== vault.id) {
         await knowledge.loadVault(vault.id, entries);
         knowledgeVaultId = vault.id;
@@ -3197,9 +3223,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.export-obsidian"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator(); renderConflictIndicator();
     if (graphOpen) renderGraph();
   }
+  function renderConflictIndicator(): void {
+    const button = element<HTMLButtonElement>('[data-action="conflicts-open"]');
+    const count = openConflicts.length;
+    button.hidden = count === 0;
+    button.disabled = !vault || count === 0;
+    element<HTMLElement>('.conflict-count').textContent = String(count);
+    button.title = count === 1 ? 'Resolve 1 sync conflict' : 'Resolve ' + count + ' sync conflicts';
+  }
+
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
     element<HTMLElement>('.vault-counts').textContent = vault ? `${active.filter(entry => entry.kind === 'markdown').length} notes · ${active.filter(entry => entry.kind === 'attachment').length} media · ${active.filter(entry => entry.kind === 'directory').length} folders` : '';
@@ -3355,6 +3390,261 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (parentId) collapsed.delete(parentId);
     if (wasSelected) await openEntry(moved.id);
   }
+  function activeConflictRecord(): MarkdownConflictRecord | undefined {
+    return openConflicts.find(item => item.id === activeConflictId)
+      ?? openConflicts.find(item => item.id === conflictSelect.value)
+      ?? openConflicts[0];
+  }
+
+  function conflictVariant(title: string, text: string, className: string): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'conflict-variant ' + className;
+    const heading = document.createElement('strong');
+    heading.textContent = title;
+    const body = document.createElement('pre');
+    body.textContent = text || '(empty)';
+    section.append(heading, body);
+    return section;
+  }
+
+  function conflictChoiceObject(): Record<string, ConflictChoice> {
+    return Object.fromEntries(conflictChoices) as Record<string, ConflictChoice>;
+  }
+
+  function updateConflictPreview(): void {
+    const record = activeConflictRecord();
+    const resolveButton = element<HTMLButtonElement>('[data-conflict-action="resolve"]');
+    if (!record) {
+      conflictPreview.value = '';
+      resolveButton.disabled = true;
+      return;
+    }
+
+    const plan = buildMarkdownConflictPlan(record.baseText, record.localText, record.remoteText);
+    const missing = plan.conflictIds.filter(id => !conflictChoices.has(id));
+    resolveButton.disabled = missing.length > 0;
+
+    if (missing.length) {
+      conflictPreview.value = '';
+      conflictStatus.textContent = 'Choose a resolution for all ' + missing.length + ' unresolved region' + (missing.length === 1 ? '' : 's') + '.';
+      return;
+    }
+
+    try {
+      conflictPreview.value = plan.autoMergedText ?? resolveMarkdownConflictPlan(plan, conflictChoiceObject());
+      conflictStatus.textContent = plan.conflictIds.length
+        ? 'Preview ready. Canonical Markdown is unchanged until you apply this resolution.'
+        : 'All changed regions can be merged at Markdown-block boundaries without another manual choice.';
+    } catch (error) {
+      conflictPreview.value = '';
+      conflictStatus.textContent = error instanceof Error ? error.message : 'Resolution preview could not be built.';
+      resolveButton.disabled = true;
+    }
+  }
+
+  function renderConflictSelection(resetChoices = true): void {
+    const record = activeConflictRecord();
+    conflictHunks.replaceChildren();
+    if (resetChoices) conflictChoices.clear();
+
+    const openCopy = element<HTMLButtonElement>('[data-conflict-action="open-copy"]');
+    const openCanonical = element<HTMLButtonElement>('[data-conflict-action="open-canonical"]');
+    const resolveButton = element<HTMLButtonElement>('[data-conflict-action="resolve"]');
+
+    if (!record) {
+      activeConflictId = '';
+      conflictMeta.textContent = 'There are no unresolved Markdown conflicts in this Vault.';
+      conflictPreview.value = '';
+      conflictStatus.textContent = '';
+      openCopy.disabled = true;
+      openCanonical.disabled = true;
+      resolveButton.disabled = true;
+      return;
+    }
+
+    activeConflictId = record.id;
+    conflictSelect.value = record.id;
+    openCopy.disabled = !entries.some(entry => entry.id === record.conflictEntryId);
+    openCanonical.disabled = !entries.some(entry => entry.id === record.entryId);
+
+    const canonical = entries.find(entry => entry.id === record.entryId);
+    const localCopy = entries.find(entry => entry.id === record.conflictEntryId);
+    conflictMeta.textContent =
+      (canonical?.name ?? 'Unavailable canonical note')
+      + ' · remote revision ' + record.remoteRevision
+      + ' · preserved as ' + (localCopy?.name ?? 'local conflict copy')
+      + ' · ' + new Date(record.createdAt).toLocaleString();
+
+    const plan = buildMarkdownConflictPlan(record.baseText, record.localText, record.remoteText);
+    if (plan.degraded) {
+      const warning = document.createElement('p');
+      warning.className = 'conflict-warning';
+      warning.textContent = 'This note is very large, so Vault is using a conservative coarse conflict region instead of the bounded block LCS.';
+      conflictHunks.append(warning);
+    }
+
+    for (const segment of plan.segments) {
+      if (segment.kind === 'unchanged') continue;
+      const article = document.createElement('article');
+      article.className = 'conflict-hunk ' + (segment.kind === 'conflict' ? 'needs-choice' : 'auto');
+      article.dataset.segmentId = segment.id;
+
+      const header = document.createElement('header');
+      const title = document.createElement('strong');
+      title.textContent = segment.label;
+      const badge = document.createElement('span');
+      badge.className = 'conflict-hunk-badge';
+      badge.textContent = segment.kind === 'conflict'
+        ? 'Needs decision'
+        : segment.kind === 'auto-local'
+          ? 'Auto · local only'
+          : segment.kind === 'auto-remote'
+            ? 'Auto · remote only'
+            : 'Auto · identical';
+      header.append(title, badge);
+      article.append(header);
+
+      const variants = document.createElement('div');
+      variants.className = 'conflict-variants';
+      variants.append(
+        conflictVariant('Base', segment.base, 'base'),
+        conflictVariant('Local', segment.local, 'local'),
+        conflictVariant('Remote', segment.remote, 'remote'),
+      );
+      article.append(variants);
+
+      if (segment.kind === 'conflict') {
+        const label = document.createElement('label');
+        label.textContent = 'Resolution for this region';
+        const select = document.createElement('select');
+        select.className = 'conflict-choice';
+        select.dataset.segmentId = segment.id;
+        select.setAttribute('aria-label', 'Resolution for ' + segment.label);
+        select.add(new Option('Choose…', ''));
+        select.add(new Option('Keep local', 'local'));
+        select.add(new Option('Keep remote', 'remote'));
+        select.add(new Option('Keep base', 'base'));
+        select.add(new Option('Keep both · local then remote', 'both-local-remote'));
+        select.add(new Option('Keep both · remote then local', 'both-remote-local'));
+        const chosen = conflictChoices.get(segment.id);
+        if (chosen) select.value = chosen;
+        label.append(select);
+        article.append(label);
+      }
+
+      conflictHunks.append(article);
+    }
+
+    updateConflictPreview();
+  }
+
+  async function openConflictResolver(): Promise<void> {
+    if (!vault) return;
+    try { await saver?.flush(); } catch { /* Preserve the editor failure separately; conflict inspection remains safe. */ }
+    openConflicts = await conflictStore.listOpen(vault.id);
+    conflictSelect.replaceChildren();
+    for (const record of openConflicts) {
+      const canonical = entries.find(entry => entry.id === record.entryId);
+      conflictSelect.add(new Option(
+        (canonical?.name ?? 'Unavailable note') + ' · rev ' + record.remoteRevision + ' · ' + new Date(record.createdAt).toLocaleString(),
+        record.id,
+      ));
+    }
+    activeConflictId = openConflicts[0]?.id ?? '';
+    renderConflictIndicator();
+    renderConflictSelection(true);
+    conflictDialog.showModal();
+    if (openConflicts.length) conflictSelect.focus();
+  }
+
+  async function resolveActiveConflict(): Promise<void> {
+    const record = activeConflictRecord();
+    if (!record || record.status !== 'open') throw new VaultError('NOT_FOUND', 'The conflict is no longer unresolved.');
+
+    const plan = buildMarkdownConflictPlan(record.baseText, record.localText, record.remoteText);
+    const missing = plan.conflictIds.filter(id => !conflictChoices.has(id));
+    if (missing.length) throw new VaultError('STALE_WRITE', 'Choose a resolution for every conflicting Markdown region first.');
+
+    const resolvedText = plan.autoMergedText ?? resolveMarkdownConflictPlan(plan, conflictChoiceObject());
+
+    await finalizeCrdtBeforeDetach();
+    if (saver) await saver.flush();
+
+    const current = await repository.read(record.entryId);
+    if (current.entry.kind !== 'markdown' || current.entry.deletedAt !== null || !current.content) {
+      throw new VaultError('NOT_FOUND', 'The canonical Markdown note is no longer available.');
+    }
+
+    if (current.content.text !== record.remoteText && current.content.text !== resolvedText) {
+      throw new VaultError(
+        'STALE_WRITE',
+        'The canonical note changed after this conflict was captured. Sync/reopen before resolving so newer work is not overwritten.',
+      );
+    }
+
+    let canonicalChanged = false;
+    if (current.content.text !== resolvedText) {
+      if (selected?.id === record.entryId && saver) {
+        applyCurrentMarkdownText(resolvedText);
+        await saver.flush();
+        await refreshKnowledgeEntry(record.entryId);
+      } else {
+        await repository.saveMarkdown(record.entryId, resolvedText, current.entry.localVersion);
+      }
+      canonicalChanged = true;
+    }
+
+    await conflictStore.resolve(record.id, resolvedText);
+
+    let copyRetained = false;
+    try {
+      const localCopy = await repository.read(record.conflictEntryId);
+      if (localCopy.entry.deletedAt === null) {
+        if (localCopy.entry.kind === 'markdown' && localCopy.content?.text === record.localText) {
+          await repository.trash(localCopy.entry.id, localCopy.entry.localVersion);
+        } else {
+          copyRetained = true;
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof VaultError) || error.code !== 'NOT_FOUND') throw error;
+    }
+
+    const shouldOpenCanonical = selected?.id === record.entryId || selected?.id === record.conflictEntryId;
+    await refresh();
+    if (shouldOpenCanonical && entries.some(entry => entry.id === record.entryId && entry.deletedAt === null)) {
+      await openEntry(record.entryId, true);
+    }
+
+    openConflicts = vault ? await conflictStore.listOpen(vault.id) : [];
+    renderConflictIndicator();
+    syncCoordinator?.request('local-change', 0);
+    void scheduleBackgroundReplication().catch(() => undefined);
+
+    if (!openConflicts.length) {
+      conflictDialog.close('resolved');
+      element<HTMLElement>('.save-status').textContent = copyRetained
+        ? 'Conflict resolved · edited local copy retained'
+        : canonicalChanged ? 'Conflict resolved · saved locally' : 'Conflict resolved';
+      return;
+    }
+
+    conflictSelect.replaceChildren();
+    for (const item of openConflicts) {
+      const note = entries.find(entry => entry.id === item.entryId);
+      conflictSelect.add(new Option(
+        (note?.name ?? 'Unavailable note') + ' · rev ' + item.remoteRevision + ' · ' + new Date(item.createdAt).toLocaleString(),
+        item.id,
+      ));
+    }
+    activeConflictId = openConflicts[0]!.id;
+    conflictChoices.clear();
+    renderConflictSelection(false);
+    conflictStatus.textContent = copyRetained
+      ? 'Resolved. The preserved local copy was edited after capture, so Vault kept it.'
+      : 'Resolved. Continue with the next conflict.';
+  }
+
   async function openRecovery(): Promise<void> {
     if (!vault) return;
     // Recovery inspection remains available even when the current canonical writer failed.
@@ -4397,6 +4687,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   } });
 
   root.addEventListener('click', event => {
+    const conflictAction = (event.target as Element).closest<HTMLButtonElement>('[data-conflict-action]');
+    if (conflictAction?.dataset.conflictAction) {
+      const action = conflictAction.dataset.conflictAction;
+      if (action === 'resolve') {
+        perform(resolveActiveConflict);
+        return;
+      }
+      const record = activeConflictRecord();
+      if (!record) return;
+      if (action === 'open-copy' || action === 'open-canonical') {
+        const target = action === 'open-copy' ? record.conflictEntryId : record.entryId;
+        conflictDialog.close('navigate');
+        perform(() => openEntry(target, true));
+        return;
+      }
+    }
+
     const cloudAction = (event.target as Element).closest<HTMLButtonElement>('[data-cloud-action]');
     if (cloudAction?.dataset.cloudAction) {
       const action = cloudAction.dataset.cloudAction;
@@ -4876,6 +5183,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (action === 'export-draft') { downloadDraft(); return; }
     perform(async () => {
       if (action === 'recovery') { await openRecovery(); return; }
+      if (action === 'conflicts-open') { await openConflictResolver(); return; }
       if (action === 'vault-rename') {
         if (!vault) return;
         const name = await ask('Rename vault', 'Vault name', vault.name); if (name === null) return;
@@ -5215,6 +5523,24 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }, { signal: abort.signal });
 
   recoverySelect.addEventListener('change', showRecoverySelection, { signal: abort.signal });
+  conflictSelect.addEventListener('change', () => {
+    activeConflictId = conflictSelect.value;
+    conflictChoices.clear();
+    renderConflictSelection(false);
+  }, { signal: abort.signal });
+  conflictHunks.addEventListener('change', event => {
+    const select = (event.target as Element).closest<HTMLSelectElement>('.conflict-choice');
+    const segmentId = select?.dataset.segmentId;
+    if (!select || !segmentId) return;
+    const value = select.value;
+    if (value === 'local' || value === 'remote' || value === 'base'
+      || value === 'both-local-remote' || value === 'both-remote-local') {
+      conflictChoices.set(segmentId, value);
+    } else {
+      conflictChoices.delete(segmentId);
+    }
+    updateConflictPreview();
+  }, { signal: abort.signal });
   fileFilter.addEventListener('input', () => {
     filterText = fileFilter.value;
     renderTree();
@@ -5312,7 +5638,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }, { signal: abort.signal });
   window.addEventListener('keydown', event => {
     if (quickDialog.open) return;
-    if (dialog.open || recoveryDialog.open || cloudDialog.open || migrationDialog.open || templateDialog.open) return;
+    if (dialog.open || recoveryDialog.open || conflictDialog.open || cloudDialog.open || migrationDialog.open || templateDialog.open) return;
     if (graphOpen && event.key === 'Escape') {
       event.preventDefault();
       closeGraph();
@@ -5367,6 +5693,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (cloudDialog.open) cloudDialog.close('close');
     if (migrationDialog.open) migrationDialog.close('cancel');
     if (recoveryDialog.open) recoveryDialog.close();
+    if (conflictDialog.open) conflictDialog.close();
     if (quickDialog.open) quickDialog.close();
     if (templateDialog.open) templateDialog.close('cancel');
     searchIndex.close();
