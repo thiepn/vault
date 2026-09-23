@@ -254,18 +254,21 @@ create or replace function vault_private.jsonb_exact_keys(
   p_keys text[]
 )
 returns boolean
-language sql
+language plpgsql
 immutable
 set search_path=''
-as $$
-  select jsonb_typeof(p_value)='object'
-    and jsonb_object_length(p_value)=cardinality(p_keys)
-    and not exists(
-      select 1
-      from jsonb_object_keys(p_value) as key_name
-      where not (key_name=any(p_keys))
-    );
-$$;
+as $
+begin
+  if jsonb_typeof(p_value)<>'object' then
+    return false;
+  end if;
+  return (
+    select count(*)=cardinality(p_keys)
+      and bool_and(key_name=any(p_keys))
+    from jsonb_object_keys(p_value) as key_name
+  );
+end;
+$;
 
 create or replace function vault_private.valid_entity_type(p_type text)
 returns boolean
@@ -301,7 +304,7 @@ create or replace function vault_private.entity_snapshot_json(
 )
 returns jsonb
 language sql
-immutable
+stable
 set search_path=''
 as $$
   select jsonb_build_object(
@@ -932,7 +935,7 @@ begin
     from proposed p
   ),
   collisions as (
-    select parent_id,name_token,min(entity_id) entity_id
+    select parent_id,name_token,min(entity_id::text)::uuid entity_id
     from final_heads
     where deleted=false and name_token is not null
     group by parent_id,name_token
@@ -1360,11 +1363,16 @@ begin
   )
   select
     coalesce(jsonb_agg(
-      vault_private.entity_version_snapshot_json(r)
+      vault_private.entity_snapshot_json(
+        r.vault_id,r.entity_id,r.entity_type,r.remote_revision,r.sequence,
+        r.schema_version,r.parent_id,r.name_token,r.deleted,r.blob_id,
+        r.encryption_version,r.key_generation,r.algorithm,r.nonce,r.ciphertext,
+        r.operation_id,r.updated_by_device,r.created_at
+      )
       order by r.entity_id
     ),'[]'::jsonb),
     count(*)::integer,
-    max(r.entity_id)
+    max(r.entity_id::text)::uuid
   into v_items,v_returned,v_last_entity
   from returned r;
 
