@@ -22,9 +22,9 @@ const ids = [
   '019c0000-0000-7000-8000-000000000004',
 ];
 
-test('A2 schema adds canonical entity, note-body, blob and migration stores', () => {
-  assert.equal(SCHEMA_VERSION, 4);
-  for (const store of ['entities','noteBodies','blobPayloads','migrationState']) {
+test('A2 schema adds canonical entity, note-body, blob, migration and background-replication stores', () => {
+  assert.equal(SCHEMA_VERSION, 5);
+  for (const store of ['entities','noteBodies','blobPayloads','migrationState','backgroundRuntime','remoteInbox']) {
     assert.ok(STORES.includes(store), store);
   }
 });
