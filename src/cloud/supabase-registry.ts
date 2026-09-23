@@ -32,7 +32,7 @@ export interface RemoteCloudVault {
   accessRole: ActiveCloudVaultRole;
   name: string;
   epoch: string;
-  protocolVersion: 1;
+  protocolVersion: 1 | 2;
   createdAt: string;
   updatedAt: string;
   disabledAt: string | null;
@@ -92,7 +92,7 @@ function mapVault(value: unknown): RemoteCloudVault {
   if (!value || typeof value !== 'object') throw new VaultError('PROTOCOL', 'Cloud Vault response is invalid.');
   const r=value as Record<string,unknown>;
   if (typeof r.id !== 'string' || typeof r.account_id !== 'string' || typeof r.auth_user_id !== 'string'
-    || typeof r.name !== 'string' || typeof r.epoch !== 'string' || r.protocol_version !== 1
+    || typeof r.name !== 'string' || typeof r.epoch !== 'string' || (r.protocol_version !== 1 && r.protocol_version !== 2)
     || typeof r.created_at !== 'string' || typeof r.updated_at !== 'string'
     || !(typeof r.disabled_at === 'string' || r.disabled_at === null)) {
     throw new VaultError('PROTOCOL', 'Cloud Vault response is invalid.');
@@ -108,7 +108,7 @@ function mapVault(value: unknown): RemoteCloudVault {
     accessRole:r.access_role === undefined ? 'owner' : activeRole(r.access_role),
     name:r.name,
     epoch:r.epoch,
-    protocolVersion:1,
+    protocolVersion:r.protocol_version as 1|2,
     createdAt:r.created_at,
     updatedAt:r.updated_at,
     disabledAt:r.disabled_at as string|null,
