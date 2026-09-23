@@ -1,5 +1,5 @@
 import { VaultError, explainError } from '../domain/errors.js';
-import type { DeviceId, Entry, EntryId, RecoveryDraft, Vault, VaultId } from '../domain/model.js';
+import type { DeviceId, Entry, EntryId, MarkdownConflictRecord, RecoveryDraft, Vault, VaultId } from '../domain/model.js';
 import { VaultTree } from '../domain/tree.js';
 import { openDatabase } from '../storage/database.js';
 import { A2LocalRepository, A2Persistence } from '../storage/a2-persistence.js';
@@ -54,6 +54,7 @@ import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, typ
 import { BackgroundReplicationState, type BackgroundStatusRecord } from '../sync/background-state.js';
 import { BackgroundReplicationBridge } from '../sync/background-bridge.js';
 import { MarkdownConflictStore } from '../sync/conflict-store.js';
+import { buildMarkdownConflictPlan, resolveMarkdownConflictPlan, type ConflictChoice } from '../sync/conflict-resolution.js';
 
 export interface WorkspaceOptions { databaseName?: string }
 type EditorMode = 'source' | 'live' | 'reading';
@@ -154,6 +155,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let vault: Vault | undefined;
   let entries: Entry[] = [];
   let recoveryDrafts: RecoveryDraft[] = [];
+  let openConflicts: MarkdownConflictRecord[] = [];
+  let activeConflictId = '';
+  let conflictChoices = new Map<string, ConflictChoice>();
   let selected: Entry | undefined;
   let saver: SaveCoordinator | undefined;
   let showingTrash = false;
@@ -228,6 +232,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <div class="brand-mark" aria-hidden="true">V</div>
         <div class="brand"><strong>Vault</strong><span>Markdown knowledge workspace</span></div>
         <button type="button" class="cloud-toggle" data-action="cloud-open" aria-label="Open cloud account" title="Cloud account and devices">Cloud</button>
+        <button type="button" class="conflict-toggle" data-action="conflicts-open" aria-label="Open unresolved conflicts" title="Resolve sync conflicts" hidden>Conflicts <span class="conflict-count">0</span></button>
         <button type="button" class="graph-toggle" data-action="graph-open" aria-label="Open knowledge graph" title="Knowledge Graph">Graph</button>
         <button type="button" class="quick-toggle" data-action="quick-switcher" aria-label="Open Quick Switcher" title="Quick Switcher">\u2315</button>
         <span class="stage">Phase 21 · Background replication</span>
@@ -423,6 +428,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         <label for="recovery-text">Preserved Markdown</label><textarea id="recovery-text" readonly spellcheck="false"></textarea>
         <div class="dialog-buttons"><button type="button" data-recovery-action="download">Download .md</button><button type="button" data-recovery-action="recover" class="primary">Save as new note</button><button value="close">Close</button></div>
       </form>
+    </dialog>
+    <dialog class="conflict-dialog" aria-labelledby="conflict-title">
+      <form method="dialog">
+        <div class="conflict-dialog-heading"><div><p class="eyebrow">SYNC CONFLICT</p><h2 id="conflict-title">Resolve Markdown conflict</h2></div><button value="close" aria-label="Close conflict resolver">×</button></div>
+        <p class="conflict-intro fineprint">Vault preserved the local version as a conflict copy and applied the remote version canonically. Review only the overlapping Markdown regions below; unchanged and one-sided regions are merged automatically.</p>
+        <label for="conflict-select">Unresolved conflict</label><select id="conflict-select"></select>
+        <p class="conflict-meta fineprint"></p>
+        <div class="conflict-hunks"></div>
+        <label for="conflict-preview">Resolution preview</label><textarea id="conflict-preview" class="conflict-preview" readonly spellcheck="false"></textarea>
+        <p class="conflict-status fineprint" role="status"></p>
+        <div class="dialog-buttons conflict-actions"><button type="button" data-conflict-action="open-copy">Open local copy</button><button type="button" data-conflict-action="open-canonical">Open canonical note</button><button type="button" data-conflict-action="resolve" class="primary">Apply resolution</button><button value="close">Close</button></div>
+      </form>
     </dialog>`;
 
   function element<T extends Element>(selector: string): T {
@@ -439,6 +456,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const dialogInput = element<HTMLInputElement>('#vault-dialog-input');
   const dialogSelect = element<HTMLSelectElement>('.dialog-select');
   const recoveryDialog = element<HTMLDialogElement>('.recovery-dialog');
+  const conflictDialog = element<HTMLDialogElement>('.conflict-dialog');
+  const conflictSelect = element<HTMLSelectElement>('#conflict-select');
+  const conflictMeta = element<HTMLElement>('.conflict-meta');
+  const conflictHunks = element<HTMLElement>('.conflict-hunks');
+  const conflictPreview = element<HTMLTextAreaElement>('#conflict-preview');
+  const conflictStatus = element<HTMLElement>('.conflict-status');
   const cloudDialog = element<HTMLDialogElement>('.cloud-dialog');
   const cloudMessage = element<HTMLElement>('.cloud-message');
   const cloudSignedOut = element<HTMLElement>('.cloud-signed-out');
