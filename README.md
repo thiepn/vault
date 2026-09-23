@@ -28,16 +28,17 @@ The repository currently includes browser-certified:
 - **Phase 20 — Live CRDT Text Co-Editing & Shared Undo Foundation**
 - **Phase 21 — Best-Effort Closed-App Replication & Background Sync**
 - **Phase 22 — Semantic/Block-Aware Interactive Conflict Resolution**
+- **Phase 23 — Durable CRDT Collaboration Journal & Session Recovery**
 
 ## Permanent architecture program
 
-The Phase 1–22 product now runs on the **A1/A2 permanent local foundation**.
+The Phase 1–23 product now runs on the **A1/A2 permanent local foundation**.
 
 **A1 — Canonical Domain & Data Model** defines stable first-class identities/contracts for Notes, Folders, Tasks, Events, Projects, People, Attachments, Captures, Collections and explicit Links. New A-series entities use offline UUIDv7 IDs while existing Entry UUIDs are preserved.
 
 **A2 — Local Storage, Serialization & Offline Persistence** is implemented with:
 
-- IndexedDB schema v6 as the transactional local persistence layer
+- IndexedDB schema v7 as the transactional local persistence layer
 - canonical `entities` and split `noteBodies` stores alongside compatibility stores
 - stable hidden IDs for Markdown-embedded tasks
 - content-addressed SHA-256 attachment blobs
@@ -49,6 +50,7 @@ The Phase 1–22 product now runs on the **A1/A2 permanent local foundation**.
 - service-worker application-shell caching and cold offline PWA startup
 - worker-readable `backgroundRuntime` plus staged `remoteInbox` stores for best-effort closed-app replication
 - persistent `conflicts` store for unresolved/resolved Markdown conflict metadata and snapshots
+- bounded `crdtSessions` + `crdtUpdates` stores for exact-base live-collaboration replay/history
 - compatibility mirroring so Phase 1–15 behavior remains available during the canonical-storage transition
 
 See `docs/A1_DOMAIN_MODEL.md`, `docs/A2_STORAGE_ARCHITECTURE.md`, and the ADRs under `docs/adr/`.
@@ -616,6 +618,28 @@ Structural/path/delete races and non-Markdown conflicts still use the existing c
 
 See `docs/PHASE22_INTERACTIVE_CONFLICTS.md`, `docs/PHASE_22_ACCEPTANCE.md`, and `docs/PHASE_22_RESULTS.md`.
 
+### Durable CRDT Collaboration Journal & Session Recovery
+
+Phase 23 makes Phase 20 live collaboration recoverable across reload/crash without turning Yjs into a second canonical note database.
+
+- schema-v7 `crdtSessions` stores exact canonical-base/session metadata including immutable base Markdown
+- schema-v7 `crdtUpdates` stores bounded Yjs update bytes for local replay
+- local Yjs updates are persisted **before** Broadcast to peers
+- remote/sync-response updates are journaled before local application
+- replay runs only when Vault verifies the exact same Vault/Entry/epoch/revision/fingerprint base
+- retained updates are applied to a fresh seeded Y.Doc before the Realtime edit room joins
+- follower edits can survive reload even when they were never written into canonical `contents`
+- a room is marked canonicalized only after the verified remote shadow advances to the exact converged Yjs Markdown
+- canonicalized rooms are excluded from automatic crash replay but remain inspectable until bounded retention pruning
+- `Collab history` reconstructs retained sessions read-only and can download or save the replayed Markdown as a **new note**
+- history recovery never overwrites the canonical note
+- individual updates are capped at 768 KiB; one active local journal session at 16 MiB
+- canonicalized history is retained for up to 30 days and pruned toward a 64 MiB per-Vault budget
+
+The CRDT journal is auxiliary local recovery/history state. Canonical Markdown remains `contents`/SaveCoordinator, and durable cloud history remains the protocol-v1 ordered remote event log.
+
+See `docs/PHASE23_CRDT_JOURNAL.md`, `docs/PHASE_23_ACCEPTANCE.md`, and `docs/PHASE_23_RESULTS.md`.
+
 ## Canonical data
 
 ```text
@@ -645,7 +669,7 @@ Daily Notes, templates, query definitions, boards and canvases remain Markdown-a
 
 ## Not implemented yet
 
-- durable/replayable CRDT operation history and a global cross-user undo timeline
+- global cross-user undo timeline
 - guaranteed cross-browser closed-app execution / exact background-sync scheduling
 
 ## Development
@@ -664,17 +688,18 @@ npm run benchmark:realtime-wakeup
 npm run benchmark:collaboration
 npm run benchmark:crdt
 npm run benchmark:conflicts
+npm run benchmark:journal
 npm run build
 npm run test:e2e
 ```
 
-CI runs strict TypeScript, all core contracts including background-replication and persistent-conflict safety, search/graph/board/Canvas/Obsidian-migration/sync/realtime/presence/CRDT/conflict-planner performance gates, production Vite build and real Chromium desktop/mobile acceptance.
+CI runs strict TypeScript, all core contracts including background-replication, persistent-conflict and CRDT-journal safety, search/graph/board/Canvas/Obsidian-migration/sync/realtime/presence/CRDT/conflict-planner/journal-replay performance gates, production Vite build and real Chromium desktop/mobile acceptance.
 
 ## Product identity
 
 - Product: **Vault**
 - Repository: **thiepn/vault**
 - Package: **@thiepn/vault**
-- Current package version: **0.22.0-phase22**
+- Current package version: **0.23.0-phase23**
 
 Vault does not use Obsidian proprietary source code, assets, branding or plugin runtime.
