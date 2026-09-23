@@ -756,6 +756,15 @@ create table if not exists vault_private.vault_key_state (
     on delete cascade
 );
 
+-- Safe compatibility backfill if an earlier I3 draft created envelopes before
+-- explicit Vault key state existed. I3 has not activated canonical v2 content,
+-- so max retained recovery generation is the only possible active lineage.
+insert into vault_private.vault_key_state(vault_id,account_id,active_generation)
+select r.vault_id,r.account_id,max(r.key_generation)
+from vault_private.recovery_vault_key_envelopes r
+group by r.vault_id,r.account_id
+on conflict(vault_id,account_id) do nothing;
+
 alter table vault_private.vault_key_state enable row level security;
 revoke all on vault_private.vault_key_state from public,anon,authenticated;
 
