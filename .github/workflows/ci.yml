@@ -50,6 +50,8 @@ jobs:
         run: npm run benchmark:crdt
       - name: Conflict resolver benchmark
         run: npm run benchmark:conflicts
+      - name: CRDT journal replay benchmark
+        run: npm run benchmark:journal
       - name: Production build
         run: npm run build
       - name: Install Chromium
