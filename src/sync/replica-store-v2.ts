@@ -471,6 +471,9 @@ export class EncryptedReplicaStoreV2 {
         }
         const conflict=await openSyncConflictInTx(tx,vaultId,entryId);
         if(!conflict) throw new VaultError('NOT_FOUND','The encrypted synchronization conflict is no longer open.');
+        if(conflict.status!=='open'){
+          throw new VaultError('STALE_WRITE','This conflict resolution is already waiting for synchronization.');
+        }
         if(conflict.accountId!==accountId||conflict.epoch!==epoch){
           throw new VaultError('ACCOUNT_MISMATCH','Conflict resolution belongs to another Account/epoch.');
         }
