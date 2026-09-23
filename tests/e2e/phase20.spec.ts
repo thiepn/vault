@@ -27,6 +27,8 @@ class MockCloud {
   entries=new Map<string,any>();
   events:any[]=[];
   operations=new Map<string,{sha:string;result:any}>();
+  syncPulls=0;
+  syncPushes=0;
 
   emit(operationId:string,deviceId:string,kind:string,snapshot:any){
     const event={
@@ -88,6 +90,7 @@ class MockCloud {
       }
 
       if(url.pathname==='/rest/v1/rpc/vault_sync_pull' && request.method()==='POST'){
+        this.syncPulls++;
         const body=JSON.parse(request.postData()??'{}');
         const start=Number(body.p_after);
         const selected=this.events.slice(start,start+(body.p_limit??500));
@@ -99,6 +102,7 @@ class MockCloud {
       }
 
       if(url.pathname==='/rest/v1/rpc/vault_sync_push' && request.method()==='POST'){
+        this.syncPushes++;
         const envelope=JSON.parse(request.postData()??'{}');
         const operation=envelope.p_wire;
         const prior=this.operations.get(operation.id);
@@ -213,7 +217,9 @@ test('Phase 20 enters a private Yjs room, uses shared undo and persists through 
   await dialog.locator('[data-cloud-action="adopt"]').click();
   await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
   await dialog.locator('[data-cloud-action="sync"]').click();
-  await expect.poll(()=>cloud.entries.size,{timeout:10_000}).toBeGreaterThan(0);
+  await expect.poll(()=>cloud.syncPulls,{timeout:10_000,message:'initial sync never reached vault_sync_pull'}).toBeGreaterThan(0);
+  await expect.poll(()=>cloud.syncPushes,{timeout:10_000,message:'initial sync pulled but never reached vault_sync_push'}).toBeGreaterThan(0);
+  await expect.poll(()=>cloud.entries.size,{timeout:10_000,message:'vault_sync_push did not create canonical remote entries'}).toBeGreaterThan(0);
   await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
 
   const crdtDiagnostics=await page.evaluate(async()=>{
