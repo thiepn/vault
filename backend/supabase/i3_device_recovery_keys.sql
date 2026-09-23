@@ -141,10 +141,14 @@ begin
   where m.vault_id=p_vault_id
     and m.account_id=p_account_id
     and m.auth_user_id=(select auth.uid())
+    and m.role='owner'
+    and v.account_id=p_account_id
     and m.revoked_at is null
     and v.disabled_at is null;
   if not found then
-    raise exception 'Vault membership is unavailable' using errcode='42501';
+    -- Cross-Account E2EE sharing is intentionally not enabled in I3.
+    -- Only the canonical Vault owner may establish or receive VMK material.
+    raise exception 'Encrypted Vault key access is limited to the canonical Vault owner' using errcode='42501';
   end if;
 end;
 $$;
