@@ -550,3 +550,15 @@ test('I3 active key generation is explicit Vault state, not inferred from per-De
   assert.match(body,/from vault_private\.vault_key_state/iu);
   assert.doesNotMatch(body,/select max\(e\.key_generation\)/iu);
 });
+
+
+test('I3 SQL keeps the E2EE key lineage owner-only until cross-Account sharing is designed', () => {
+  const sql=readFileSync(new URL('../backend/supabase/i3_device_recovery_keys.sql',import.meta.url),'utf8');
+  const helperStart=sql.indexOf('create or replace function vault_private.require_active_member');
+  const helperEnd=sql.indexOf('create or replace function vault_private.require_active_device',helperStart);
+  assert.ok(helperStart>=0 && helperEnd>helperStart);
+  const helper=sql.slice(helperStart,helperEnd);
+  assert.match(helper,/m\.role='owner'/u);
+  assert.match(helper,/v\.account_id=p_account_id/u);
+  assert.match(sql,/insert into vault_private\.vault_key_state\(vault_id,account_id,active_generation\)[\s\S]*max\(r\.key_generation\)/u);
+});
