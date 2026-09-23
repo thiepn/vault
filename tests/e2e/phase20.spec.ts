@@ -191,7 +191,7 @@ async function confirmTextDialog(page:Page,value:string){
   await expect(dialog).not.toBeVisible();
 }
 
-test('Phase 20 enters a private Yjs room, uses shared undo and persists through canonical sync',async({page},testInfo)=>{
+test('Phase 20 owner adoption does not enter a plaintext Yjs room before E2EE activation',async({page},testInfo)=>{
   test.skip(testInfo.project.name!=='chromium-desktop');
   const cloud=new MockCloud();
   await installRealtimeFake(page);
@@ -215,37 +215,22 @@ test('Phase 20 enters a private Yjs room, uses shared undo and persists through 
   await dialog.locator('[data-cloud-action="sign-in"]').click();
   await expect(dialog.locator('.cloud-signed-in')).toBeVisible();
   await dialog.locator('[data-cloud-action="adopt"]').click();
-  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
-  await dialog.locator('[data-cloud-action="sync"]').click();
-  await expect.poll(()=>cloud.syncPulls,{timeout:10_000,message:'initial sync never reached vault_sync_pull'}).toBeGreaterThan(0);
-  await expect.poll(()=>cloud.syncPushes,{timeout:10_000,message:'initial sync pulled but never reached vault_sync_push'}).toBeGreaterThan(0);
-  await expect.poll(()=>cloud.entries.size,{timeout:10_000,message:'vault_sync_push did not create canonical remote entries'}).toBeGreaterThan(0);
-  await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
 
-  await expect(page.locator('.collaboration-status')).toContainText('Live edit connected');
-  await expect(page.locator('.collaboration-status')).toContainText('canonical writer');
   const joinedEditRoom=await page.evaluate(()=>((globalThis as any).__phase20RealtimeFrames as any[])
     .some(frame=>frame?.[3]==='phx_join' && String(frame?.[2]??'').startsWith('realtime:vault-edit:')));
-  expect(joinedEditRoom).toBe(true);
+  expect(joinedEditRoom).toBe(false);
+  await expect(page.locator('.collaboration-status')).toBeHidden();
 
   await dialog.locator('button[value="close"]').click();
   await editor.click();
   await page.keyboard.press('End');
-  await page.keyboard.type(' collaborative');
-  await expect(editor).toContainText('canonical seed collaborative');
-  await expect.poll(()=>page.evaluate(()=>((globalThis as any).__phase20RealtimeFrames as any[])
-    .filter(frame=>frame?.[3]==='broadcast' && frame?.[4]?.event==='crdt-update').length)).toBeGreaterThan(0);
+  await page.keyboard.type(' local');
+  await expect(editor).toContainText('canonical seed local');
+  await expect(page.locator('.save-status')).toContainText('Saved locally');
 
-  await page.keyboard.press('Control+z');
-  await expect(editor).toContainText('canonical seed');
-  await expect(editor).not.toContainText('collaborative');
-  await page.keyboard.type(' merged');
-
-  await page.locator('[data-action="cloud-open"]').click();
-  await dialog.locator('[data-cloud-action="sync"]').click();
-  await expect.poll(()=>{
-    const note=[...cloud.entries.values()].find(row=>row.kind==='markdown');
-    return note?.text ?? '';
-  },{timeout:10_000}).toContain('canonical seed merged');
-  await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
+  expect(cloud.syncPushes).toBe(0);
+  expect(cloud.syncPulls).toBe(0);
+  expect(cloud.entries.size).toBe(0);
 });
