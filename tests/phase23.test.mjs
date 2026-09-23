@@ -65,6 +65,7 @@ const BASE={
   epoch:EPOCH,
   baseRevision:7,
   baseFingerprint:'deadbeef',
+  baseText:'hello',
 };
 const DOC_BASE={entryId:ENTRY,revision:7,fingerprint:'deadbeef',text:'hello'};
 
