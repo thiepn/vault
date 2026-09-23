@@ -19,6 +19,8 @@ export interface SyncOutboxRecordV2 {
   createdAt: string;
   attempt: number;
   nextAttemptAt: string;
+  acceptedAt?: string | null;
+  acceptedThrough?: string | null;
 }
 
 export interface SyncCursorRecordV2 {
@@ -88,6 +90,8 @@ export class SyncLocalStateV2 {
       createdAt: now,
       attempt: 0,
       nextAttemptAt: now,
+      acceptedAt: null,
+      acceptedThrough: null,
     };
 
     return this.driver.transaction(['outbox'], 'readwrite', async tx => {
@@ -145,6 +149,21 @@ export class SyncLocalStateV2 {
     if (!rows.length) return;
     await this.driver.transaction(['outbox'], 'readwrite', async tx => {
       for (const row of rows) await tx.store('outbox').delete(row.id);
+    });
+  }
+
+  async markAccepted(id: OperationId, through: string): Promise<void> {
+    bigintCursor(through);
+    await this.driver.transaction(['outbox'], 'readwrite', async tx => {
+      const row = await tx.store('outbox').get<SyncOutboxRecordV2>(id);
+      if (!row) return;
+      if (row.protocolVersion !== 2) throw new VaultError('PROTOCOL', 'Cannot accept a legacy outbox row through Protocol v2.');
+      const next: SyncOutboxRecordV2 = {
+        ...row,
+        acceptedAt: row.acceptedAt ?? new Date().toISOString(),
+        acceptedThrough: through,
+      };
+      await tx.store('outbox').put(next);
     });
   }
 
@@ -239,6 +258,38 @@ export class SyncLocalStateV2 {
       const updated: SyncCursorRecordV2 = { ...v2, cursor: next, updatedAt: new Date().toISOString() };
       await tx.store('syncCursors').put(updated);
       return updated;
+    });
+  }
+
+  async assertCanMigrateEmptyV1State(input: {
+    vaultId: VaultId;
+    legacyAuthUserId: string;
+    accountId: AccountId;
+    epoch: string;
+  }): Promise<void> {
+    const { vaultId, legacyAuthUserId, accountId, epoch } = input;
+    await this.driver.transaction(['outbox', 'remoteShadows', 'syncCursors'], 'readonly', async tx => {
+      const queued = await tx.store('outbox').allFromIndex<LegacyOutboxLike | SyncOutboxRecordV2>('vaultId', vaultId);
+      if (queued.length) {
+        throw new VaultError('PROTOCOL', 'Protocol v2 migration is blocked because this Vault has queued Protocol v1/v2 operations.');
+      }
+      const shadows = await tx.store('remoteShadows').getAll<LegacyShadowLike>();
+      if (shadows.some(row => row.vaultId === vaultId)) {
+        throw new VaultError('PROTOCOL', 'Protocol v2 migration is blocked because this Vault already has synchronized remote content.');
+      }
+      const existing = await tx.store('syncCursors').get<LegacyCursorLike | SyncCursorRecordV2>(vaultId);
+      if (existing && (existing as SyncCursorRecordV2).protocolVersion === 2) {
+        const v2 = existing as SyncCursorRecordV2;
+        if (v2.accountId !== accountId) throw new VaultError('ACCOUNT_MISMATCH', 'Existing Protocol v2 cursor belongs to another AccountId.');
+        if (v2.epoch !== epoch || v2.cursor !== '0') throw new VaultError('PROTOCOL', 'Existing Protocol v2 cursor is not an empty migration baseline.');
+        return;
+      }
+      if (existing) {
+        const legacy = existing as LegacyCursorLike;
+        if (legacy.ownerId !== legacyAuthUserId) throw new VaultError('ACCOUNT_MISMATCH', 'Legacy Protocol v1 cursor belongs to another authenticated user.');
+        if (legacy.epoch !== epoch) throw new VaultError('PROTOCOL', 'Legacy Protocol v1 cursor belongs to another synchronization epoch.');
+        if (legacy.cursor !== '0') throw new VaultError('PROTOCOL', 'Protocol v2 migration requires a zero high-watermark Protocol v1 cursor.');
+      }
     });
   }
 

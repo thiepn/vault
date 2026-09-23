@@ -24,7 +24,18 @@ class MockSyncCloud {
   adopted=false;
   remoteVaultId='';
   remoteVaultName='';
+  protocolVersion:1|2=1;
+  calls:string[]=[];
   devices=new Map<string,string>();
+  keyReady=false;
+  keyDeviceId='';
+  keyFingerprint='';
+  keyPublicSpki='';
+  keyEnvelope:any=null;
+  v2Heads=new Map<string,any>();
+  v2Events:any[]=[];
+  v2Operations=new Map<string,{wire:string;sha:string;result:any}>();
+  v2Wires:string[]=[];
   entries=new Map<string,any>();
   events:any[]=[];
   operations=new Map<string,{sha:string;result:any}>();
@@ -53,6 +64,7 @@ class MockSyncCloud {
     await page.route(PROJECT+'/**',async route=>{
       const request=route.request();
       const url=new URL(request.url());
+      this.calls.push(request.method()+' '+url.pathname);
       if(request.method()==='OPTIONS') return route.fulfill({status:204,headers:corsHeaders,body:''});
 
       if(url.pathname==='/auth/v1/token' && url.searchParams.get('grant_type')==='password'){
@@ -86,7 +98,7 @@ class MockSyncCloud {
         return json(route,this.adopted?[{
           id:this.remoteVaultId,account_id:accountId,auth_user_id:userId,
           owner_account_id:accountId,owner_auth_user_id:userId,access_role:'owner',
-          name:this.remoteVaultName,epoch,protocol_version:1,
+          name:this.remoteVaultName,epoch,protocol_version:this.protocolVersion,
           created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
         }]:[]);
       }
@@ -105,14 +117,174 @@ class MockSyncCloud {
         this.adopted=true;
         return json(route,[{
           id:this.remoteVaultId,account_id:accountId,auth_user_id:userId,name:this.remoteVaultName,epoch,
-          protocol_version:1,created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
+          protocol_version:this.protocolVersion,created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
         }],201);
       }
       if(url.pathname==='/rest/v1/vault_cloud_vaults' && request.method()==='GET'){
         return json(route,this.adopted?[{
           id:this.remoteVaultId,account_id:accountId,auth_user_id:userId,name:this.remoteVaultName,epoch,
-          protocol_version:1,created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
+          protocol_version:this.protocolVersion,created_at:'2026-09-22T12:00:00.000Z',updated_at:now(),disabled_at:null,
         }]:[]);
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_capabilities_v2' && request.method()==='POST'){
+        return json(route,{
+          contractVersion:1,
+          protocolVersions:[1,2],
+          encryptedContentV2:{contractAvailable:true,acceptingContent:true},
+          maxMutations:1000,
+          maxPageEvents:1000,
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_key_readiness' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        return json(route,{
+          vaultId:this.remoteVaultId,
+          deviceId:body.p_device_id,
+          keyGeneration:this.keyReady?1:null,
+          deviceEnvelope:this.keyReady,
+          recoveryEnvelope:this.keyReady,
+          deviceAuthorized:this.keyReady,
+          ready:this.keyReady,
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_key_register_device' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        this.keyDeviceId=body.p_device_id;
+        this.keyFingerprint=body.p_fingerprint;
+        this.keyPublicSpki=body.p_public_spki;
+        return json(route,{registered:true});
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_key_initialize_vault' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        expect(body.p_account_id).toBe(accountId);
+        expect(body.p_vault_id).toBe(this.remoteVaultId);
+        expect(body.p_device_id).toBe(this.keyDeviceId);
+        expect(body.p_key_generation).toBe(1);
+        expect(body.p_public_key_fingerprint).toBe(this.keyFingerprint);
+        this.keyEnvelope={
+          version:1,
+          accountId,
+          vaultId:this.remoteVaultId,
+          deviceId:this.keyDeviceId,
+          keyGeneration:1,
+          algorithm:'RSA-OAEP-3072-SHA256',
+          publicKeyFingerprint:this.keyFingerprint,
+          ciphertext:body.p_device_ciphertext,
+          createdAt:now(),
+        };
+        this.keyReady=true;
+        return json(route,{
+          vaultId:this.remoteVaultId,
+          deviceId:this.keyDeviceId,
+          keyGeneration:1,
+          deviceEnvelope:true,
+          recoveryEnvelope:true,
+          deviceAuthorized:true,
+          ready:true,
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_key_device_envelopes' && request.method()==='POST'){
+        return json(route,this.keyEnvelope?[clone(this.keyEnvelope)]:[]);
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_upgrade_v2' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        expect(body.p_vault_id).toBe(this.remoteVaultId);
+        expect(body.p_device_id).toBe(this.keyDeviceId);
+        expect(this.keyReady).toBe(true);
+        this.protocolVersion=2;
+        return json(route,{vaultId:this.remoteVaultId,epoch,protocolVersion:2});
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_pull_v2' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        expect(body.p_vault_id).toBe(this.remoteVaultId);
+        expect(body.p_epoch).toBe(epoch);
+        expect(body.p_device_id).toBe(this.keyDeviceId);
+        const after=BigInt(body.p_after);
+        const selected=this.v2Events
+          .filter(event=>BigInt(event.sequence)>after)
+          .slice(0,body.p_limit??500);
+        return json(route,{
+          protocolVersion:2,
+          vaultId:this.remoteVaultId,
+          epoch,
+          after:String(body.p_after),
+          through:selected.at(-1)?.sequence??String(body.p_after),
+          highWatermark:String(this.v2Events.length),
+          events:clone(selected),
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_push_v2' && request.method()==='POST'){
+        const envelope=JSON.parse(request.postData()??'{}');
+        expect(typeof envelope.p_wire).toBe('string');
+        const wire=envelope.p_wire as string;
+        this.v2Wires.push(wire);
+        const operation=JSON.parse(wire);
+        const prior=this.v2Operations.get(operation.operationId);
+        if(prior){
+          expect(prior.wire).toBe(wire);
+          expect(prior.sha).toBe(envelope.p_sha256);
+          return json(route,clone(prior.result));
+        }
+
+        const snapshots:any[]=[];
+        const first=String(this.v2Events.length+1);
+        for(const mutation of operation.mutations){
+          const priorHead=this.v2Heads.get(mutation.entityId);
+          const revision=priorHead?Number(priorHead.remoteRevision)+1:1;
+          const sequence=String(this.v2Events.length+1);
+          const snapshot={
+            entityId:mutation.entityId,
+            vaultId:this.remoteVaultId,
+            entityType:mutation.entityType,
+            remoteRevision:String(revision),
+            sequence,
+            schemaVersion:mutation.schemaVersion,
+            structural:clone(mutation.structural),
+            payload:clone(mutation.payload),
+            operationId:operation.operationId,
+            updatedByDevice:operation.deviceId,
+            updatedAt:now(),
+          };
+          this.v2Heads.set(mutation.entityId,clone(snapshot));
+          const event={
+            sequence,
+            operationId:operation.operationId,
+            entityId:mutation.entityId,
+            entityType:mutation.entityType,
+            remoteRevision:String(revision),
+            kind:'put',
+            snapshot:clone(snapshot),
+          };
+          this.v2Events.push(event);
+          snapshots.push(snapshot);
+        }
+        const result={
+          status:'ok',
+          operationId:operation.operationId,
+          firstSequence:first,
+          through:String(this.v2Events.length),
+          snapshots,
+        };
+        this.v2Operations.set(operation.operationId,{wire,sha:envelope.p_sha256,result:clone(result)});
+        return json(route,result);
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_ack_v2' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        return json(route,{
+          vaultId:this.remoteVaultId,
+          epoch,
+          acknowledgedThrough:String(body.p_through),
+          highWatermark:String(this.v2Events.length),
+        });
       }
 
       if(url.pathname==='/rest/v1/rpc/vault_sync_pull' && request.method()==='POST'){
@@ -269,7 +441,7 @@ async function syncNow(dialog){
   await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
 }
 
-test('Phase 15 syncs canonical files, preserves conflict copies and reconstructs a remote Vault on another device',async({page,browser},testInfo)=>{
+test('Phase 15 legacy owner adoption cannot upload plaintext before E2EE activation',async({page},testInfo)=>{
   test.skip(testInfo.project.name!=='chromium-desktop');
   const remote=new MockSyncCloud();
   await remote.attach(page);
@@ -281,58 +453,28 @@ test('Phase 15 syncs canonical files, preserves conflict copies and reconstructs
   });
   await expect(page.locator('.save-status')).toContainText('Saved locally');
 
-  let dialog=await signIn(page);
+  const dialog=await signIn(page);
   await dialog.locator('[data-cloud-action="adopt"]').click();
-  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
-  await syncNow(dialog);
-  await expect(dialog.locator('.cloud-sync-detail')).toContainText('0 queued');
-  expect(remote.uploadCount).toBe(1);
-  expect([...remote.entries.values()].some(entry=>entry.name==='Shared.md')).toBe(true);
-  expect([...remote.entries.values()].some(entry=>entry.name==='pixel.bin')).toBe(true);
-  await dialog.locator('button[value="close"]').click();
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('no canonical content uploaded');
+  await expect(dialog.locator('.cloud-sync-detail')).toContainText('end-to-end encryption setup required');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
+  await expect(dialog.locator('[data-cloud-action="activate-encrypted"]')).toBeEnabled();
 
+  expect(remote.uploadCount).toBe(0);
+  expect(remote.entries.size).toBe(0);
+  expect(remote.calls.some(call=>call.includes('/rest/v1/rpc/vault_sync_push'))).toBe(false);
+  expect(remote.calls.some(call=>call.includes('/storage/v1/object/vault-sync/'))).toBe(false);
+
+  await dialog.locator('button[value="close"]').click();
   await quickOpen(page,'Shared');
-  await replaceSource(page,'# local concurrent');
-  remote.remoteWriteByName('Shared.md','# remote concurrent');
-
-  dialog=await signIn(page);
-  await syncNow(dialog);
-  await expect(dialog.locator('.cloud-message')).toContainText('1 conflict preserved');
-  await dialog.locator('button[value="close"]').click();
-
-  expect(await sourceText(page)).toContain('# remote concurrent');
-  await page.locator('[data-action="quick-switcher"]').click();
-  const quick=page.locator('.quick-switcher-dialog');
-  await quick.locator('.quick-switcher-input').fill('conflict');
-  const conflict=quick.locator('.quick-result').filter({hasText:'conflict'}).first();
-  await expect(conflict).toBeVisible();
-  await conflict.click();
-  expect(await sourceText(page)).toContain('# local concurrent');
-
-  const context2=await browser.newContext({baseURL:'http://127.0.0.1:4173'});
-  const page2=await context2.newPage();
-  await remote.attach(page2);
-  await page2.goto('/');
-  dialog=await signIn(page2);
-  const remoteRow=dialog.locator('.cloud-remote-vaults .cloud-row').filter({hasText:'Shared Vault'});
-  await expect(remoteRow.getByRole('button',{name:'Add to this device'})).toBeVisible();
-  await remoteRow.getByRole('button',{name:'Add to this device'}).click();
-  await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
-  await expect(page2.locator('#vault-vault option:checked')).toHaveText('Shared Vault');
-  await dialog.locator('button[value="close"]').click();
-
-  await quickOpen(page2,'Shared');
-  expect(await sourceText(page2)).toContain('# remote concurrent');
-  await page2.locator('[data-editor-mode="live"]').click();
-  await ensureSidebarOpen(page2);
-  await page2.locator('[data-sidebar-panel="media"]').click();
-  await expect(page2.locator('.media-list')).toContainText('pixel.bin');
-  expect(remote.downloadCount).toBeGreaterThanOrEqual(1);
-
-  await context2.close();
+  expect(await sourceText(page)).toContain('# original');
+  await ensureSidebarOpen(page);
+  await page.locator('[data-sidebar-panel="media"]').click();
+  await expect(page.locator('.media-list')).toContainText('pixel.bin');
 });
 
-test('Phase 15 Sync now remains explicit and usable on mobile',async({page},testInfo)=>{
+test('Phase 15 mobile owner Sync now remains blocked until encrypted setup',async({page},testInfo)=>{
   test.skip(testInfo.project.name!=='chromium-mobile');
   const remote=new MockSyncCloud();
   await remote.attach(page);
@@ -341,10 +483,72 @@ test('Phase 15 Sync now remains explicit and usable on mobile',async({page},test
 
   const dialog=await signIn(page);
   await dialog.locator('[data-cloud-action="adopt"]').tap();
-  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('E2EE setup required');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
+  await expect(dialog.locator('[data-cloud-action="activate-encrypted"]')).toBeEnabled();
+  expect(remote.entries.size).toBe(0);
+  expect(remote.calls.some(call=>call.includes('/rest/v1/rpc/vault_sync_push'))).toBe(false);
+});
+
+
+test('I5 browser activates E2EE and syncs Note content only as Protocol v2 ciphertext',async({page},testInfo)=>{
+  test.skip(testInfo.project.name!=='chromium-desktop');
+  test.setTimeout(60_000);
+  const remote=new MockSyncCloud();
+  await remote.attach(page);
+
+  const secretMarkdown='# browser plaintext must stay local\nprivate sentence 4917';
+  await createVault(page,'Encrypted Browser Vault');
+  await createNote(page,'Cipher Note',secretMarkdown);
+
+  const dialog=await signIn(page);
+  await dialog.locator('[data-cloud-action="adopt"]').click();
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
+
+  await dialog.locator('[data-cloud-action="activate-encrypted"]').click();
+  const recovery=dialog.locator('textarea[aria-label="Vault Recovery Code"]');
+  await expect(recovery).toBeVisible({timeout:20_000});
+  await expect(recovery).toHaveValue(/^VLT1-/);
+  await dialog.locator('.cloud-vault-state input[type="checkbox"]').check();
+  await dialog.getByRole('button',{name:'Enable encrypted sync'}).click();
+
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('End-to-end encrypted',{timeout:20_000});
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Protocol v2');
   await expect(dialog.locator('[data-cloud-action="sync"]')).toBeEnabled();
-  await dialog.locator('[data-cloud-action="sync"]').tap();
-  await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
+  expect(remote.protocolVersion).toBe(2);
+  expect(remote.keyReady).toBe(true);
+
+  await dialog.locator('[data-cloud-action="sync"]').click();
+  await expect(dialog.locator('.cloud-message')).toContainText('Encrypted sync complete',{timeout:20_000});
   await expect(dialog.locator('.cloud-sync-detail')).toContainText('0 queued');
-  expect([...remote.entries.values()].some(entry=>entry.name==='Phone.md')).toBe(true);
+
+  expect(remote.v2Wires.length).toBeGreaterThan(0);
+  expect(remote.v2Heads.size).toBeGreaterThan(0);
+  expect(remote.calls.filter(call=>call==='POST /rest/v1/rpc/vault_sync_push')).toHaveLength(0);
+  expect(remote.calls.some(call=>call==='POST /rest/v1/rpc/vault_sync_push_v2')).toBe(true);
+
+  for(const wire of remote.v2Wires){
+    expect(wire).not.toContain('browser plaintext must stay local');
+    expect(wire).not.toContain('private sentence 4917');
+    expect(wire).not.toContain('Cipher Note');
+    const operation=JSON.parse(wire);
+    expect(operation.protocolVersion).toBe(2);
+    expect(operation.accountId).toBe(accountId);
+    for(const mutation of operation.mutations){
+      expect(mutation.kind).toBe('put');
+      expect(mutation.payload.algorithm).toBe('A256GCM');
+      expect(typeof mutation.payload.ciphertext).toBe('string');
+      expect(mutation.payload.ciphertext.length).toBeGreaterThan(20);
+      expect('text' in mutation).toBe(false);
+      expect('name' in mutation).toBe(false);
+      expect('mimeType' in mutation).toBe(false);
+    }
+  }
+
+  await dialog.locator('button[value="close"]').click();
+  await quickOpen(page,'Cipher Note');
+  expect(await sourceText(page)).toContain('private sentence 4917');
+  await expect(page.locator('.save-status')).toContainText('synced');
 });

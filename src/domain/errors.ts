@@ -1,7 +1,7 @@
 export type ErrorCode =
   | 'INVALID_NAME' | 'NOT_FOUND' | 'COLLISION' | 'INVALID_PARENT'
   | 'CYCLE' | 'STALE_WRITE' | 'DELETED' | 'STORAGE' | 'CONFIGURATION'
-  | 'UNSUPPORTED' | 'PROTOCOL' | 'ACCOUNT_MISMATCH' | 'PERMISSION' | 'CORRUPT' | 'INVALID_VERSION';
+  | 'UNSUPPORTED' | 'PROTOCOL' | 'ACCOUNT_MISMATCH' | 'PERMISSION' | 'CORRUPT' | 'INVALID_VERSION' | 'MERGE_REQUIRED';
 
 export class VaultError extends Error {
   constructor(readonly code: ErrorCode, message: string, options?: ErrorOptions) {

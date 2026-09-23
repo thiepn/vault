@@ -116,6 +116,9 @@ export class CloudFoundation {
   }
 
   async addRemoteVault(remote: RemoteCloudVault): Promise<Vault> {
+    if(remote.protocolVersion===2){
+      throw new VaultError('UNSUPPORTED','Adding an encrypted remote Vault on a second Device begins in I8 after encrypted bootstrap certification.');
+    }
     const initialized=await this.initializeIdentity();
     if (!initialized) throw new VaultError('ACCOUNT_MISMATCH','Sign in before adding a cloud Vault to this device.');
     if (this.device?.revokedAt) throw new VaultError('ACCOUNT_MISMATCH','This device has been revoked.');

@@ -139,7 +139,7 @@ async function confirmTextDialog(page:Page,value:string){
   await expect(dialog).not.toBeVisible();
 }
 
-test('Phase 21 seals background outbox, registers best-effort sync and clears worker auth on sign-out',async({page},testInfo)=>{
+test('Phase 21 owner adoption does not register legacy background sync before E2EE activation',async({page},testInfo)=>{
   test.skip(testInfo.project.name!=='chromium-desktop');
   await installBrowserFakes(page);
   await mockCloud(page);
@@ -162,7 +162,8 @@ test('Phase 21 seals background outbox, registers best-effort sync and clears wo
   await dialog.locator('[data-cloud-action="sign-in"]').click();
   await expect(dialog.locator('.cloud-signed-in')).toBeVisible();
   await dialog.locator('[data-cloud-action="adopt"]').click();
-  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
   await dialog.locator('button[value="close"]').click();
 
   await editor.click();
@@ -170,8 +171,13 @@ test('Phase 21 seals background outbox, registers best-effort sync and clears wo
   await page.keyboard.type(' queued');
   await expect(page.locator('.save-status')).toContainText('Saved locally');
 
-  await expect.poll(()=>page.evaluate(()=>((globalThis as any).__phase21SyncTags as string[]).includes('vault-background-sync')),{timeout:10_000}).toBe(true);
-  await expect.poll(()=>page.evaluate(()=>((globalThis as any).__phase21PeriodicTags as string[]).includes('vault-periodic-sync')),{timeout:10_000}).toBe(true);
+  // Owner Protocol-v1 adoption is now only a pre-E2EE link. It must not seal
+  // plaintext work into the legacy background worker or register sync tags.
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(()=>((globalThis as any).__phase21SyncTags as string[]).includes('vault-background-sync'))).toBe(false);
+  // Periodic Sync capability registration is app-wide; the security boundary is
+  // that no authenticated plaintext worker runtime/outbox is armed for an owner.
+  expect(await page.evaluate(()=>((globalThis as any).__phase21PeriodicTags as string[]).includes('vault-periodic-sync'))).toBe(true);
 
   const state=await page.evaluate(async()=>{
     const request=indexedDB.open('vault:local');
@@ -182,7 +188,7 @@ test('Phase 21 seals background outbox, registers best-effort sync and clears wo
     const read=(store:string,key:string)=>new Promise<any>((resolve,reject)=>{
       const tx=db.transaction(store,'readonly');
       const req=tx.objectStore(store).get(key);
-      req.onsuccess=()=>resolve(req.result);
+      req.onsuccess=()=>resolve(req.result??null);
       req.onerror=()=>reject(req.error);
     });
     const all=(store:string)=>new Promise<any[]>((resolve,reject)=>{
@@ -194,7 +200,6 @@ test('Phase 21 seals background outbox, registers best-effort sync and clears wo
     const result={
       version:db.version,
       runtime:await read('backgroundRuntime','runtime'),
-      status:await read('backgroundRuntime','status'),
       outbox:await all('outbox'),
       inbox:await all('remoteInbox'),
     };
@@ -203,14 +208,12 @@ test('Phase 21 seals background outbox, registers best-effort sync and clears wo
   });
 
   expect(state.version).toBeGreaterThanOrEqual(5);
-  expect(state.runtime.authUserId).toBe(USER);
-  expect(state.runtime.session.accessToken).toBe(ACCESS);
-  expect(state.status.capability).toBe('registered');
-  expect(state.outbox.length).toBeGreaterThan(0);
+  expect(state.runtime).toBeNull();
+  expect(state.outbox).toHaveLength(0);
   expect(state.inbox).toHaveLength(0);
 
   await page.locator('[data-action="cloud-open"]').click();
-  await expect(dialog.locator('.cloud-sync-detail')).toContainText('Background sync queued');
+  await expect(dialog.locator('.cloud-sync-detail')).toContainText('end-to-end encryption setup required');
   await dialog.locator('[data-cloud-action="sign-out"]').click();
   await expect(dialog.locator('.cloud-signed-out')).toBeVisible();
 

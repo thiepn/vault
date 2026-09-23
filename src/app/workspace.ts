@@ -37,17 +37,25 @@ import { readZipArchive } from '../interoperability/zip.js';
 import { browserFilesToArchiveFiles, obsidianExportFiles, planObsidianMigration, type ObsidianMigrationPlan } from '../interoperability/obsidian.js';
 import { commitObsidianMigration } from '../interoperability/importer.js';
 import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-view.js';
-import { browserCloudConfiguration } from '../cloud/config.js';
+import { browserCloudConfiguration, projectRefFromUrl } from '../cloud/config.js';
 import { SupabaseRestAuth } from '../cloud/auth-rest.js';
 import { SupabaseCloudRegistry } from '../cloud/supabase-registry.js';
+import { SupabaseKeyRegistry } from '../cloud/key-registry.js';
 import { CloudFoundation, type CloudFoundationStatus } from '../cloud/foundation.js';
 import { SyncLocalState } from '../sync/local-state.js';
 import { SupabaseSyncTransport } from '../sync/transport.js';
 import { SyncReplicaStore } from '../sync/replica-store.js';
 import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
+import { SyncLocalStateV2 } from '../sync/local-state-v2.js';
+import { EncryptedReplicaStoreV2 } from '../sync/replica-store-v2.js';
+import { EncryptedSyncEngineV2, type EncryptedSyncRunSummaryV2 } from '../sync/engine-v2.js';
+import { ProtocolV2Activation } from '../sync/activation-v2.js';
+import { IndexedDbDeviceKeyStore, openKeyringDatabase } from '../crypto/keyring.js';
+import { KeyDistributionService } from '../crypto/key-distribution.js';
+import type { VaultCryptoContext } from '../crypto/context.js';
 import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
 import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realtime-wakeup.js';
-import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
+import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole, legacyPlaintextCloudChannelAllowed } from '../cloud/access.js';
 import { SupabaseCollaborationRealtime, type CollaborationCursor, type CollaborationMode, type CollaborationPresence, type CollaborationRole, type CollaborationStatus } from '../cloud/collaboration-realtime.js';
 import { CrdtTextDocument, type CrdtBaseSnapshot } from '../collaboration/crdt-text.js';
 import { SupabaseCrdtRealtime, type CrdtEditorRole, type CrdtRealtimeStatus, type CrdtRemoteUpdate, type CrdtSyncRequest, type CrdtSyncResponse } from '../cloud/crdt-realtime.js';
@@ -70,11 +78,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const repository = new A2LocalRepository(db, a2);
   const cloudConfig = browserCloudConfiguration();
   const syncState = new SyncLocalState(db);
+  const syncStateV2 = new SyncLocalStateV2(db);
   const backgroundState = new BackgroundReplicationState(db);
   const conflictStore = new MarkdownConflictStore(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
+  let syncEngineV2: EncryptedSyncEngineV2 | null = null;
+  let keyRegistry: SupabaseKeyRegistry | null = null;
+  let keyDistribution: KeyDistributionService | null = null;
+  let activationV2: ProtocolV2Activation | null = null;
+  let keyringDatabase: IDBDatabase | null = null;
   let syncCoordinator: SyncCoordinator | null = null;
   let backgroundBridge: BackgroundReplicationBridge | null = null;
   let backgroundStatus: BackgroundStatusRecord | null = null;
@@ -107,6 +121,19 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
     const syncReplica = new SyncReplicaStore(db, a2);
     syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState, conflictStore);
+
+    const encryptedReplica = new EncryptedReplicaStoreV2(db, a2);
+    syncEngineV2 = new EncryptedSyncEngineV2(syncTransport, syncStateV2, encryptedReplica, repository);
+    keyringDatabase = await openKeyringDatabase(projectRefFromUrl(cloudConfig.url));
+    const keyStore = new IndexedDbDeviceKeyStore(keyringDatabase);
+    keyRegistry = new SupabaseKeyRegistry(cloudConfig, () => auth.accessToken());
+    keyDistribution = new KeyDistributionService(keyStore, keyRegistry);
+    activationV2 = new ProtocolV2Activation(
+      syncTransport,
+      syncStateV2,
+      repository,
+      (vaultId, deviceId) => keyRegistry!.readiness(vaultId, deviceId),
+    );
     backgroundBridge = new BackgroundReplicationBridge(backgroundState,cloudConfig,auth,db.name);
     cloud = new CloudFoundation(
       auth,
@@ -970,6 +997,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function refreshCollaborationSubscription(): Promise<void> {
     const role = activeCollaborationRole();
     if (!collaboration || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
+      || !legacyPlaintextCloudChannelAllowed(vault.cloud)
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud) || !role) {
       await finalizeCrdtBeforeDetach();
       collaboration?.stop();
@@ -1140,6 +1168,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if(!selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
       || collaborationStatus!=='connected' || !collaborationPresenceReady
       || !vault?.cloud || !cloudStatus.signedIn || !cloudStatus.identity || !activeCrdtRole()
+      || !legacyPlaintextCloudChannelAllowed(vault.cloud)
       || vault.cloud.authUserId!==cloudStatus.identity.userId || !saver) return null;
     if(await syncState.isDirty(selected.id)) return null;
     if((await syncState.pendingForEntry(vault.id,cloudStatus.identity.userId,selected.id)).length) return null;
@@ -1158,7 +1187,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   async function refreshCrdtSession(): Promise<void> {
     const role=activeCrdtRole();
     if(!role || !selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
-      || !vault?.cloud || !cloudStatus.identity || vault.cloud.authUserId!==cloudStatus.identity.userId){
+      || !vault?.cloud || !cloudStatus.identity || !legacyPlaintextCloudChannelAllowed(vault.cloud)
+      || vault.cloud.authUserId!==cloudStatus.identity.userId){
       stopCrdtSession();
       return;
     }
@@ -1261,7 +1291,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const adopted = vault?.mode === 'cloud';
     const role=adopted ? effectiveCloudRole(vault?.cloud) : null;
     button.dataset.cloudState = adopted ? 'adopted' : 'local';
-    button.textContent = adopted ? 'Cloud ✓' : 'Cloud';
+    button.textContent = adopted ? (vault?.cloud?.protocolVersion===2 ? 'Encrypted ✓' : 'Cloud ✓') : 'Cloud';
     const label = element<HTMLElement>('.storage-scope-label');
     label.textContent = adopted ? `Stored locally · cloud adopted · ${role}` : 'Stored in this browser';
   }
@@ -1306,29 +1336,56 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
     cloudVaultState.replaceChildren();
     const activeRole=vault?.mode==='cloud' && vault.cloud ? effectiveCloudRole(vault.cloud) : null;
-    cloudOwnerShare.hidden = activeRole !== 'owner';
+    cloudOwnerShare.hidden = activeRole !== 'owner' || vault?.cloud?.protocolVersion===2;
     const syncEligible = !!vault
       && vault.mode === 'cloud'
       && vault.cloud?.accountId === cloudStatus.account.id
       && vault.cloud.authUserId === cloudStatus.identity.userId
       && cloudBindingCanRead(vault.cloud);
-    cloudSyncNow.disabled = !syncEligible || !syncEngine;
-    cloudSyncDetail.textContent = syncEligible ? (cachedSyncDetail || 'Ready to synchronize.') : '';
+    const encryptedPending=syncEligible && activeRole==='owner' && vault?.cloud?.protocolVersion===1;
+    cloudSyncNow.disabled = !syncEligible
+      || encryptedPending
+      || (vault?.cloud?.protocolVersion===2 ? !syncEngineV2 : !syncEngine);
+    cloudSyncDetail.textContent = syncEligible
+      ? (encryptedPending ? 'Cloud linked · end-to-end encryption setup required before first upload.' : (cachedSyncDetail || 'Ready to synchronize.'))
+      : '';
 
     if (!vault) {
       cloudVaultState.append(cloudRow('No Vault selected', 'Choose or create a local Vault before enabling cloud sync.'));
       cloudAdopt.disabled = true;
+      cloudAdopt.dataset.cloudAction='adopt';
     } else if (vault.mode === 'local') {
       cloudVaultState.append(cloudRow(vault.name, 'Local only · nothing has been uploaded.', 'local'));
       cloudAdopt.disabled = false;
+      cloudAdopt.dataset.cloudAction='adopt';
       cloudAdopt.textContent = 'Enable cloud sync for this Vault';
-    } else if (syncEligible) {
-      cloudVaultState.append(cloudRow(vault.name, `Cloud adopted · ${effectiveCloudRole(vault.cloud!)} · sync enabled · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`, 'adopted'));
+    } else if (syncEligible && encryptedPending) {
+      cloudVaultState.append(cloudRow(
+        vault.name,
+        'Cloud linked · no canonical content uploaded · Recovery Code and E2EE setup required.',
+        'warning',
+      ));
+      cloudAdopt.disabled = !activationV2 || !keyDistribution || !keyRegistry;
+      cloudAdopt.dataset.cloudAction='activate-encrypted';
+      cloudAdopt.textContent = 'Set up end-to-end encrypted sync';
+    } else if (syncEligible && vault.cloud!.protocolVersion===2) {
+      cloudVaultState.append(cloudRow(
+        vault.name,
+        `End-to-end encrypted · Protocol v2 · owner · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`,
+        'adopted',
+      ));
       cloudAdopt.disabled = true;
-      cloudAdopt.textContent = 'Cloud sync enabled';
+      cloudAdopt.dataset.cloudAction='activate-encrypted';
+      cloudAdopt.textContent = 'End-to-end encryption enabled';
+    } else if (syncEligible) {
+      cloudVaultState.append(cloudRow(vault.name, `Legacy cloud sync · ${effectiveCloudRole(vault.cloud!)} · protocol v1`, 'adopted'));
+      cloudAdopt.disabled = true;
+      cloudAdopt.dataset.cloudAction='adopt';
+      cloudAdopt.textContent = 'Legacy cloud sync';
     } else {
       cloudVaultState.append(cloudRow(vault.name, 'This Vault is linked to another cloud account. Local data remains available.', 'warning'));
       cloudAdopt.disabled = true;
+      cloudAdopt.dataset.cloudAction='adopt';
     }
 
     if (!cloudStatus.remoteVaults.length) {
@@ -1349,7 +1406,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           add.type = 'button';
           add.dataset.cloudAction = 'add-remote-vault';
           add.dataset.remoteVaultId = remote.id;
-          add.textContent = 'Add to this device';
+          add.disabled = remote.protocolVersion===2;
+          add.textContent = remote.protocolVersion===2 ? 'Encrypted bootstrap in I8' : 'Add to this device';
           row.append(add);
         }
         cloudRemoteVaults.append(row);
@@ -1402,7 +1460,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   let awaitableDevicesCache: Awaited<ReturnType<CloudFoundation['listDevices']>> = [];
   let awaitableMembersCache: Awaited<ReturnType<CloudFoundation['listMembers']>> = [];
-  let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
+  type WorkspaceSyncSummary = SyncRunSummary | EncryptedSyncRunSummaryV2;
+  const isEncryptedSyncSummary=(summary:WorkspaceSyncSummary):summary is EncryptedSyncRunSummaryV2=>
+    'deferredAttachments' in summary;
+  const isLegacySyncSummary=(summary:WorkspaceSyncSummary):summary is SyncRunSummary=>
+    !isEncryptedSyncSummary(summary);
+  let lastSyncSummary: { vaultId: VaultId; summary: WorkspaceSyncSummary } | null = null;
   let cachedSyncDetail = '';
 
   function backgroundLabel(): string {
@@ -1439,7 +1502,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   }
 
   async function scheduleBackgroundReplication(targetVault:Vault|undefined=vault): Promise<void> {
-    if(!backgroundBridge || !syncEngine || !targetVault?.cloud || !cloudStatus.signedIn || !cloudStatus.identity) return;
+    if(!backgroundBridge || !syncEngine || !targetVault?.cloud || targetVault.cloud.protocolVersion!==1 || !cloudStatus.signedIn || !cloudStatus.identity) return;
+    // I5 never stages owner canonical content into the legacy plaintext worker.
+    // Existing shared-v1 compatibility remains isolated until cross-Account E2EE.
+    if(!legacyPlaintextCloudChannelAllowed(targetVault.cloud)) return;
     if(targetVault.cloud.authUserId!==cloudStatus.identity.userId || !cloudBindingCanWrite(targetVault.cloud)) return;
     await backgroundBridge.prepare(targetVault,cloudStatus.identity.userId,syncEngine);
     backgroundStatus=await backgroundState.status();
@@ -1457,6 +1523,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
 
   async function refreshRealtimeSubscription(): Promise<void> {
     if (!realtimeWake || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud
+      || !legacyPlaintextCloudChannelAllowed(vault.cloud)
       || vault.cloud.authUserId !== cloudStatus.identity.userId || !cloudBindingCanRead(vault.cloud)) {
       realtimeWake?.stop();
       realtimeStatus = realtimeWake?.currentStatus ?? 'idle';
@@ -1479,26 +1546,38 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cachedSyncDetail = '';
       return;
     }
+    const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
+    if(vault.cloud.protocolVersion===2){
+      const cursor=await syncStateV2.cursor(vault.id,vault.cloud.accountId);
+      const queued=await syncStateV2.count(vault.id,vault.cloud.accountId);
+      const encrypted=latest && 'deferredAttachments' in latest ? latest : null;
+      cachedSyncDetail=encrypted
+        ? `End-to-end encrypted · Protocol v2 · Cursor ${encrypted.cursor} · ${encrypted.pulledEvents} pulled · ${encrypted.pushedOperations} pushed · ${encrypted.deferredAttachments} attachment${encrypted.deferredAttachments===1?'':'s'} local-only · ${queued} queued`
+        : `End-to-end encrypted · Protocol v2 · Cursor ${cursor?.cursor ?? '0'} · Notes/Folders sync · attachments remain local until I7 · ${queued} queued`;
+      return;
+    }
     const cursor = await syncState.cursor(vault.id, cloudStatus.identity.userId);
     const queued = await syncState.count(vault.id);
-    const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
+    const legacy=latest && !('deferredAttachments' in latest) ? latest : null;
     const background=backgroundLabel();
-    cachedSyncDetail = latest
-      ? `${realtimeLabel()} · ${background} · Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
+    cachedSyncDetail = legacy
+      ? `${realtimeLabel()} · ${background} · Cursor ${legacy.cursor} · ${legacy.pulledEvents} pulled · ${legacy.pushedOperations} pushed · ${legacy.autoMergedMarkdown} auto-merged · ${legacy.conflictsPreserved} conflicts preserved · ${legacy.uploadedBlobs}↑/${legacy.downloadedBlobs}↓ blobs · ${queued} queued`
       : `${realtimeLabel()} · ${background} · Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
   }
 
-  async function runCurrentCloudSync(background = false, _trigger: SyncTrigger = 'manual'): Promise<SyncRunSummary> {
-    if (!syncEngine || !cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
+  async function runCurrentCloudSync(background = false, _trigger: SyncTrigger = 'manual'): Promise<WorkspaceSyncSummary> {
+    if (!cloud || !cloudStatus.signedIn || !cloudStatus.identity) {
       throw new VaultError('CONFIGURATION', 'Cloud synchronization is unavailable.');
     }
-    // Background runs occur only with a clean editor, so they can cheaply
-    // reconcile server-authoritative membership before touching sync state.
-    // Manual runs do the same whenever no unsaved draft would be disturbed.
     if (background || !saver?.hasUnsavedChanges) {
       cloudStatus = await cloud.status();
-      await mirrorBackgroundSession();
       await reloadCloudBindingCache();
+      if(vault?.cloud && legacyPlaintextCloudChannelAllowed(vault.cloud)){
+        await mirrorBackgroundSession();
+      }else{
+        await backgroundBridge?.clearSession();
+        await refreshBackgroundStatus();
+      }
       await refreshRealtimeSubscription();
       await refreshCollaborationSubscription();
     }
@@ -1509,12 +1588,68 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (saver) await saver.flush();
     const activeVaultId = vault.id;
     const selectedId = selected?.id;
-    if (!background) cloudMessage.textContent = 'Synchronizing canonical files and attachments…';
+    if (!background) {
+      cloudMessage.textContent = vault.cloud.protocolVersion===2
+        ? 'Synchronizing end-to-end encrypted Notes and Folders…'
+        : 'Synchronizing canonical files and attachments…';
+    }
     cloudSyncNow.disabled = true;
     try {
-      const summary = await syncEngine.sync(vault, cloudStatus.identity.userId);
+      let summary:WorkspaceSyncSummary;
+      if(vault.cloud.protocolVersion===2){
+        if(!syncEngineV2||!keyDistribution||!keyRegistry){
+          throw new VaultError('CONFIGURATION','Encrypted synchronization is unavailable in this browser.');
+        }
+        if(effectiveCloudRole(vault.cloud)!=='owner'){
+          throw new VaultError('PERMISSION','I5 encrypted synchronization is owner-only until cross-Account E2EE sharing is implemented.');
+        }
+        const readiness=await keyRegistry.readiness(vault.id,vault.cloud.deviceId);
+        if(!readiness.ready||readiness.keyGeneration===null){
+          throw new VaultError('PERMISSION','This Device does not have an active encrypted Vault key.');
+        }
+        await keyDistribution.refreshDeviceEnvelopes({
+          accountId:vault.cloud.accountId,
+          vaultId:vault.id,
+          deviceId:vault.cloud.deviceId,
+        });
+        const contexts=new Map<number,VaultCryptoContext>();
+        const contextFor=async(generation:number):Promise<VaultCryptoContext>=>{
+          const existing=contexts.get(generation);
+          if(existing)return existing;
+          const opened=await keyDistribution!.unlockLocal({
+            accountId:vault!.cloud!.accountId,
+            vaultId:vault!.id,
+            deviceId:vault!.cloud!.deviceId,
+            keyGeneration:generation,
+          });
+          contexts.set(generation,opened);
+          return opened;
+        };
+        try{
+          const active=await contextFor(readiness.keyGeneration);
+          summary=await syncEngineV2.sync(vault,vault.cloud.accountId,{
+            active:async()=>active,
+            forGeneration:contextFor,
+          });
+        }finally{
+          for(const context of contexts.values()) context.destroy();
+        }
+      }else{
+        if(effectiveCloudRole(vault.cloud)==='owner'){
+          throw new VaultError('CONFIGURATION','Complete end-to-end encryption setup before the first canonical cloud sync.');
+        }
+        if(!syncEngine) throw new VaultError('CONFIGURATION','Legacy synchronization is unavailable.');
+        summary=await syncEngine.sync(vault,cloudStatus.identity.userId);
+      }
+
       lastSyncSummary = { vaultId: activeVaultId, summary };
-      const localUiChanged = summary.pulledEvents > 0 || summary.conflictsPreserved > 0 || summary.autoMergedMarkdown > 0;
+      const encryptedSummary=isEncryptedSyncSummary(summary) ? summary : null;
+      const legacySummary=isLegacySyncSummary(summary) ? summary : null;
+      const localUiChanged=encryptedSummary
+        ? encryptedSummary.pulledEvents>0
+        : legacySummary
+          ? legacySummary.pulledEvents > 0 || legacySummary.conflictsPreserved > 0 || legacySummary.autoMergedMarkdown > 0
+          : false;
       if (vault?.id === activeVaultId && (!background || localUiChanged)) {
         await refresh();
         if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
@@ -1522,33 +1657,42 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await refreshBackgroundStatus();
       await refreshCloudSyncDetail();
       if (vault?.id === activeVaultId && selected?.kind === 'markdown' && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
-        element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
+        element<HTMLElement>('.save-status').textContent = encryptedSummary && encryptedSummary.deferredAttachments>0
+          ? 'Saved locally · Notes/Folders encrypted-synced · attachments local'
+          : 'Saved locally · synced';
       }
-      if (vault?.id === activeVaultId && selected?.id === selectedId && summary.pushedOperations > 0 && crdtDocument) {
-        stopCrdtSession();
-        await refreshCrdtSession();
-      } else if (vault?.id === activeVaultId && !crdtDocument) {
-        await refreshCrdtSession();
+      if(legacySummary){
+        if (vault?.id === activeVaultId && selected?.id === selectedId && legacySummary.pushedOperations > 0 && crdtDocument) {
+          stopCrdtSession();
+          await refreshCrdtSession();
+        } else if (vault?.id === activeVaultId && !crdtDocument) {
+          await refreshCrdtSession();
+        }
       }
       if (!background) {
-        renderCloudDialog(
-          `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.autoMergedMarkdown} auto-merged, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`,
-        );
+        renderCloudDialog(encryptedSummary
+          ? `Encrypted sync complete: ${encryptedSummary.pulledEvents} pulled, ${encryptedSummary.pushedOperations} pushed, ${encryptedSummary.localChangedAfterOwnPush} newer local edit${encryptedSummary.localChangedAfterOwnPush===1?'':'s'} preserved, ${encryptedSummary.deferredAttachments} attachment${encryptedSummary.deferredAttachments===1?'':'s'} deferred to I7.`
+          : `Sync complete: ${legacySummary!.pulledEvents} pulled, ${legacySummary!.pushedOperations} pushed, ${legacySummary!.autoMergedMarkdown} auto-merged, ${legacySummary!.conflictsPreserved} conflict${legacySummary!.conflictsPreserved === 1 ? '' : 's'} preserved.`);
       } else if (cloudDialog.open) {
         renderCloudDialog();
       }
       renderCloudIndicator();
       return summary;
     } finally {
-      const eligible = !!vault && !!syncEngine && cloudStatus.signedIn && !!cloudStatus.identity
-        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud);
+      const eligible = !!vault && cloudStatus.signedIn && !!cloudStatus.identity
+        && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId
+        && cloudBindingCanRead(vault.cloud)
+        && (vault.cloud?.protocolVersion===2 ? !!syncEngineV2 : !!syncEngine);
       cloudSyncNow.disabled = !eligible;
     }
   }
 
   syncCoordinator = new SyncCoordinator({
-    eligible: () => !!syncEngine && !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
+    eligible: () => !!cloud && cloudStatus.signedIn && !!cloudStatus.identity
       && !!vault && vault.mode === 'cloud' && vault.cloud?.authUserId === cloudStatus.identity.userId && cloudBindingCanRead(vault.cloud)
+      && (vault.cloud?.protocolVersion===2
+        ? !!syncEngineV2 && effectiveCloudRole(vault.cloud)==='owner'
+        : !!syncEngine && legacyPlaintextCloudChannelAllowed(vault.cloud))
       && navigator.onLine !== false && !saver?.hasUnsavedChanges && !editor.hasFocus() && !cloudDialog.open,
     key: () => {
       if (!cloudStatus.identity || !vault?.cloud) return null;
@@ -1610,6 +1754,70 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     cloudDialog.showModal();
     await refreshCloudStatus();
     if (!cloudStatus.signedIn) cloudEmail.focus();
+  }
+
+  async function confirmRecoveryCodeSaved(code:string):Promise<boolean>{
+    cloudVaultState.replaceChildren();
+    const heading=document.createElement('strong');
+    heading.textContent='Save your Vault Recovery Code';
+    const explanation=document.createElement('p');
+    explanation.textContent='This code is never stored by Vault or the server. If you lose every authorized device and this code, encrypted cloud data cannot be recovered.';
+    const codeBox=document.createElement('textarea');
+    codeBox.readOnly=true;
+    codeBox.rows=4;
+    codeBox.value=code;
+    codeBox.setAttribute('aria-label','Vault Recovery Code');
+    const copy=document.createElement('button');
+    copy.type='button';
+    copy.textContent='Copy Recovery Code';
+    const label=document.createElement('label');
+    const checked=document.createElement('input');
+    checked.type='checkbox';
+    label.append(checked,document.createTextNode(' I saved this Recovery Code somewhere safe.'));
+    const actions=document.createElement('div');
+    actions.className='dialog-actions';
+    const cancel=document.createElement('button');
+    cancel.type='button';
+    cancel.textContent='Cancel';
+    const confirm=document.createElement('button');
+    confirm.type='button';
+    confirm.textContent='Enable encrypted sync';
+    confirm.disabled=true;
+    actions.append(cancel,confirm);
+    cloudVaultState.append(heading,explanation,codeBox,copy,label,actions);
+    cloudAdopt.disabled=true;
+    cloudSyncNow.disabled=true;
+
+    copy.addEventListener('click',()=>{
+      void navigator.clipboard?.writeText(code).catch(()=>{
+        codeBox.focus();
+        codeBox.select();
+      });
+    });
+    checked.addEventListener('change',()=>{confirm.disabled=!checked.checked;});
+
+    return new Promise(resolve=>{
+      let settled=false;
+      const finish=(value:boolean)=>{
+        if(settled)return;
+        settled=true;
+        cancel.removeEventListener('click',cancelHandler);
+        confirm.removeEventListener('click',confirmHandler);
+        cloudDialog.removeEventListener('cancel',dialogCancelHandler);
+        cloudDialog.removeEventListener('close',dialogCloseHandler);
+        resolve(value);
+      };
+      const cancelHandler=()=>finish(false);
+      const confirmHandler=()=>finish(true);
+      const dialogCancelHandler=()=>finish(false);
+      const dialogCloseHandler=()=>finish(false);
+      cancel.addEventListener('click',cancelHandler);
+      confirm.addEventListener('click',confirmHandler);
+      cloudDialog.addEventListener('cancel',dialogCancelHandler);
+      cloudDialog.addEventListener('close',dialogCloseHandler);
+      codeBox.focus();
+      codeBox.select();
+    });
   }
 
   function migrationLine(label: string, value: string): HTMLElement {
@@ -4788,6 +4996,53 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refreshCloudStatus(role ? `Member changed to ${role}.` : 'Member access revoked.');
           return;
         }
+        if (action === 'activate-encrypted') {
+          if(!vault||vault.mode!=='cloud'||!vault.cloud) throw new VaultError('NOT_FOUND','Choose the cloud-linked Vault first.');
+          if(!activationV2||!keyDistribution||!keyRegistry) throw new VaultError('CONFIGURATION','Encrypted synchronization is unavailable in this browser.');
+          if(!cloudStatus.account||!cloudStatus.device) throw new VaultError('ACCOUNT_MISMATCH','Refresh the signed-in Account and Device first.');
+          if(vault.cloud.accountId!==cloudStatus.account.id||vault.cloud.deviceId!==cloudStatus.device.id){
+            throw new VaultError('ACCOUNT_MISMATCH','Encrypted setup must run on the Device that owns this local cloud binding.');
+          }
+          if(saver) await saver.flush();
+
+          let readiness=await keyRegistry.readiness(vault.id,vault.cloud.deviceId);
+          if(!readiness.ready){
+            if(readiness.deviceEnvelope||readiness.recoveryEnvelope||readiness.deviceAuthorized){
+              throw new VaultError('CONFIGURATION','Encrypted key setup is partially initialized. Do not create a second key lineage; recover or repair the existing key setup first.');
+            }
+            const recovery=await keyDistribution.generateRecoverySecret();
+            try{
+              const saved=await confirmRecoveryCodeSaved(recovery.code);
+              if(!saved){
+                renderCloudDialog('Encrypted setup cancelled. No canonical content was uploaded.');
+                return;
+              }
+              const initialized=await keyDistribution.initializeVault({
+                accountId:vault.cloud.accountId,
+                vaultId:vault.id,
+                deviceId:vault.cloud.deviceId,
+                recoverySecret:recovery.secret,
+              });
+              initialized.context.destroy();
+              readiness=initialized.readiness;
+            }finally{
+              recovery.secret.fill(0);
+            }
+          }
+
+          const activated=await activationV2.activate(vault,vault.cloud.accountId);
+          vault=activated.vault;
+          vaults=await repository.listVaults();
+          lastSyncSummary=null;
+          await backgroundBridge?.clearSession();
+          realtimeWake?.stop();
+          collaboration?.stop();
+          stopCrdtSession();
+          await refreshCloudStatus('End-to-end encryption enabled. No canonical content was uploaded during setup; press Sync now to send encrypted Notes and Folders.');
+          renderCloudIndicator();
+          renderInfo();
+          return;
+        }
         if (action === 'adopt') {
           if (!vault) throw new VaultError('NOT_FOUND', 'Choose a Vault before enabling cloud sync.');
           if (saver) await saver.flush();
@@ -4798,11 +5053,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           awaitableDevicesCache = await cloud.listDevices();
           await refreshCloudMembers();
           lastSyncSummary = null;
+          await backgroundBridge?.clearSession();
           await refreshRealtimeSubscription();
           await refreshCollaborationSubscription();
           await refreshCrdtSession();
           await refreshCloudSyncDetail();
-          renderCloudDialog('Cloud sync enabled. Nothing is uploaded until you press Sync now.');
+          renderCloudDialog('Cloud link created. Nothing was uploaded. Save a Recovery Code and enable end-to-end encryption before first sync.');
           renderCloudIndicator();
           renderInfo();
           return;
@@ -5710,6 +5966,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     attachmentObjectUrls.clear();
     crossTab.close();
     void Promise.all([recoveryFlush, canonicalFlush]).finally(() => {
+      keyringDatabase?.close();
       a2.close();
       db.close();
     });

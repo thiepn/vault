@@ -123,6 +123,23 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       return updated;
     });
   }
+  async updateCloudProtocol(vaultId: VaultId, protocolVersion: CloudVaultBinding['protocolVersion']): Promise<Vault> {
+    return this.driver.transaction(['vaults'], 'readwrite', async tx => {
+      const vault = await tx.store('vaults').get<Vault>(vaultId);
+      if (!vault || vault.mode !== 'cloud' || !vault.cloud) throw new VaultError('NOT_FOUND', 'The cloud Vault is no longer available locally.');
+      if (vault.cloud.protocolVersion === protocolVersion) return vault;
+      if (vault.cloud.protocolVersion === 2 && protocolVersion === 1) {
+        throw new VaultError('PROTOCOL', 'Protocol v2 cloud bindings cannot be silently downgraded.');
+      }
+      const updated: Vault = {
+        ...vault,
+        cloud: { ...vault.cloud, protocolVersion },
+        updatedAt: now(),
+      };
+      await tx.store('vaults').put(updated);
+      return updated;
+    });
+  }
   async createCloudReplica(raw: string, binding: CloudVaultBinding): Promise<Vault> {
     if (binding.remoteVaultId.length === 0) throw new VaultError('PROTOCOL', 'Remote Vault identity is required.');
     const name = validateName(raw);
