@@ -106,6 +106,26 @@ export interface RecoveryDraft {
   reason: 'stale-write' | 'deleted-write' | 'invalid-content' | 'editor-recovery';
 }
 
+export interface MarkdownConflictRecord {
+  id: string;
+  vaultId: VaultId;
+  entryId: EntryId;
+  conflictEntryId: EntryId;
+  ownerId: string;
+  epoch: string;
+  baseRevision: Revision;
+  remoteRevision: Revision;
+  baseText: string;
+  localText: string;
+  remoteText: string;
+  source: 'pull' | 'push';
+  status: 'open' | 'resolved';
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  resolutionText: string | null;
+}
+
 export interface Setting { key: string; value: unknown }
 export interface EntryWithContent {
   entry: Entry;
@@ -122,4 +142,5 @@ export interface VaultSnapshot {
   attachments: AttachmentSnapshot[];
   recoveryDrafts: RecoveryDraft[];
   revisions?: LocalRevision[];
+  conflicts?: MarkdownConflictRecord[];
 }
