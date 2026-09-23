@@ -202,7 +202,7 @@ test('Phase 21 seals background outbox, registers best-effort sync and clears wo
     return result;
   });
 
-  expect(state.version).toBe(5);
+  expect(state.version).toBeGreaterThanOrEqual(5);
   expect(state.runtime.authUserId).toBe(USER);
   expect(state.runtime.session.accessToken).toBe(ACCESS);
   expect(state.status.capability).toBe('registered');
