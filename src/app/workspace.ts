@@ -728,13 +728,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           if (!disposed) requestCrdtSync();
         },
         onUpdate(message) {
-          if (!disposed) handleCrdtRemoteUpdate(message);
+          if (!disposed) void handleCrdtRemoteUpdate(message).catch(showError);
         },
         onSyncRequest(message) {
           if (!disposed) handleCrdtSyncRequest(message);
         },
         onSyncResponse(message) {
-          if (!disposed) handleCrdtSyncResponse(message);
+          if (!disposed) void handleCrdtSyncResponse(message).catch(showError);
         },
       },
     );
@@ -1228,6 +1228,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const role=activeCrdtRole();
     if(!role || !selected || selected.kind!=='markdown' || selected.deletedAt!==null || editorMode==='reading'
       || !vault?.cloud || !cloudStatus.identity || vault.cloud.authUserId!==cloudStatus.identity.userId){
+      await closeCrdtJournalSession();
       stopCrdtSession();
       return;
     }
@@ -1272,14 +1273,16 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     crdtRealtime.requestSync(crdtDocument.stateVector());
   }
 
-  function handleCrdtRemoteUpdate(message:CrdtRemoteUpdate): void {
+  async function handleCrdtRemoteUpdate(message:CrdtRemoteUpdate): Promise<void> {
     if(!crdtDocument || !crdtBase) return;
     if(message.baseRevision!==crdtBase.revision || message.baseFingerprint!==crdtBase.fingerprint){
       requestCrdtSync();
       return;
     }
-    void queueCrdtJournalUpdate('remote',message.sessionId,message.update).catch(()=>undefined);
-    crdtDocument.applyRemoteUpdate(message.update);
+    await queueCrdtJournalUpdate('remote',message.sessionId,message.update);
+    if(crdtDocument && crdtBase?.revision===message.baseRevision && crdtBase.fingerprint===message.baseFingerprint){
+      crdtDocument.applyRemoteUpdate(message.update);
+    }
   }
 
   function handleCrdtSyncRequest(message:CrdtSyncRequest): void {
@@ -1294,19 +1297,22 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     );
   }
 
-  function handleCrdtSyncResponse(message:CrdtSyncResponse): void {
+  async function handleCrdtSyncResponse(message:CrdtSyncResponse): Promise<void> {
     if(!crdtDocument || !crdtBase || !selected || selected.kind!=='markdown') return;
     updateCrdtLeader();
     if(!crdtLeaderSession || message.sessionId!==crdtLeaderSession) return;
     const sameBase=message.baseRevision===crdtBase.revision && message.baseFingerprint===crdtBase.fingerprint;
     if(!message.replace && sameBase){
-      void queueCrdtJournalUpdate('sync',message.sessionId,message.update).catch(()=>undefined);
-      crdtDocument.applyRemoteUpdate(message.update);
+      await queueCrdtJournalUpdate('sync',message.sessionId,message.update);
+      if(crdtDocument && crdtBase?.revision===message.baseRevision && crdtBase.fingerprint===message.baseFingerprint){
+        crdtDocument.applyRemoteUpdate(message.update);
+      }
       return;
     }
     if(crdtLocalDirty){
       queueCrdtRecovery(crdtDocument.value);
-      void persistCrdtRecoveryNow().catch(showError);
+      await persistCrdtRecoveryNow().catch(()=>undefined);
+      await closeCrdtJournalSession();
       stopCrdtSession();
       errorBox.textContent='Live co-editing paused because another editor is based on a different canonical revision. Your local draft is preserved; synchronize it before rejoining live editing.';
       errorBox.hidden=false;
@@ -1319,13 +1325,15 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       text:'',
     };
     const replacementJournalBase=journalBaseFor(replacementBase);
-    void closeCrdtJournalSession().then(async()=>{
-      if(!replacementJournalBase) return;
-      const session=await crdtJournal.ensureSession(replacementJournalBase,storageSessionId);
-      crdtJournalSessionId=session.id;
-      crdtJournalBase=replacementJournalBase;
-      await queueCrdtJournalUpdate('sync',message.sessionId,message.update);
-    }).catch(showError);
+    await closeCrdtJournalSession();
+    if(!replacementJournalBase){
+      stopCrdtSession();
+      return;
+    }
+    const replacementSession=await crdtJournal.ensureSession(replacementJournalBase,storageSessionId);
+    crdtJournalSessionId=replacementSession.id;
+    crdtJournalBase=replacementJournalBase;
+    await queueCrdtJournalUpdate('sync',message.sessionId,message.update);
     const replacement=installCrdtDocument(replacementBase,false);
     replacement.applyRemoteUpdate(message.update);
     crdtLocalDirty=false;
