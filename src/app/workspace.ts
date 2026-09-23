@@ -3183,6 +3183,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await loadTreePreferences();
       entries = await repository.listEntries(vault.id, true);
       dirtyIds = new Set((await repository.listDirtyEntries(vault.id)).map(item => item.entryId));
+      openConflicts = await conflictStore.listOpen(vault.id);
       if (knowledgeVaultId !== vault.id) {
         await knowledge.loadVault(vault.id, entries);
         knowledgeVaultId = vault.id;
@@ -3222,9 +3223,18 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>('[data-command="file.create"],[data-command="folder.create"],[data-command="vault.export"],[data-command="vault.export-obsidian"],[data-command="vault.archive"],[data-command="vault.backup"],[data-action="vault-rename"],[data-action="attachment-upload"],[data-action="graph-open"]')) button.disabled = !vault;
     element<HTMLButtonElement>('[data-action="recovery"]').disabled = !vault;
-    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator();
+    renderTree(); renderInfo(); renderKnowledgePanels(); renderFacets(); renderSearchResults(); renderPlanningSettings(); renderTasks(); renderMedia(); renderCalendar(); updateVaultCounts(); renderCloudIndicator(); renderConflictIndicator();
     if (graphOpen) renderGraph();
   }
+  function renderConflictIndicator(): void {
+    const button = element<HTMLButtonElement>('[data-action="conflicts-open"]');
+    const count = openConflicts.length;
+    button.hidden = count === 0;
+    button.disabled = !vault || count === 0;
+    element<HTMLElement>('.conflict-count').textContent = String(count);
+    button.title = count === 1 ? 'Resolve 1 sync conflict' : 'Resolve ' + count + ' sync conflicts';
+  }
+
   function updateVaultCounts(): void {
     const active = entries.filter(entry => entry.deletedAt === null);
     element<HTMLElement>('.vault-counts').textContent = vault ? `${active.filter(entry => entry.kind === 'markdown').length} notes · ${active.filter(entry => entry.kind === 'attachment').length} media · ${active.filter(entry => entry.kind === 'directory').length} folders` : '';
