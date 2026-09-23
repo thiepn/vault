@@ -19,7 +19,10 @@ async function createNote(page:Page,name:string,text:string){
   const editor=page.locator('.cm-content');
   await editor.click();
   if(text) await page.keyboard.insertText(text);
-  await expect(page.locator('.save-status')).toContainText('Saved locally');
+  await expect.poll(async()=>{
+    try{return (await currentEntry(page,name)).content?.text ?? '';}
+    catch{return '';}
+  },{timeout:10_000}).toBe(text);
 }
 
 async function currentEntry(page:Page,name:string){
