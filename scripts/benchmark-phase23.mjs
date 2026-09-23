@@ -32,7 +32,7 @@ const EPOCH='44444444-4444-4444-8444-444444444444';
 const SESSION='55555555-5555-4555-8555-555555555555';
 const base={
   vaultId:VAULT,entryId:ENTRY,ownerId:OWNER,epoch:EPOCH,
-  baseRevision:1,baseFingerprint:'811c9dc5',baseText:'',
+  baseRevision:1,baseFingerprint:'811c9dc5',baseText:'',baseVerified:true,
 };
 const docBase={entryId:ENTRY,revision:1,fingerprint:'811c9dc5',text:''};
 
