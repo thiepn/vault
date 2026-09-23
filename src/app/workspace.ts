@@ -37,14 +37,22 @@ import { readZipArchive } from '../interoperability/zip.js';
 import { browserFilesToArchiveFiles, obsidianExportFiles, planObsidianMigration, type ObsidianMigrationPlan } from '../interoperability/obsidian.js';
 import { commitObsidianMigration } from '../interoperability/importer.js';
 import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-view.js';
-import { browserCloudConfiguration } from '../cloud/config.js';
+import { browserCloudConfiguration, projectRefFromUrl } from '../cloud/config.js';
 import { SupabaseRestAuth } from '../cloud/auth-rest.js';
 import { SupabaseCloudRegistry } from '../cloud/supabase-registry.js';
+import { SupabaseKeyRegistry } from '../cloud/key-registry.js';
 import { CloudFoundation, type CloudFoundationStatus } from '../cloud/foundation.js';
 import { SyncLocalState } from '../sync/local-state.js';
 import { SupabaseSyncTransport } from '../sync/transport.js';
 import { SyncReplicaStore } from '../sync/replica-store.js';
 import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
+import { SyncLocalStateV2 } from '../sync/local-state-v2.js';
+import { EncryptedReplicaStoreV2 } from '../sync/replica-store-v2.js';
+import { EncryptedSyncEngineV2, type EncryptedSyncRunSummaryV2 } from '../sync/engine-v2.js';
+import { ProtocolV2Activation } from '../sync/activation-v2.js';
+import { IndexedDbDeviceKeyStore, openKeyringDatabase } from '../crypto/keyring.js';
+import { KeyDistributionService } from '../crypto/key-distribution.js';
+import type { VaultCryptoContext } from '../crypto/context.js';
 import { SyncCoordinator, type SyncTrigger } from '../sync/coordinator.js';
 import { SupabaseRealtimeWakeup, type RealtimeWakeStatus } from '../cloud/realtime-wakeup.js';
 import { cloudBindingCanRead, cloudBindingCanWrite, effectiveCloudRole } from '../cloud/access.js';
@@ -70,11 +78,17 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   const repository = new A2LocalRepository(db, a2);
   const cloudConfig = browserCloudConfiguration();
   const syncState = new SyncLocalState(db);
+  const syncStateV2 = new SyncLocalStateV2(db);
   const backgroundState = new BackgroundReplicationState(db);
   const conflictStore = new MarkdownConflictStore(db);
   let cloud: CloudFoundation | null = null;
   let cloudAuth: SupabaseRestAuth | null = null;
   let syncEngine: SyncEngine | null = null;
+  let syncEngineV2: EncryptedSyncEngineV2 | null = null;
+  let keyRegistry: SupabaseKeyRegistry | null = null;
+  let keyDistribution: KeyDistributionService | null = null;
+  let activationV2: ProtocolV2Activation | null = null;
+  let keyringDatabase: IDBDatabase | null = null;
   let syncCoordinator: SyncCoordinator | null = null;
   let backgroundBridge: BackgroundReplicationBridge | null = null;
   let backgroundStatus: BackgroundStatusRecord | null = null;
@@ -107,6 +121,19 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const syncTransport = new SupabaseSyncTransport(cloudConfig, () => auth.accessToken());
     const syncReplica = new SyncReplicaStore(db, a2);
     syncEngine = new SyncEngine(syncTransport, syncState, syncReplica, repository, backgroundState, conflictStore);
+
+    const encryptedReplica = new EncryptedReplicaStoreV2(db, a2);
+    syncEngineV2 = new EncryptedSyncEngineV2(syncTransport, syncStateV2, encryptedReplica, repository);
+    keyringDatabase = await openKeyringDatabase(projectRefFromUrl(cloudConfig.url));
+    const keyStore = new IndexedDbDeviceKeyStore(keyringDatabase);
+    keyRegistry = new SupabaseKeyRegistry(cloudConfig, () => auth.accessToken());
+    keyDistribution = new KeyDistributionService(keyStore, keyRegistry);
+    activationV2 = new ProtocolV2Activation(
+      syncTransport,
+      syncStateV2,
+      repository,
+      (vaultId, deviceId) => keyRegistry!.readiness(vaultId, deviceId),
+    );
     backgroundBridge = new BackgroundReplicationBridge(backgroundState,cloudConfig,auth,db.name);
     cloud = new CloudFoundation(
       auth,
