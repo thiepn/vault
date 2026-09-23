@@ -269,7 +269,7 @@ async function syncNow(dialog){
   await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
 }
 
-test('Phase 15 syncs canonical files, preserves conflict copies and reconstructs a remote Vault on another device',async({page,browser},testInfo)=>{
+test('Phase 15 legacy owner adoption cannot upload plaintext before E2EE activation',async({page},testInfo)=>{
   test.skip(testInfo.project.name!=='chromium-desktop');
   const remote=new MockSyncCloud();
   await remote.attach(page);
@@ -281,58 +281,28 @@ test('Phase 15 syncs canonical files, preserves conflict copies and reconstructs
   });
   await expect(page.locator('.save-status')).toContainText('Saved locally');
 
-  let dialog=await signIn(page);
+  const dialog=await signIn(page);
   await dialog.locator('[data-cloud-action="adopt"]').click();
-  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
-  await syncNow(dialog);
-  await expect(dialog.locator('.cloud-sync-detail')).toContainText('0 queued');
-  expect(remote.uploadCount).toBe(1);
-  expect([...remote.entries.values()].some(entry=>entry.name==='Shared.md')).toBe(true);
-  expect([...remote.entries.values()].some(entry=>entry.name==='pixel.bin')).toBe(true);
-  await dialog.locator('button[value="close"]').click();
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('no canonical content uploaded');
+  await expect(dialog.locator('.cloud-sync-detail')).toContainText('end-to-end encryption setup required');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
+  await expect(dialog.locator('[data-cloud-action="activate-encrypted"]')).toBeEnabled();
 
+  expect(remote.uploadCount).toBe(0);
+  expect(remote.entries.size).toBe(0);
+  expect(remote.calls.some(call=>call.includes('/rest/v1/rpc/vault_sync_push'))).toBe(false);
+  expect(remote.calls.some(call=>call.includes('/storage/v1/object/vault-sync/'))).toBe(false);
+
+  await dialog.locator('button[value="close"]').click();
   await quickOpen(page,'Shared');
-  await replaceSource(page,'# local concurrent');
-  remote.remoteWriteByName('Shared.md','# remote concurrent');
-
-  dialog=await signIn(page);
-  await syncNow(dialog);
-  await expect(dialog.locator('.cloud-message')).toContainText('1 conflict preserved');
-  await dialog.locator('button[value="close"]').click();
-
-  expect(await sourceText(page)).toContain('# remote concurrent');
-  await page.locator('[data-action="quick-switcher"]').click();
-  const quick=page.locator('.quick-switcher-dialog');
-  await quick.locator('.quick-switcher-input').fill('conflict');
-  const conflict=quick.locator('.quick-result').filter({hasText:'conflict'}).first();
-  await expect(conflict).toBeVisible();
-  await conflict.click();
-  expect(await sourceText(page)).toContain('# local concurrent');
-
-  const context2=await browser.newContext({baseURL:'http://127.0.0.1:4173'});
-  const page2=await context2.newPage();
-  await remote.attach(page2);
-  await page2.goto('/');
-  dialog=await signIn(page2);
-  const remoteRow=dialog.locator('.cloud-remote-vaults .cloud-row').filter({hasText:'Shared Vault'});
-  await expect(remoteRow.getByRole('button',{name:'Add to this device'})).toBeVisible();
-  await remoteRow.getByRole('button',{name:'Add to this device'}).click();
-  await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
-  await expect(page2.locator('#vault-vault option:checked')).toHaveText('Shared Vault');
-  await dialog.locator('button[value="close"]').click();
-
-  await quickOpen(page2,'Shared');
-  expect(await sourceText(page2)).toContain('# remote concurrent');
-  await page2.locator('[data-editor-mode="live"]').click();
-  await ensureSidebarOpen(page2);
-  await page2.locator('[data-sidebar-panel="media"]').click();
-  await expect(page2.locator('.media-list')).toContainText('pixel.bin');
-  expect(remote.downloadCount).toBeGreaterThanOrEqual(1);
-
-  await context2.close();
+  expect(await sourceText(page)).toContain('# original');
+  await ensureSidebarOpen(page);
+  await page.locator('[data-sidebar-panel="media"]').click();
+  await expect(page.locator('.media-list')).toContainText('pixel.bin');
 });
 
-test('Phase 15 Sync now remains explicit and usable on mobile',async({page},testInfo)=>{
+test('Phase 15 mobile owner Sync now remains blocked until encrypted setup',async({page},testInfo)=>{
   test.skip(testInfo.project.name!=='chromium-mobile');
   const remote=new MockSyncCloud();
   await remote.attach(page);
@@ -341,10 +311,10 @@ test('Phase 15 Sync now remains explicit and usable on mobile',async({page},test
 
   const dialog=await signIn(page);
   await dialog.locator('[data-cloud-action="adopt"]').tap();
-  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
-  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeEnabled();
-  await dialog.locator('[data-cloud-action="sync"]').tap();
-  await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
-  await expect(dialog.locator('.cloud-sync-detail')).toContainText('0 queued');
-  expect([...remote.entries.values()].some(entry=>entry.name==='Phone.md')).toBe(true);
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud linked');
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('E2EE setup required');
+  await expect(dialog.locator('[data-cloud-action="sync"]')).toBeDisabled();
+  await expect(dialog.locator('[data-cloud-action="activate-encrypted"]')).toBeEnabled();
+  expect(remote.entries.size).toBe(0);
+  expect(remote.calls.some(call=>call.includes('/rest/v1/rpc/vault_sync_push'))).toBe(false);
 });
