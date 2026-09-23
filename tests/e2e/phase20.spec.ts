@@ -213,7 +213,8 @@ test('Phase 20 enters a private Yjs room, uses shared undo and persists through 
   await dialog.locator('[data-cloud-action="adopt"]').click();
   await expect(dialog.locator('.cloud-vault-state')).toContainText('Cloud adopted');
   await dialog.locator('[data-cloud-action="sync"]').click();
-  await expect(dialog.locator('.cloud-sync-detail')).toContainText('0 queued');
+  await expect.poll(()=>cloud.entries.size,{timeout:10_000}).toBeGreaterThan(0);
+  await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
 
   const crdtDiagnostics=await page.evaluate(async()=>{
     const open=indexedDB.open('vault:local');
@@ -261,7 +262,9 @@ test('Phase 20 enters a private Yjs room, uses shared undo and persists through 
 
   await page.locator('[data-action="cloud-open"]').click();
   await dialog.locator('[data-cloud-action="sync"]').click();
-  await expect(dialog.locator('.cloud-sync-detail')).toContainText('0 queued');
-  const note=[...cloud.entries.values()].find(row=>row.kind==='markdown');
-  expect(note?.text).toContain('canonical seed merged');
+  await expect.poll(()=>{
+    const note=[...cloud.entries.values()].find(row=>row.kind==='markdown');
+    return note?.text ?? '';
+  },{timeout:10_000}).toContain('canonical seed merged');
+  await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
 });
