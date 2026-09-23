@@ -1,5 +1,5 @@
 import { VaultError } from '../domain/errors.js';
-import { asCanonicalId } from '../domain/canonical.js';
+import { asCanonicalId, canonicalIdFromEntry, entryIdFromCanonical } from '../domain/canonical.js';
 import { markdownName, validateName } from '../domain/paths.js';
 import type { Entry, EntryId, VaultId } from '../domain/model.js';
 import type { VaultCryptoContext } from '../crypto/context.js';
@@ -35,10 +35,10 @@ export interface NotePayloadV1 extends SyncPayloadBaseV1 {
 
 export type SyncPlaintextPayloadV1 = FolderPayloadV1 | NotePayloadV1;
 
-export interface DecryptedSyncEntityV2 {
+interface DecryptedSyncEntityBaseV2<T extends 'folder'|'note',P extends SyncPlaintextPayloadV1> {
   entityId: EntryId;
   vaultId: VaultId;
-  entityType: 'folder' | 'note';
+  entityType: T;
   remoteRevision: RemoteRevision;
   sequence: string;
   schemaVersion: number;
@@ -46,12 +46,16 @@ export interface DecryptedSyncEntityV2 {
   nameToken: NameToken;
   deleted: boolean;
   keyGeneration: number;
-  payload: SyncPlaintextPayloadV1;
+  payload: P;
   operationId: EncryptedRemoteSnapshotV2['operationId'];
   updatedByDevice: EncryptedRemoteSnapshotV2['updatedByDevice'];
   updatedAt: string;
   stateHash: string;
 }
+
+export type DecryptedFolderEntityV2 = DecryptedSyncEntityBaseV2<'folder',FolderPayloadV1>;
+export type DecryptedNoteEntityV2 = DecryptedSyncEntityBaseV2<'note',NotePayloadV1>;
+export type DecryptedSyncEntityV2 = DecryptedFolderEntityV2 | DecryptedNoteEntityV2;
 
 export interface SerializedLocalEntityV2 {
   mutation: EncryptedEntityMutation;
@@ -94,7 +98,7 @@ function payloadBytes(payload:SyncPlaintextPayloadV1):Uint8Array{
   return encoder.encode(JSON.stringify(payload));
 }
 
-async function stateHash(payload:SyncPlaintextPayloadV1,parentId:EntryId|null,nameToken:NameToken,deleted:boolean):Promise<string>{
+async function stateHash(payload:SyncPlaintextPayloadV1,parentId:string|null,nameToken:NameToken,deleted:boolean):Promise<string>{
   return sha256Hex(encoder.encode(JSON.stringify([
     'vault/sync-state/v2',
     parentId ?? 'root',
@@ -145,16 +149,17 @@ export async function serializeLocalEntityV2(input:{
   if(entry.vaultId!==crypto.vaultId) throw new VaultError('ACCOUNT_MISMATCH','Vault crypto context does not match the local entity.');
   const plaintext=plaintextForLocal(local);
   const entityType=plaintext.entityType;
-  const entityId=asCanonicalId(entityType,entry.id);
+  const entityId=canonicalIdFromEntry(entityType,entry.id);
   const parentId=entry.parentId;
-  const nameToken=await crypto.nameToken(parentId,plaintext.name);
+  const canonicalParentId=parentId ? canonicalIdFromEntry('folder',parentId) : null;
+  const nameToken=await crypto.nameToken(canonicalParentId,plaintext.name);
   const deleted=entry.deletedAt!==null;
   if(deleted!==(plaintext.deletedAt!==null)) throw new VaultError('CORRUPT','Local deletion state is inconsistent.');
   const encrypted=await crypto.encryptEntity({
     entityId,
     entityType,
     schemaVersion:SYNC_ENTITY_SCHEMA_VERSION,
-    parentId,
+    parentId:canonicalParentId,
     nameToken,
     deleted,
     blobId:null,
@@ -171,12 +176,14 @@ export async function serializeLocalEntityV2(input:{
       entityType,
       baseRemoteRevision,
       schemaVersion:SYNC_ENTITY_SCHEMA_VERSION,
-      structural:{parentId,nameToken,deleted,blobId:null},
+      structural:{parentId:canonicalParentId,nameToken,deleted,blobId:null},
       payload:encrypted,
     },
   };
 }
 
+function parsePayload(bytes:Uint8Array,expected:'folder'):FolderPayloadV1;
+function parsePayload(bytes:Uint8Array,expected:'note'):NotePayloadV1;
 function parsePayload(bytes:Uint8Array,expected:'folder'|'note'):SyncPlaintextPayloadV1{
   let parsed:unknown;
   try{
@@ -238,7 +245,40 @@ export async function decryptRemoteEntityV2(input:{
     blobId:null,
     payload:snapshot.payload,
   });
-  const payload=parsePayload(bytes,snapshot.entityType);
+  const entityId=entryIdFromCanonical(asCanonicalId(snapshot.entityType,snapshot.entityId));
+  const parentId=snapshot.structural.parentId
+    ? entryIdFromCanonical(asCanonicalId('folder',snapshot.structural.parentId))
+    : null;
+
+  if(snapshot.entityType==='note'){
+    const payload=parsePayload(bytes,'note');
+    const expectedToken=await crypto.nameToken(snapshot.structural.parentId,payload.name);
+    if(expectedToken!==snapshot.structural.nameToken){
+      throw new VaultError('CORRUPT','Encrypted entity NameToken does not match its decrypted filename and parent.');
+    }
+    if(snapshot.structural.deleted!==(payload.deletedAt!==null)){
+      throw new VaultError('CORRUPT','Encrypted entity deletion metadata does not match authenticated plaintext.');
+    }
+    return {
+      entityId,
+      vaultId:snapshot.vaultId,
+      entityType:'note',
+      remoteRevision:snapshot.remoteRevision,
+      sequence:snapshot.sequence,
+      schemaVersion:snapshot.schemaVersion,
+      parentId,
+      nameToken:snapshot.structural.nameToken,
+      deleted:snapshot.structural.deleted,
+      keyGeneration:snapshot.payload.keyGeneration,
+      payload,
+      operationId:snapshot.operationId,
+      updatedByDevice:snapshot.updatedByDevice,
+      updatedAt:snapshot.updatedAt,
+      stateHash:await stateHash(payload,parentId,snapshot.structural.nameToken,snapshot.structural.deleted),
+    };
+  }
+
+  const payload=parsePayload(bytes,'folder');
   const expectedToken=await crypto.nameToken(snapshot.structural.parentId,payload.name);
   if(expectedToken!==snapshot.structural.nameToken){
     throw new VaultError('CORRUPT','Encrypted entity NameToken does not match its decrypted filename and parent.');
@@ -246,11 +286,10 @@ export async function decryptRemoteEntityV2(input:{
   if(snapshot.structural.deleted!==(payload.deletedAt!==null)){
     throw new VaultError('CORRUPT','Encrypted entity deletion metadata does not match authenticated plaintext.');
   }
-  const parentId=snapshot.structural.parentId as EntryId|null;
   return {
-    entityId:snapshot.entityId as EntryId,
+    entityId,
     vaultId:snapshot.vaultId,
-    entityType:snapshot.entityType,
+    entityType:'folder',
     remoteRevision:snapshot.remoteRevision,
     sequence:snapshot.sequence,
     schemaVersion:snapshot.schemaVersion,
