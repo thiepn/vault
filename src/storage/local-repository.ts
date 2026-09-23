@@ -6,6 +6,7 @@ import { newId, type AttachmentContent, type AttachmentSnapshot, type CloudVault
 import { normalizeAttachmentMimeType, validateAttachmentBytes, validateAttachmentName } from '../media/attachments.js';
 import { cloudBindingCanWrite } from '../cloud/access.js';
 import type { FileRepository, RevisionRepository, VaultRepository } from '../services/ports.js';
+import type { SyncConflictRecordV2 } from '../sync/conflict-store-v2.js';
 import type { StoreName } from './database.js';
 import { storageDriver, type LocalStorageDriver, type StorageTransaction } from './driver.js';
 
@@ -465,7 +466,7 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
     return this.driver.transaction(['dirty'], 'readonly', tx => tx.store('dirty').allFromIndex<DirtyEntry>('vaultId', vaultId));
   }
   async snapshot(vaultId: VaultId): Promise<VaultSnapshot> {
-    return this.driver.transaction(['vaults', 'entries', 'contents', 'attachments', 'drafts', 'revisions', 'conflicts'], 'readonly', async tx => {
+    return this.driver.transaction(['vaults', 'entries', 'contents', 'attachments', 'drafts', 'revisions', 'conflicts', 'syncConflicts'], 'readonly', async tx => {
       const vault = await tx.store('vaults').get<Vault>(vaultId);
       if (!vault) throw new VaultError('NOT_FOUND', 'The vault no longer exists.');
       const entries = await tx.store('entries').allFromIndex<Entry>('vaultId', vaultId);
@@ -484,7 +485,8 @@ export class LocalRepository implements VaultRepository, FileRepository, Revisio
       const recoveryDrafts = await tx.store('drafts').allFromIndex<RecoveryDraft>('vaultId', vaultId);
       const revisions = await tx.store('revisions').allFromIndex<LocalRevision>('vaultId', vaultId);
       const conflicts = await tx.store('conflicts').allFromIndex<MarkdownConflictRecord>('vaultId', vaultId);
-      return { format: 'vault-local-backup', version: 2, exportedAt: now(), vault, entries, contents, attachments, recoveryDrafts, revisions, conflicts };
+      const syncConflicts = await tx.store('syncConflicts').allFromIndex<SyncConflictRecordV2>('vaultId', vaultId);
+      return { format: 'vault-local-backup', version: 2, exportedAt: now(), vault, entries, contents, attachments, recoveryDrafts, revisions, conflicts, syncConflicts };
     });
   }
 }
