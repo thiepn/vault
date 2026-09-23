@@ -1494,6 +1494,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         await refresh();
         if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
       }
+      await refreshBackgroundStatus();
       await refreshCloudSyncDetail();
       if (vault?.id === activeVaultId && selected?.kind === 'markdown' && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
         element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
@@ -5260,6 +5261,20 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       vault = vaults.find(item => item.id === id); preferencesVaultId = undefined; showingTrash = false; filterText = ''; await refresh();  if (vault) await setting('lastVault', vault.id); await refreshRealtimeSubscription(); await refreshCollaborationSubscription(); await refreshCrdtSession(); await refreshCloudSyncDetail(); syncCoordinator?.wake('focus');
     });
   }, { signal: abort.signal });
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.addEventListener('message', event => {
+      const message=event.data;
+      if(!message || (message.type!=='BACKGROUND_SYNC_COMPLETE' && message.type!=='BACKGROUND_SYNC_ERROR')) return;
+      void backgroundState.status()
+        .then(status=>{
+          backgroundStatus=status;
+          if(cloudDialog.open) return refreshCloudSyncDetail();
+        })
+        .catch(()=>undefined);
+      syncCoordinator?.wake('peer');
+    }, { signal: abort.signal });
+  }
+
   window.addEventListener('beforeunload', event => {
     if (saver?.hasUnsavedChanges || crdtRecoveryText !== null) {
       event.preventDefault();
