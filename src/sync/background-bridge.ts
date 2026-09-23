@@ -48,8 +48,11 @@ export class BackgroundReplicationBridge {
 
   private async registration():Promise<WorkerRegistration|null>{
     if(typeof navigator==='undefined' || !('serviceWorker' in navigator)) return null;
-    try { return await navigator.serviceWorker.ready as WorkerRegistration; }
-    catch { return null; }
+    try {
+      return await navigator.serviceWorker.getRegistration() as WorkerRegistration|null;
+    } catch {
+      return null;
+    }
   }
 
   async mirrorSession(authUserId:string):Promise<boolean>{
