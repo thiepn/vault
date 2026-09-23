@@ -36,7 +36,7 @@ const vmk=Uint8Array.from({length:32},(_,index)=>index+1);
 class FakeKeyRegistry {
   constructor(){
     this.deviceKeys=new Map();
-    this.deviceEnvelopes=new Map();
+    this.deviceEnvelopeRows=new Map();
     this.recoveryEnvelopesById=new Map();
     this.recoveryProofs=new Map();
     this.access=new Set();
@@ -59,7 +59,7 @@ class FakeKeyRegistry {
 
   readinessFor(vault,device){
     const active=this.activeGenerations.get(this.stateId(vault,accountId)) ?? null;
-    const envelope=active===null?null:this.deviceEnvelopes.get(this.envelopeId(vault,accountId,device,active)) ?? null;
+    const envelope=active===null?null:this.deviceEnvelopeRows.get(this.envelopeId(vault,accountId,device,active)) ?? null;
     const recovery=active===null?false:this.recoveryEnvelopesById.has(this.recoveryId(vault,accountId,active));
     const authorized=this.access.has(this.accessId(vault,accountId,device));
     return {
@@ -79,7 +79,7 @@ class FakeKeyRegistry {
     const stateId=this.stateId(input.vaultId,input.accountId);
     const existingGeneration=this.activeGenerations.get(stateId);
     if(existingGeneration!==undefined && existingGeneration!==input.deviceEnvelope.keyGeneration) throw new Error('Vault key state already initialized');
-    this.deviceEnvelopes.set(
+    this.deviceEnvelopeRows.set(
       this.envelopeId(input.vaultId,input.accountId,input.deviceId,input.deviceEnvelope.keyGeneration),
       structuredClone(input.deviceEnvelope),
     );
@@ -99,7 +99,7 @@ class FakeKeyRegistry {
   async readiness(vault,device){return this.readinessFor(vault,device);}
 
   async deviceEnvelopes(vault,device){
-    return [...this.deviceEnvelopes.values()]
+    return [...this.deviceEnvelopeRows.values()]
       .filter(row=>row.vaultId===vault&&row.deviceId===device)
       .sort((a,b)=>a.keyGeneration-b.keyGeneration)
       .map(row=>structuredClone(row));
@@ -162,7 +162,7 @@ class FakeKeyRegistry {
     row.activeGeneration=input.activeGeneration;
     row.request.status='approved';
     for(const envelope of input.envelopes){
-      this.deviceEnvelopes.set(
+      this.deviceEnvelopeRows.set(
         this.envelopeId(envelope.vaultId,envelope.accountId,envelope.deviceId,envelope.keyGeneration),
         structuredClone(envelope),
       );
@@ -201,7 +201,7 @@ class FakeKeyRegistry {
     if(!key) throw new Error('Device key mismatch');
     for(const envelope of input.envelopes){
       if(key.fingerprint!==envelope.publicKeyFingerprint) throw new Error('Device key mismatch');
-      this.deviceEnvelopes.set(
+      this.deviceEnvelopeRows.set(
         this.envelopeId(input.vaultId,accountId,input.deviceId,envelope.keyGeneration),
         structuredClone(envelope),
       );
@@ -219,7 +219,7 @@ class FakeKeyRegistry {
     const actualDevices=input.deviceEnvelopes.map(row=>row.deviceId).sort();
     assert.deepEqual(actualDevices,expectedDevices);
     for(const envelope of input.deviceEnvelopes){
-      this.deviceEnvelopes.set(
+      this.deviceEnvelopeRows.set(
         this.envelopeId(input.vaultId,accountId,envelope.deviceId,envelope.keyGeneration),
         structuredClone(envelope),
       );
@@ -532,7 +532,7 @@ test('I3 Supabase migration implements every multi-generation RPC used by the cl
     'vault_key_rotate_recovery',
   ];
   for(const name of required){
-    assert.match(sql,new RegExp(String.raw`create\\s+or\\s+replace\\s+function\\s+public\\.${name}\\s*\\(`,'iu'),name+' RPC is missing');
+    assert.match(sql,new RegExp(String.raw`create\s+or\s+replace\s+function\s+public\.${name}\s*\(`,'iu'),name+' RPC is missing');
   }
   assert.match(sql,/create table if not exists vault_private\.vault_key_state/iu);
   assert.match(sql,/active_generation integer not null/iu);
