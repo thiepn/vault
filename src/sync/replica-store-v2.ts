@@ -307,6 +307,69 @@ async function writeState(
   return {entry:updated,text:state.entityType==='note'?state.text:null};
 }
 
+function payloadFromState(state:SyncEntityStateV2):SyncPlaintextPayloadV1{
+  const base={
+    format:'vault/entity-payload/v1' as const,
+    version:1 as const,
+    name:state.name,
+    createdAt:state.createdAt,
+    updatedAt:state.updatedAt,
+    deletedAt:state.deletedAt,
+  };
+  return state.entityType==='note'
+    ? {...base,entityType:'note' as const,text:state.text!}
+    : {...base,entityType:'folder' as const};
+}
+
+function shadowFromConflictRemote(
+  accountId:AccountId,
+  epoch:string,
+  conflict:SyncConflictRecordV2,
+):SyncRemoteShadowV2{
+  const remote=conflict.remote;
+  return {
+    protocolVersion:2,
+    entryId:remote.entryId,
+    vaultId:remote.vaultId,
+    accountId,
+    epoch,
+    entityType:remote.entityType,
+    remoteRevision:conflict.remoteRevision,
+    remoteSequence:conflict.remoteSequence,
+    structural:{
+      parentId:remote.parentId?canonicalIdFromEntry('folder',remote.parentId):null,
+      nameToken:conflict.remoteNameToken as NameToken,
+      deleted:remote.deletedAt!==null,
+      blobId:null,
+    },
+    basePayload:payloadFromState(remote),
+    baseStateSha256:conflict.remoteStateSha256,
+    encryptionVersion:1,
+    keyGeneration:conflict.remoteKeyGeneration,
+    updatedAt:new Date().toISOString(),
+  };
+}
+
+async function conflictSafeName(
+  tx:StorageTransaction,
+  state:SyncEntityStateV2,
+  suffixSeed:string,
+):Promise<string>{
+  const markdown=state.entityType==='note';
+  const source=state.name;
+  const stem=markdown&&source.toLowerCase().endsWith('.md')?source.slice(0,-3):source;
+  const ext=markdown?'.md':'';
+  const compact=suffixSeed.replace(/-/gu,'').slice(0,6)||'copy';
+  for(let attempt=1;attempt<=999;attempt++){
+    const suffix=attempt===1?` (conflict ${compact})`:` (conflict ${compact} ${attempt})`;
+    const candidate=markdown?markdownName(stem+suffix+ext):validateName(stem+suffix);
+    const key=activeKey(state.vaultId,state.parentId,candidate);
+    const collision=await tx.store('entries').fromIndex<Entry>('activeKey',key);
+    if(!collision||collision.id===state.entryId)return candidate;
+  }
+  throw new VaultError('COLLISION','Vault could not create a conflict-safe copy name.');
+}
+
 function samePendingEntity(
   rows:readonly SyncOutboxRecordV2[],
   accountId:AccountId,
