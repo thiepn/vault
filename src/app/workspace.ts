@@ -1062,6 +1062,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       epoch:vault.cloud.epoch,
       baseRevision:base.revision,
       baseFingerprint:base.fingerprint,
+      baseText:base.text,
     };
   }
 
