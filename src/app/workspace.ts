@@ -1461,6 +1461,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let awaitableDevicesCache: Awaited<ReturnType<CloudFoundation['listDevices']>> = [];
   let awaitableMembersCache: Awaited<ReturnType<CloudFoundation['listMembers']>> = [];
   type WorkspaceSyncSummary = SyncRunSummary | EncryptedSyncRunSummaryV2;
+  const isEncryptedSyncSummary=(summary:WorkspaceSyncSummary):summary is EncryptedSyncRunSummaryV2=>
+    'deferredAttachments' in summary;
   let lastSyncSummary: { vaultId: VaultId; summary: WorkspaceSyncSummary } | null = null;
   let cachedSyncDetail = '';
 
@@ -1639,10 +1641,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
 
       lastSyncSummary = { vaultId: activeVaultId, summary };
-      const isEncrypted='deferredAttachments' in summary;
-      const localUiChanged=isEncrypted
-        ? summary.pulledEvents>0
-        : summary.pulledEvents > 0 || summary.conflictsPreserved > 0 || summary.autoMergedMarkdown > 0;
+      const encryptedSummary=isEncryptedSyncSummary(summary) ? summary : null;
+      const legacySummary=encryptedSummary ? null : summary;
+      const localUiChanged=encryptedSummary
+        ? encryptedSummary.pulledEvents>0
+        : legacySummary.pulledEvents > 0 || legacySummary.conflictsPreserved > 0 || legacySummary.autoMergedMarkdown > 0;
       if (vault?.id === activeVaultId && (!background || localUiChanged)) {
         await refresh();
         if (selectedId && entries.some(entry => entry.id === selectedId)) await openEntry(selectedId);
@@ -1650,12 +1653,12 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       await refreshBackgroundStatus();
       await refreshCloudSyncDetail();
       if (vault?.id === activeVaultId && selected?.kind === 'markdown' && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
-        element<HTMLElement>('.save-status').textContent = isEncrypted && summary.deferredAttachments>0
+        element<HTMLElement>('.save-status').textContent = encryptedSummary && encryptedSummary.deferredAttachments>0
           ? 'Saved locally · Notes/Folders encrypted-synced · attachments local'
           : 'Saved locally · synced';
       }
-      if(!isEncrypted){
-        if (vault?.id === activeVaultId && selected?.id === selectedId && summary.pushedOperations > 0 && crdtDocument) {
+      if(legacySummary){
+        if (vault?.id === activeVaultId && selected?.id === selectedId && legacySummary.pushedOperations > 0 && crdtDocument) {
           stopCrdtSession();
           await refreshCrdtSession();
         } else if (vault?.id === activeVaultId && !crdtDocument) {
@@ -1663,9 +1666,9 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         }
       }
       if (!background) {
-        renderCloudDialog(isEncrypted
-          ? `Encrypted sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.localChangedAfterOwnPush} newer local edit${summary.localChangedAfterOwnPush===1?'':'s'} preserved, ${summary.deferredAttachments} attachment${summary.deferredAttachments===1?'':'s'} deferred to I7.`
-          : `Sync complete: ${summary.pulledEvents} pulled, ${summary.pushedOperations} pushed, ${summary.autoMergedMarkdown} auto-merged, ${summary.conflictsPreserved} conflict${summary.conflictsPreserved === 1 ? '' : 's'} preserved.`);
+        renderCloudDialog(encryptedSummary
+          ? `Encrypted sync complete: ${encryptedSummary.pulledEvents} pulled, ${encryptedSummary.pushedOperations} pushed, ${encryptedSummary.localChangedAfterOwnPush} newer local edit${encryptedSummary.localChangedAfterOwnPush===1?'':'s'} preserved, ${encryptedSummary.deferredAttachments} attachment${encryptedSummary.deferredAttachments===1?'':'s'} deferred to I7.`
+          : `Sync complete: ${legacySummary!.pulledEvents} pulled, ${legacySummary!.pushedOperations} pushed, ${legacySummary!.autoMergedMarkdown} auto-merged, ${legacySummary!.conflictsPreserved} conflict${legacySummary!.conflictsPreserved === 1 ? '' : 's'} preserved.`);
       } else if (cloudDialog.open) {
         renderCloudDialog();
       }
