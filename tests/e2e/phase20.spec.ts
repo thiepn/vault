@@ -162,7 +162,7 @@ async function installRealtimeFake(page:Page){
         try{frame=JSON.parse(raw);}catch{return;}
         if(!Array.isArray(frame)) return;
         (globalThis as any).__phase20RealtimeFrames.push(frame);
-        const [joinRef,ref,topic,event]=frame;
+        const [joinRef,ref,topic,event,payload]=frame;
         if(event==='phx_join'){
           queueMicrotask(()=>this.message([joinRef,ref,topic,'phx_reply',{status:'ok',response:{}}]));
           return;
@@ -221,31 +221,6 @@ test('Phase 20 enters a private Yjs room, uses shared undo and persists through 
   await expect.poll(()=>cloud.syncPushes,{timeout:10_000,message:'initial sync pulled but never reached vault_sync_push'}).toBeGreaterThan(0);
   await expect.poll(()=>cloud.entries.size,{timeout:10_000,message:'vault_sync_push did not create canonical remote entries'}).toBeGreaterThan(0);
   await expect(dialog.locator('.cloud-message')).toContainText('Sync complete');
-
-  const crdtDiagnostics=await page.evaluate(async()=>{
-    const open=indexedDB.open('vault:local');
-    const db:IDBDatabase=await new Promise((resolve,reject)=>{
-      open.onsuccess=()=>resolve(open.result);
-      open.onerror=()=>reject(open.error);
-    });
-    const readAll=(name:string)=>new Promise<any[]>((resolve,reject)=>{
-      const tx=db.transaction(name,'readonly');
-      const request=tx.objectStore(name).getAll();
-      request.onsuccess=()=>resolve(request.result);
-      request.onerror=()=>reject(request.error);
-    });
-    const [dirty,outbox,shadows,entries,contents]=await Promise.all([
-      readAll('dirty'),readAll('outbox'),readAll('remoteShadows'),readAll('entries'),readAll('contents'),
-    ]);
-    db.close();
-    return {
-      dirty,outbox,shadows,
-      notes:entries.filter((row:any)=>row.kind==='markdown'),
-      contents,
-      frames:(globalThis as any).__phase20RealtimeFrames,
-    };
-  });
-  console.log('PHASE20_CRDT_DIAGNOSTICS',JSON.stringify(crdtDiagnostics));
 
   await expect(page.locator('.collaboration-status')).toContainText('Live edit connected');
   await expect(page.locator('.collaboration-status')).toContainText('canonical writer');
