@@ -23,7 +23,7 @@ const noteId='55555555-5555-4555-8555-555555555555';
 function keyFor(store,value){
   switch(store){
     case 'vaults': case 'entries': case 'outbox': case 'revisions': case 'drafts':
-    case 'migrationState': case 'backgroundRuntime': case 'remoteInbox': case 'conflicts':
+    case 'migrationState': case 'backgroundRuntime': case 'remoteInbox': case 'conflicts': case 'syncConflicts':
     case 'entities': return value.id;
     case 'contents': case 'attachments': return value.entryId;
     case 'dirty': return value.entryId;
@@ -79,7 +79,7 @@ class MemoryDriver{
     this.stores=new Map([
       'vaults','entries','contents','attachments','dirty','outbox','revisions','drafts',
       'settings','remoteShadows','syncCursors','knowledge','entities','noteBodies',
-      'blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts',
+      'blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts','syncConflicts',
     ].map(name=>[name,new Map()]));
   }
   async transaction(names,mode,body){
