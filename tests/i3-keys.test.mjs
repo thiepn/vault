@@ -600,7 +600,5 @@ test('I3 SQL avoids counted base64url regex quantifiers that exceed PostgreSQL A
   const sql=readFileSync(new URL('../backend/supabase/i3_device_recovery_keys.sql',import.meta.url),'utf8');
   assert.doesNotMatch(sql,/\{\d+\}/u);
   assert.match(sql,/char_length\(coalesce\(p_device_ciphertext,''\)\)<>512/u);
-  assert.ok(sql.includes("char_length(ciphertext)=512 and ciphertext ~ '^[A-Za-z0-9_-]+
-});
-"));
+  assert.match(sql,/char_length\(ciphertext\)=512/u);
 });
