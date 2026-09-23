@@ -1376,6 +1376,47 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let lastSyncSummary: { vaultId: VaultId; summary: SyncRunSummary } | null = null;
   let cachedSyncDetail = '';
 
+  function backgroundLabel(): string {
+    if(!backgroundBridge) return 'Background sync unavailable';
+    if(!backgroundStatus) return 'Background sync checking';
+    const suffix=backgroundStatus.lastError
+      ? ' · attention required'
+      : backgroundStatus.lastSuccessAt
+        ? ` · last ${new Date(backgroundStatus.lastSuccessAt).toLocaleTimeString()}`
+        : '';
+    if(backgroundStatus.capability==='unsupported') return `Background sync unsupported${suffix}`;
+    if(backgroundStatus.capability==='registered') return `Background sync queued${suffix}`;
+    return `Background sync available${suffix}`;
+  }
+
+  async function refreshBackgroundStatus(): Promise<void> {
+    if(!backgroundBridge){
+      backgroundStatus=null;
+      return;
+    }
+    const capability=await backgroundBridge.capability();
+    backgroundStatus=capability.status;
+  }
+
+  async function mirrorBackgroundSession(): Promise<void> {
+    if(!backgroundBridge || !cloudStatus.signedIn || !cloudStatus.identity){
+      await backgroundBridge?.clearSession();
+      await refreshBackgroundStatus();
+      return;
+    }
+    await backgroundBridge.mirrorSession(cloudStatus.identity.userId);
+    await refreshBackgroundStatus();
+    void backgroundBridge.registerPeriodic();
+  }
+
+  async function scheduleBackgroundReplication(targetVault:Vault|undefined=vault): Promise<void> {
+    if(!backgroundBridge || !syncEngine || !targetVault?.cloud || !cloudStatus.signedIn || !cloudStatus.identity) return;
+    if(targetVault.cloud.authUserId!==cloudStatus.identity.userId || !cloudBindingCanWrite(targetVault.cloud)) return;
+    await backgroundBridge.prepare(targetVault,cloudStatus.identity.userId,syncEngine);
+    backgroundStatus=await backgroundState.status();
+    if(cloudDialog.open) await refreshCloudSyncDetail();
+  }
+
   function realtimeLabel(): string {
     if (!realtimeWake) return 'Realtime unavailable';
     if (realtimeStatus === 'connected') return 'Realtime connected';
@@ -1412,9 +1453,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const cursor = await syncState.cursor(vault.id, cloudStatus.identity.userId);
     const queued = await syncState.count(vault.id);
     const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
+    const background=backgroundLabel();
     cachedSyncDetail = latest
-      ? `${realtimeLabel()} · Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
-      : `${realtimeLabel()} · Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
+      ? `${realtimeLabel()} · ${background} · Cursor ${latest.cursor} · ${latest.pulledEvents} pulled · ${latest.pushedOperations} pushed · ${latest.autoMergedMarkdown} auto-merged · ${latest.conflictsPreserved} conflicts preserved · ${latest.uploadedBlobs}↑/${latest.downloadedBlobs}↓ blobs · ${queued} queued`
+      : `${realtimeLabel()} · ${background} · Cursor ${cursor?.cursor ?? '0'} · ${queued} queued operation${queued === 1 ? '' : 's'}`;
   }
 
   async function runCurrentCloudSync(background = false, _trigger: SyncTrigger = 'manual'): Promise<SyncRunSummary> {
@@ -4226,7 +4268,11 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           element<HTMLElement>('.save-status').textContent = state.kind === 'saving' ? 'Saving locally\u2026' : state.kind === 'error'
             ? state.recovery === 'stored' ? 'Draft preserved \u00b7 canonical save blocked' : state.recovery === 'pending' ? 'Preserving recovery draft\u2026' : 'Not saved \u00b7 export your draft'
             : 'Saved locally \u00b7 not synced';
-          if (state.kind === 'saved-local') syncCoordinator?.request('local-change', 1200);
+          if (state.kind === 'saved-local') {
+            syncCoordinator?.request('local-change', 1200);
+            const targetVault=vault?.id===opened.vaultId ? vault : vaults.find(item=>item.id===opened.vaultId);
+            void scheduleBackgroundReplication(targetVault).catch(()=>undefined);
+          }
           if (updated) { selected = updated; const at = entries.findIndex(entry => entry.id === updated.id); if (at >= 0) entries[at] = updated; renderInfo(); void refreshKnowledgeEntry(updated.id).catch(showError); }
           element<HTMLElement>('[data-action="retry-save"]').hidden = state.kind !== 'error' || !saver?.canRetry;
           if (state.kind === 'error') {
