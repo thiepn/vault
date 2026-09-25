@@ -551,6 +551,78 @@ function rng(seed){
   return ()=>{state=(1664525*state+1013904223)>>>0;return state/0x100000000;};
 }
 
+test('I6 Keep Both on a Folder clones the local subtree instead of moving canonical child identities',async()=>{
+  const driver=new MemoryDriver();
+  const task='123e4567-e89b-7d12-a456-426614174000';
+  const attachmentId='99999999-9999-4999-8999-999999999991';
+  const base=folderState({name:'Folder'});
+  const local=folderState({name:'Local Folder',updatedAt:'2026-09-23T12:01:00.000Z'});
+  const remote=folderState({name:'Remote Folder',updatedAt:'2026-09-23T12:02:00.000Z'});
+  seedBase(driver,base,local,2);
+
+  const nested=folderState({entryId:folderB,parentId:folderA,name:'Nested'});
+  const note=noteState({
+    entryId:noteOther,
+    parentId:folderB,
+    name:'Child.md',
+    text:`- [ ] local child <!-- vault:task=${task} -->\n`,
+  });
+  driver.stores.get('entries').set(folderB,entryFromState(nested,1));
+  driver.stores.get('entries').set(noteOther,entryFromState(note,1));
+  driver.stores.get('contents').set(noteOther,{entryId:noteOther,text:note.text,localVersion:1});
+  driver.stores.get('entries').set(attachmentId,{
+    id:attachmentId,vaultId,parentId:folderA,name:'asset.bin',kind:'attachment',
+    createdAt:at,updatedAt:at,localVersion:1,deletedAt:null,deletionBatch:null,
+    activeKey:activeKey(vaultId,folderA,'asset.bin'),
+  });
+  driver.stores.get('attachments').set(attachmentId,{
+    entryId:attachmentId,mimeType:'application/octet-stream',size:3,bytes:Uint8Array.from([1,2,3]),
+  });
+
+  const replica=new EncryptedReplicaStoreV2(driver);
+  const applied=await replica.applyPage({
+    accountId,epoch,expectedAfter:'1',through:'2',events:[eventFromState(remote)],
+  });
+  assert.equal(applied.conflictsCaptured,1);
+
+  const result=await replica.resolveConflict({
+    vaultId,entryId:folderA,accountId,epoch,resolution:'keep-both',
+  });
+  assert.ok(result.createdCopyId);
+  assert.equal(driver.stores.get('entries').get(folderA).name,'Remote Folder');
+
+  // Server-canonical child identities remain under the original folder.
+  assert.equal(driver.stores.get('entries').get(folderB).parentId,folderA);
+  assert.equal(driver.stores.get('entries').get(noteOther).parentId,folderB);
+  assert.equal(driver.stores.get('entries').get(attachmentId).parentId,folderA);
+
+  const entries=[...driver.stores.get('entries').values()];
+  const clonedNested=entries.find(entry=>entry.parentId===result.createdCopyId&&entry.name==='Nested');
+  const clonedAttachment=entries.find(entry=>entry.parentId===result.createdCopyId&&entry.name==='asset.bin');
+  assert.ok(clonedNested);
+  assert.ok(clonedAttachment);
+  assert.notEqual(clonedNested.id,folderB);
+  assert.notEqual(clonedAttachment.id,attachmentId);
+
+  const clonedNote=entries.find(entry=>entry.parentId===clonedNested.id&&entry.name==='Child.md');
+  assert.ok(clonedNote);
+  assert.notEqual(clonedNote.id,noteOther);
+  const clonedText=driver.stores.get('contents').get(clonedNote.id).text;
+  assert.match(clonedText,/local child/u);
+  assert.doesNotMatch(clonedText,new RegExp(task,'u'));
+
+  const clonedBytes=driver.stores.get('attachments').get(clonedAttachment.id).bytes;
+  assert.deepEqual([...clonedBytes],[1,2,3]);
+  assert.ok(driver.stores.get('dirty').has(result.createdCopyId));
+  assert.ok(driver.stores.get('dirty').has(clonedNested.id));
+  assert.ok(driver.stores.get('dirty').has(clonedNote.id));
+  assert.ok(driver.stores.get('dirty').has(clonedAttachment.id));
+  assert.equal(driver.stores.get('dirty').has(folderB),false);
+  assert.equal(driver.stores.get('dirty').has(noteOther),false);
+  assert.equal(driver.stores.get('dirty').has(attachmentId),false);
+});
+
+
 test('I6 seeded disjoint-edit simulations converge without unexplained divergence',()=>{
   for(let seed=1;seed<=250;seed++){
     const random=rng(seed);
