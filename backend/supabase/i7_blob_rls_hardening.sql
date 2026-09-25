@@ -32,7 +32,8 @@ on storage.objects
 for select
 to authenticated
 using (
-  bucket_id='vault-e2ee-blobs'
+  storage.allow_any_operation(array['object.get_authenticated','object.get_authenticated_info'])
+  and bucket_id='vault-e2ee-blobs'
   and array_length(storage.foldername(name),1)=2
   and (storage.foldername(name))[1] ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   and (storage.foldername(name))[2] ~ '^[1-9][0-9]*$'
