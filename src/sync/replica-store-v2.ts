@@ -4,6 +4,7 @@ import { activeKey, markdownName, validateName } from '../domain/paths.js';
 import { nextVersion } from '../domain/integrity.js';
 import type {
   AccountId,
+  AttachmentContent,
   DirtyEntry,
   Entry,
   EntryId,
@@ -386,6 +387,76 @@ function samePendingEntity(
   return rows.some(row=>row.protocolVersion===2&&row.accountId===accountId&&pendingEntityIds(row).includes(entryId));
 }
 
+async function cloneActiveSubtreeForKeepBoth(
+  tx:StorageTransaction,
+  vaultId:VaultId,
+  sourceRootId:EntryId,
+  copyRootId:EntryId,
+  timestamp:string,
+  touched:Set<EntryId>,
+):Promise<void>{
+  const all=await tx.store('entries').allFromIndex<Entry>('vaultId',vaultId);
+  const childrenByParent=new Map<EntryId,Entry[]>();
+  for(const entry of all){
+    if(entry.deletedAt!==null||entry.parentId===null)continue;
+    const children=childrenByParent.get(entry.parentId)??[];
+    children.push(entry);
+    childrenByParent.set(entry.parentId,children);
+  }
+  for(const children of childrenByParent.values()){
+    children.sort((a,b)=>a.name.localeCompare(b.name)||a.id.localeCompare(b.id));
+  }
+
+  const idMap=new Map<EntryId,EntryId>([[sourceRootId,copyRootId]]);
+  const queue:EntryId[]=[sourceRootId];
+  const visited=new Set<EntryId>();
+
+  while(queue.length){
+    const sourceParentId=queue.shift()!;
+    if(visited.has(sourceParentId)) throw new VaultError('CYCLE','Keep Both cannot clone a cyclic local folder tree.');
+    visited.add(sourceParentId);
+    const copyParentId=idMap.get(sourceParentId);
+    if(!copyParentId) throw new VaultError('CORRUPT','Keep Both folder clone lost its parent identity mapping.');
+
+    for(const child of childrenByParent.get(sourceParentId)??[]){
+      const cloneId=newUuidV7() as EntryId;
+      const key=activeKey(vaultId,copyParentId,child.name);
+      const collision=await tx.store('entries').fromIndex<Entry>('activeKey',key);
+      if(collision) throw new VaultError('COLLISION','Keep Both folder copy collides with an existing local path.');
+
+      const clone:Entry={
+        ...child,
+        id:cloneId,
+        parentId:copyParentId,
+        createdAt:timestamp,
+        updatedAt:timestamp,
+        localVersion:1,
+        deletedAt:null,
+        deletionBatch:null,
+        activeKey:key,
+      };
+      await tx.store('entries').put(clone);
+
+      let text:string|null=null;
+      if(child.kind==='markdown'){
+        const body=await tx.store('contents').get<MarkdownContent>(child.id);
+        if(!body) throw new VaultError('CORRUPT','Keep Both cannot clone a Markdown child whose content is missing.');
+        text=rekeyTaskIdentityMarkers(body.text).text;
+        await tx.store('contents').put({entryId:cloneId,text,localVersion:1} satisfies MarkdownContent);
+      }else if(child.kind==='attachment'){
+        const attachment=await tx.store('attachments').get<AttachmentContent>(child.id);
+        if(!attachment) throw new VaultError('CORRUPT','Keep Both cannot clone an attachment child whose bytes are missing.');
+        await tx.store('attachments').put({...structuredClone(attachment),entryId:cloneId} satisfies AttachmentContent);
+      }
+
+      await ensureDirty(tx,{entry:clone,text});
+      touched.add(cloneId);
+      idMap.set(child.id,cloneId);
+      if(child.kind==='directory')queue.push(child.id);
+    }
+  }
+}
+
 export class EncryptedReplicaStoreV2 {
   private readonly driver:LocalStorageDriver;
 
@@ -648,32 +719,7 @@ export class EncryptedReplicaStoreV2 {
         createdCopyId=copyId;
 
         if(copyState.entityType==='folder'){
-          const entries=await tx.store('entries').allFromIndex<Entry>('vaultId',vaultId);
-          for(const child of entries){
-            if(child.id===entryId||child.id===copyId||child.parentId!==entryId)continue;
-            const childLocal=await readLocalInTx(tx,child.id);
-            if(!childLocal)continue;
-            const childName=child.name;
-            const childKey=child.deletedAt===null?activeKey(vaultId,copyId,childName):undefined;
-            if(childKey){
-              const collision=await tx.store('entries').fromIndex<Entry>('activeKey',childKey);
-              if(collision&&collision.id!==child.id)throw new VaultError('COLLISION','Keep Both folder copy collides with a child path.');
-            }
-            const updatedChild:Entry={
-              ...child,
-              parentId:copyId,
-              updatedAt:timestamp,
-              localVersion:nextVersion(child.localVersion),
-              ...(childKey?{activeKey:childKey}:{}),
-            };
-            await tx.store('entries').put(updatedChild);
-            if(child.kind==='markdown'){
-              const body=await tx.store('contents').get<MarkdownContent>(child.id);
-              if(body)await tx.store('contents').put({...body,localVersion:updatedChild.localVersion});
-            }
-            await ensureDirty(tx,{entry:updatedChild,text:childLocal.text});
-            touched.add(child.id);
-          }
+          await cloneActiveSubtreeForKeepBoth(tx,vaultId,entryId,copyId,timestamp,touched);
         }
 
         const resolved=await markSyncConflictResolutionInTx(tx,refreshed,{
