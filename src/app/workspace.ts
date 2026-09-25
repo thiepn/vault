@@ -1565,7 +1565,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       const queued=await syncStateV2.count(vault.id,vault.cloud.accountId);
       const encrypted=latest && 'deferredAttachments' in latest ? latest : null;
       cachedSyncDetail=encrypted
-        ? `End-to-end encrypted · Protocol v2 · Cursor ${encrypted.cursor} · ${encrypted.pulledEvents} pulled · ${encrypted.pushedOperations} pushed · ${encrypted.uploadedBlobs}↑/${encrypted.downloadedBlobs}↓ encrypted blobs · ${encrypted.reusedBlobs} reused · ${queued} queued`
+        ? `End-to-end encrypted · Protocol v2 · Cursor ${encrypted.cursor} · ${encrypted.pulledEvents} pulled · ${encrypted.pushedOperations} pushed · ${encrypted.uploadedBlobs}↑/${encrypted.downloadedBlobs}↓ encrypted blobs · ${encrypted.reusedBlobs} reused · ${encrypted.attachmentConflictsPreserved} attachment conflict cop${encrypted.attachmentConflictsPreserved===1?'y':'ies'} preserved · ${queued} queued`
         : `End-to-end encrypted · Protocol v2 · Cursor ${cursor?.cursor ?? '0'} · Notes/Folders/Attachments encrypted sync · ${queued} queued`;
       return;
     }
@@ -1682,7 +1682,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
       if (!background) {
         renderCloudDialog(encryptedSummary
-          ? `Encrypted sync complete: ${encryptedSummary.pulledEvents} pulled, ${encryptedSummary.pushedOperations} pushed, ${encryptedSummary.localChangedAfterOwnPush} newer local edit${encryptedSummary.localChangedAfterOwnPush===1?'':'s'} preserved, ${encryptedSummary.uploadedBlobs} encrypted blob${encryptedSummary.uploadedBlobs===1?'':'s'} uploaded, ${encryptedSummary.downloadedBlobs} downloaded, ${encryptedSummary.reusedBlobs} reused.`
+          ? `Encrypted sync complete: ${encryptedSummary.pulledEvents} pulled, ${encryptedSummary.pushedOperations} pushed, ${encryptedSummary.localChangedAfterOwnPush} newer local edit${encryptedSummary.localChangedAfterOwnPush===1?'':'s'} preserved, ${encryptedSummary.uploadedBlobs} encrypted blob${encryptedSummary.uploadedBlobs===1?'':'s'} uploaded, ${encryptedSummary.downloadedBlobs} downloaded, ${encryptedSummary.reusedBlobs} reused, ${encryptedSummary.attachmentConflictsPreserved} attachment conflict cop${encryptedSummary.attachmentConflictsPreserved===1?'y':'ies'} preserved.`
           : `Sync complete: ${legacySummary!.pulledEvents} pulled, ${legacySummary!.pushedOperations} pushed, ${legacySummary!.autoMergedMarkdown} auto-merged, ${legacySummary!.conflictsPreserved} conflict${legacySummary!.conflictsPreserved === 1 ? '' : 's'} preserved.`);
       } else if (cloudDialog.open) {
         renderCloudDialog();
