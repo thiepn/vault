@@ -245,7 +245,7 @@ async function removePendingForEntity(
   return removed;
 }
 
-async function ensureDirty(tx:StorageTransaction,local:LocalReplicaEntry):Promise<void>{
+async function ensureDirty(tx:StorageTransaction,local:{entry:Entry}):Promise<void>{
   const existing=await tx.store('dirty').get<DirtyEntry>(local.entry.id);
   if(existing&&existing.localVersion===local.entry.localVersion) return;
   await tx.store('dirty').put({
