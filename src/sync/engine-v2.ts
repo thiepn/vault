@@ -19,7 +19,6 @@ export interface EncryptedSyncRunSummaryV2 {
   conflictsCaptured:number;
   autoMergedEntities:number;
   attachmentConflictsPreserved:number;
-  deferredAttachments:number;
   uploadedBlobs:number;
   downloadedBlobs:number;
   reusedBlobs:number;
@@ -127,7 +126,6 @@ export class EncryptedSyncEngineV2 {
       conflictsCaptured:0,
       autoMergedEntities:0,
       attachmentConflictsPreserved:0,
-      deferredAttachments:0,
       uploadedBlobs:0,
       downloadedBlobs:0,
       reusedBlobs:0,
