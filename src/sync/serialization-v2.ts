@@ -271,6 +271,7 @@ export async function serializeLocalEntityV2(input:{
 function parsePayload(bytes:Uint8Array,expected:'folder'):FolderPayloadV1;
 function parsePayload(bytes:Uint8Array,expected:'note'):NotePayloadV1;
 function parsePayload(bytes:Uint8Array,expected:'attachment'):AttachmentPayloadV1;
+function parsePayload(bytes:Uint8Array,expected:'folder'|'note'|'attachment'):SyncPlaintextPayloadV1;
 function parsePayload(
   bytes:Uint8Array,
   expected:'folder'|'note'|'attachment',
