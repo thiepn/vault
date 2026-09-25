@@ -1,5 +1,5 @@
 import { VaultError } from '../domain/errors.js';
-import { canonicalIdFromEntry, entryIdFromCanonical, newUuidV7 } from '../domain/canonical.js';
+import { asCanonicalId, canonicalIdFromEntry, entryIdFromCanonical, newUuidV7 } from '../domain/canonical.js';
 import { activeKey, markdownName, validateName } from '../domain/paths.js';
 import { nextVersion } from '../domain/integrity.js';
 import type {
@@ -180,7 +180,7 @@ function stateFromRemote(remote:DecryptedSyncEntityV2):SyncEntityStateV2{
 
 function stateFromShadow(shadow:SyncRemoteShadowV2):SyncEntityStateV2{
   const parentId=shadow.structural.parentId
-    ? entryIdFromCanonical(shadow.structural.parentId)
+    ? entryIdFromCanonical(asCanonicalId('folder',shadow.structural.parentId))
     : null;
   return {
     entryId:shadow.entryId,
@@ -197,7 +197,14 @@ function stateFromShadow(shadow:SyncRemoteShadowV2):SyncEntityStateV2{
 
 function pendingEntityIds(row:SyncOutboxRecordV2):EntryId[]{
   if(row.protocolVersion!==2) return [];
-  return decodeOperationV2(row.wire).mutations.map(mutation=>entryIdFromCanonical(mutation.entityId));
+  return decodeOperationV2(row.wire).mutations.map(mutation=>{
+    switch(mutation.entityType){
+      case 'note': return entryIdFromCanonical(asCanonicalId('note',mutation.entityId));
+      case 'folder': return entryIdFromCanonical(asCanonicalId('folder',mutation.entityId));
+      case 'attachment': return entryIdFromCanonical(asCanonicalId('attachment',mutation.entityId));
+      default: throw new VaultError('UNSUPPORTED','Protocol v2 outbox contains an entity type that is not file-backed.');
+    }
+  });
 }
 
 async function removePendingForEntity(
@@ -457,6 +464,8 @@ export class EncryptedReplicaStoreV2 {
     epoch:string;
     resolution:'keep-local'|'keep-remote'|'manual'|'keep-both';
     manualText?:string;
+    conflictId?:string;
+    expectedUpdatedAt?:string;
   }):Promise<{conflict:SyncConflictRecordV2;createdCopyId:EntryId|null}>{
     const {vaultId,entryId,accountId,epoch,resolution}=input;
     const touched=new Set<EntryId>();
@@ -473,6 +482,10 @@ export class EncryptedReplicaStoreV2 {
         if(!conflict) throw new VaultError('NOT_FOUND','The encrypted synchronization conflict is no longer open.');
         if(conflict.status!=='open'){
           throw new VaultError('STALE_WRITE','This conflict resolution is already waiting for synchronization.');
+        }
+        if((input.conflictId&&conflict.id!==input.conflictId)
+          ||(input.expectedUpdatedAt&&conflict.updatedAt!==input.expectedUpdatedAt)){
+          throw new VaultError('STALE_WRITE','The synchronization conflict changed after the resolver opened. Reopen it before choosing a resolution.');
         }
         if(conflict.accountId!==accountId||conflict.epoch!==epoch){
           throw new VaultError('ACCOUNT_MISMATCH','Conflict resolution belongs to another Account/epoch.');
@@ -646,7 +659,7 @@ export class EncryptedReplicaStoreV2 {
               parentId:copyId,
               updatedAt:timestamp,
               localVersion:nextVersion(child.localVersion),
-              ...(childKey?{activeKey:childKey}:{activeKey:undefined}),
+              ...(childKey?{activeKey:childKey}:{}),
             };
             await tx.store('entries').put(updatedChild);
             if(child.kind==='markdown'){
