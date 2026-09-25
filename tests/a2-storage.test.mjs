@@ -23,8 +23,8 @@ const ids = [
 ];
 
 test('A2 schema adds canonical, background-replication and conflict-resolution stores', () => {
-  assert.equal(SCHEMA_VERSION, 6);
-  for (const store of ['entities','noteBodies','blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts']) {
+  assert.equal(SCHEMA_VERSION, 7);
+  for (const store of ['entities','noteBodies','blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts','syncConflicts']) {
     assert.ok(STORES.includes(store), store);
   }
 });
@@ -145,6 +145,54 @@ test('A2 cross-note task identity collisions are rekeyed instead of aliasing one
   assert.equal(taskIdentityFromRaw(reconciled.text.trimEnd()), replacement);
   assert.equal(used.has(shared), true);
   assert.equal(used.has(replacement), true);
+});
+
+
+test('A2 full archive round-trips unresolved Protocol v2 conflicts without losing BASE/LOCAL/REMOTE', async () => {
+  const vaultId = '11111111-1111-4111-8111-111111111111';
+  const noteId = '22222222-2222-4222-8222-222222222222';
+  const conflictId = '019c0000-0000-7000-8000-000000000099';
+  const accountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const now = '2026-09-23T12:00:00.000Z';
+  const state = text => ({
+    entryId:noteId,vaultId,entityType:'note',parentId:null,name:'Conflict.md',
+    createdAt:now,updatedAt:now,deletedAt:null,text,
+  });
+  const conflict = {
+    protocolVersion:2,id:conflictId,vaultId,entryId:noteId,accountId,
+    epoch:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',entityType:'note',kind:'markdown',
+    status:'open',baseRevision:'1',remoteRevision:'2',remoteSequence:'2',
+    remoteNameToken:'N'.repeat(43),remoteKeyGeneration:1,remoteStateSha256:'a'.repeat(64),
+    base:state('BASE\n'),local:state('LOCAL\n'),remote:state('REMOTE\n'),
+    markdownConflictIds:['block:0'],source:'pull',resolution:null,resolutionText:null,
+    createdAt:now,updatedAt:now,resolvedAt:null,
+  };
+  const snapshot = {
+    format:'vault-local-backup',version:2,exportedAt:now,
+    vault:{id:vaultId,name:'Conflict archive',createdAt:now,updatedAt:now,mode:'local'},
+    entries:[{
+      id:noteId,vaultId,parentId:null,name:'Conflict.md',kind:'markdown',
+      createdAt:now,updatedAt:now,localVersion:2,deletedAt:null,deletionBatch:null,
+      activeKey:vaultId + '/root/conflict.md',
+    }],
+    contents:[{entryId:noteId,text:'LOCAL\n',localVersion:2}],
+    attachments:[],recoveryDrafts:[],revisions:[],conflicts:[],syncConflicts:[conflict],
+  };
+  const entities = [{
+    id:vaultId,entityType:'vault',name:'Conflict archive',schemaVersion:1,revision:1,
+    createdAt:now,updatedAt:now,deletedAt:null,properties:{},
+  },{
+    id:noteId,entityType:'note',vaultId,title:'Conflict',folderId:null,aliases:[],
+    noteKind:'standard',schemaVersion:1,revision:2,createdAt:now,updatedAt:now,
+    deletedAt:null,properties:{},bodyStore:'noteBodies',
+  }];
+  const bodies=[{noteId,vaultId,revision:2,text:'LOCAL\n'}];
+
+  const files=await fullVaultArchiveFiles(snapshot,entities,bodies);
+  await assert.doesNotReject(()=>validateFullVaultArchiveFiles(files));
+  const parsed=await parseFullVaultArchiveFiles(readZipStore(zipStore(files)));
+  assert.equal(parsed.state.syncConflicts.length,1);
+  assert.deepEqual(parsed.state.syncConflicts[0],conflict);
 });
 
 
