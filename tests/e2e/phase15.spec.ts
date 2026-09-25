@@ -686,7 +686,7 @@ test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrat
   // Simulate a clean device that has metadata/key material but lacks this local
   // Attachment replica. Rewind only to the event immediately before the
   // Attachment and require authenticated hydration on the next sync.
-  await page.evaluate(async({attachmentId,cursor})=>{
+  await page.evaluate(async({attachmentId,cursor,vaultId})=>{
     const request=indexedDB.open('vault:local');
     const db:IDBDatabase=await new Promise((resolve,reject)=>{
       request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
@@ -697,7 +697,7 @@ test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrat
     tx.objectStore('dirty').delete(attachmentId);
     tx.objectStore('remoteShadows').delete(attachmentId);
     const cursorStore=tx.objectStore('syncCursors');
-    const currentReq=cursorStore.get(remote.remoteVaultId);
+    const currentReq=cursorStore.get(vaultId);
     const current=await new Promise<any>((resolve,reject)=>{
       currentReq.onsuccess=()=>resolve(currentReq.result);currentReq.onerror=()=>reject(currentReq.error);
     });
@@ -706,7 +706,7 @@ test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrat
       tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);tx.onerror=()=>reject(tx.error);
     });
     db.close();
-  },{attachmentId,cursor:Number(attachmentEvent.sequence)-1});
+  },{attachmentId,cursor:Number(attachmentEvent.sequence)-1,vaultId:remote.remoteVaultId});
 
   await dialog.locator('[data-cloud-action="sync"]').click();
   await expect(dialog.locator('.cloud-message')).toContainText('Encrypted sync complete',{timeout:20_000});
