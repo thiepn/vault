@@ -112,6 +112,25 @@ export async function deriveBlobIdKey(input: {
   );
 }
 
+export async function deriveBlobEncryptionKey(input: {
+  vmk: Uint8Array;
+  vaultId: VaultId;
+  blobId: RemoteBlobId;
+  keyGeneration: number;
+}): Promise<CryptoKey> {
+  assertVaultMasterKey(input.vmk);
+  const vaultId = canonicalUuid(input.vaultId, 'VaultId');
+  const keyGeneration = generation(input.keyGeneration);
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(input.blobId)) {
+    throw new VaultError('PROTOCOL', 'BlobId is invalid.');
+  }
+  return deriveAes256GcmKey(
+    input.vmk,
+    kdfSalt(input.vaultId, keyGeneration),
+    canonicalContext(['vault/blob-key/v1', vaultId, input.blobId, keyGeneration]),
+  );
+}
+
 export async function createBlobId(input: {
   vmk: Uint8Array;
   vaultId: VaultId;
