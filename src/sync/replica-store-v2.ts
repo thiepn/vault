@@ -26,6 +26,7 @@ import { decodeOperationV2, type EncryptedEntityStructural, type NameToken } fro
 import type { SyncOutboxRecordV2 } from './local-state-v2.js';
 import {
   reconcileSyncEntityV2,
+  syncEntityAuthoredEqualV2,
   type SyncEntityStateV2,
 } from './reconcile-v2.js';
 import type { DecryptedSyncEntityV2, SyncPlaintextPayloadV1 } from './serialization-v2.js';
@@ -493,9 +494,13 @@ export class EncryptedReplicaStoreV2 {
 
         const currentLocal=await readLocalInTx(tx,entryId);
         if(!currentLocal) throw new VaultError('CORRUPT','The conflicted local entity no longer exists.');
+        const currentLocalState=stateFromLocal(currentLocal);
+        if(input.expectedUpdatedAt && !syncEntityAuthoredEqualV2(currentLocalState,conflict.local)){
+          throw new VaultError('STALE_WRITE','The local entity changed after the resolver opened. Reopen it before choosing a resolution.');
+        }
         const refreshed:SyncConflictRecordV2={
           ...conflict,
-          local:stateFromLocal(currentLocal),
+          local:currentLocalState,
           updatedAt:new Date().toISOString(),
         };
         await updateSyncConflictInTx(tx,refreshed);
