@@ -10,6 +10,7 @@ import { EncryptedReplicaStoreV2 } from '../build/core/sync/replica-store-v2.js'
 import { SyncLocalStateV2 } from '../build/core/sync/local-state-v2.js';
 import { EncryptedSyncEngineV2 } from '../build/core/sync/engine-v2.js';
 import { decodeOperationV2 } from '../build/core/sync/protocol-v2.js';
+import { SupabaseSyncTransport } from '../build/core/sync/transport.js';
 import { LocalRepository } from '../build/core/storage/local-repository.js';
 
 const accountId='11111111-1111-4111-8111-111111111111';
@@ -356,6 +357,82 @@ test('I7 lost upload response recovers idempotently from immutable existing ciph
     assert.equal(server.uploadCalls,1);
     assert.equal(server.events.length,1);
   }finally{context.destroy();}
+});
+
+test('I7 large ciphertext uses 6 MiB TUS chunks and resumes from the server offset',async()=>{
+  const chunkBytes=6*1024*1024;
+  const bytes=Uint8Array.from({length:chunkBytes+12345},(_,index)=>(index*17+3)&255);
+  const blobId='B'.repeat(43);
+  const descriptor={
+    status:'upload',
+    bucket:'vault-e2ee-blobs',
+    path:`${vaultId}/1/${blobId}`,
+    blobId,
+    keyGeneration:1,
+    ciphertextSize:bytes.byteLength,
+  };
+  let serverOffset=0;
+  let interrupted=false;
+  let headCalls=0;
+  const patchOffsets=[];
+  const urls=[];
+
+  const fakeFetch=async(input,init={})=>{
+    const url=String(input);
+    const method=init.method??'GET';
+    const headers=new Headers(init.headers);
+    urls.push(url);
+
+    if(method==='POST'){
+      assert.equal(url,'https://bskfihouwdogrunnglbg.storage.supabase.co/storage/v1/upload/resumable');
+      assert.equal(headers.get('Tus-Resumable'),'1.0.0');
+      assert.equal(headers.get('Upload-Length'),String(bytes.byteLength));
+      assert.equal(headers.get('x-upsert'),'false');
+      const metadata=headers.get('Upload-Metadata');
+      assert.match(metadata,/bucketName /u);
+      assert.match(metadata,/objectName /u);
+      assert.equal(metadata.includes('secret'),false);
+      return new Response(null,{
+        status:201,
+        headers:{Location:'/storage/v1/upload/resumable/session-1'},
+      });
+    }
+
+    if(method==='HEAD'){
+      headCalls++;
+      assert.equal(headers.get('Tus-Resumable'),'1.0.0');
+      return new Response(null,{status:200,headers:{'Upload-Offset':String(serverOffset)}});
+    }
+
+    if(method==='PATCH'){
+      const offset=Number(headers.get('Upload-Offset'));
+      patchOffsets.push(offset);
+      assert.equal(headers.get('Content-Type'),'application/offset+octet-stream');
+      if(offset===chunkBytes&&!interrupted){
+        interrupted=true;
+        throw new Error('simulated transient chunk interruption');
+      }
+      assert.equal(offset,serverOffset);
+      const body=init.body;
+      assert.ok(body instanceof Uint8Array);
+      serverOffset+=body.byteLength;
+      return new Response(null,{status:204,headers:{'Upload-Offset':String(serverOffset)}});
+    }
+
+    throw new Error('unexpected TUS request '+method+' '+url);
+  };
+
+  const transport=new SupabaseSyncTransport(
+    {url:'https://bskfihouwdogrunnglbg.supabase.co',publishableKey:'publishable-test'},
+    async()=> 'access-token',
+    fakeFetch,
+  );
+  const result=await transport.uploadEncryptedBlobV2(descriptor,bytes);
+  assert.equal(result,'uploaded');
+  assert.equal(serverOffset,bytes.byteLength);
+  assert.equal(headCalls,1);
+  assert.deepEqual(patchOffsets,[0,chunkBytes,chunkBytes]);
+  assert.equal(urls.some(url=>url.includes('.storage.supabase.co')),true);
 });
 
 test('I7 READY blob reuse is authenticated before a new Attachment entity may reference it',async()=>{
