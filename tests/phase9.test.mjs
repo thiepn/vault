@@ -62,7 +62,7 @@ class MemoryStore {
 class MemoryDriver {
   stores = new Map();
   constructor() {
-    for (const name of ['vaults','entries','contents','attachments','dirty','outbox','revisions','drafts','settings','remoteShadows','syncCursors','knowledge','conflicts']) {
+    for (const name of ['vaults','entries','contents','attachments','dirty','outbox','revisions','drafts','settings','remoteShadows','syncCursors','knowledge','conflicts','syncConflicts']) {
       this.stores.set(name, new Map());
     }
   }

@@ -14,6 +14,8 @@ export interface EncryptedSyncRunSummaryV2 {
   observedOwnOperations:number;
   appliedRemoteEntities:number;
   localChangedAfterOwnPush:number;
+  conflictsCaptured:number;
+  autoMergedEntities:number;
   deferredAttachments:number;
   outboxRemaining:number;
   cursor:string;
@@ -116,6 +118,8 @@ export class EncryptedSyncEngineV2 {
       observedOwnOperations:0,
       appliedRemoteEntities:0,
       localChangedAfterOwnPush:0,
+      conflictsCaptured:0,
+      autoMergedEntities:0,
       deferredAttachments:0,
       outboxRemaining:0,
       cursor:cursor.cursor,
@@ -191,6 +195,8 @@ export class EncryptedSyncEngineV2 {
         summary.observedOwnOperations+=applied.observedOwnOperations;
         summary.appliedRemoteEntities+=applied.appliedRemoteEntities;
         summary.localChangedAfterOwnPush+=applied.localChangedAfterOwnPush;
+        summary.conflictsCaptured+=applied.conflictsCaptured;
+        summary.autoMergedEntities+=applied.autoMergedEntities;
 
         // Acknowledgement is operational metadata. Local canonical state/cursor
         // are already durable; an ack network failure must not roll them back.
@@ -236,6 +242,7 @@ export class EncryptedSyncEngineV2 {
         summary.deferredAttachments++;
         continue;
       }
+      if(await this.replica.refreshConflictLocal(vault.id,item.entryId,accountId,binding.epoch)) continue;
       if(await this.state.pendingForEntity(vault.id,accountId,item.entryId).then(rows=>rows.length>0)) continue;
 
       const local=await this.replica.read(item.entryId);
@@ -331,7 +338,16 @@ export class EncryptedSyncEngineV2 {
           sha256:row.sha256,
         };
         const result=await this.transport.pushV2(sealed);
-        if(result.status==='conflict') throw conflictError(result.reason);
+        if(result.status==='conflict'){
+          // A 409 response proves this exact immutable operation was rejected.
+          // Revision/exists/name races are learned through the next ordered pull,
+          // where BASE/LOCAL/REMOTE reconciliation can advance the cursor safely.
+          if(result.reason==='revision'||result.reason==='exists'||result.reason==='name'){
+            await this.state.acknowledge(row.id);
+            continue;
+          }
+          throw conflictError(result.reason);
+        }
 
         const decoded=decodeOperationV2(row.wire) as SyncOperationV2;
         if(decoded.mutations.length!==1||result.snapshots.length!==1

@@ -2,13 +2,14 @@ import { VaultError } from '../domain/errors.js';
 import type { Principal } from '../domain/model.js';
 
 /**
- * Schema v6 extends the A2 persistence foundation with interactive Markdown
- * conflict records while retaining worker-readable background replication state.
+ * Schema v7 adds Protocol v2 multi-device conflict records without rewriting the
+ * legacy Phase 22 plaintext conflict store. Both remain restorable during the
+ * transition, while syncConflicts becomes the E2EE reconciliation authority.
  * Phase 1–11 stores stay intact while canonical entities/note bodies/blobs are
  * populated and verified before a later cut-over. This makes upgrade rollback
  * possible without re-identifying existing content.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 export const STORES = [
   'vaults',
   'entries',
@@ -29,6 +30,7 @@ export const STORES = [
   'backgroundRuntime',
   'remoteInbox',
   'conflicts',
+  'syncConflicts',
 ] as const;
 export type StoreName = typeof STORES[number];
 
@@ -104,6 +106,13 @@ export async function openDatabase(name = databaseName({ kind: 'local' })): Prom
         conflicts.createIndex('vaultId', 'vaultId');
         conflicts.createIndex('entryId', 'entryId');
         conflicts.createIndex('conflictEntryId', 'conflictEntryId');
+      }
+      if (event.oldVersion < 7) {
+        const syncConflicts = db.createObjectStore('syncConflicts', { keyPath: 'id' });
+        syncConflicts.createIndex('vaultId', 'vaultId');
+        syncConflicts.createIndex('entryId', 'entryId');
+        syncConflicts.createIndex('status', 'status');
+        syncConflicts.createIndex('vaultEntry', ['vaultId', 'entryId']);
       }
     };
     req.onsuccess = () => {

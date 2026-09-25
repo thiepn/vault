@@ -65,7 +65,7 @@ export function asCanonicalId<K extends CanonicalEntityType>(entityType: K, valu
  * Generates an offline-safe UUIDv7. Existing Vault UUIDv4 EntryIds remain valid
  * canonical identities through asCanonicalId/canonicalIdFromEntry; A1 never re-IDs data.
  */
-export function newCanonicalId<K extends CanonicalEntityType>(entityType: K): CanonicalEntityId<K> {
+export function newUuidV7(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   let timestamp = Date.now();
 
@@ -78,15 +78,18 @@ export function newCanonicalId<K extends CanonicalEntityType>(entityType: K): Ca
   bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
 
   const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0'));
-  const value =
+  return (
     hex.slice(0, 4).join('') + '-' +
     hex.slice(4, 6).join('') + '-' +
     hex.slice(6, 8).join('') + '-' +
     hex.slice(8, 10).join('') + '-' +
-    hex.slice(10, 16).join('');
+    hex.slice(10, 16).join('')
+  );
+}
 
+export function newCanonicalId<K extends CanonicalEntityType>(entityType: K): CanonicalEntityId<K> {
   void entityType;
-  return value as CanonicalEntityId<K>;
+  return newUuidV7() as CanonicalEntityId<K>;
 }
 
 /** Bridge existing Phase 1–11 entry identities into the A1 domain without changing bytes. */

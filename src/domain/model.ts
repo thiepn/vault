@@ -143,4 +143,6 @@ export interface VaultSnapshot {
   recoveryDrafts: RecoveryDraft[];
   revisions?: LocalRevision[];
   conflicts?: MarkdownConflictRecord[];
+  /** Protocol v2 BASE/LOCAL/REMOTE conflicts; type-only import avoids duplicating the wire-independent record model. */
+  syncConflicts?: import('../sync/conflict-store-v2.js').SyncConflictRecordV2[];
 }

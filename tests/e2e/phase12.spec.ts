@@ -157,19 +157,27 @@ test('Phase 12 spatial Canvas persists authored geometry and interactions on des
   await expect(canvas).toBeVisible();
   const header = canvas.locator('[data-canvas-node="text-idea"] .canvas-node-header');
   await expect(header).toBeVisible();
-  const box = await header.boundingBox();
-  expect(box).not.toBeNull();
-  const start = { x: box!.x + 40, y: box!.y + 14 };
-  const end = { x: box!.x + 140, y: box!.y + 74 };
+
+  // Fit can synchronously replace the Canvas widget. Resolve geometry and
+  // dispatch mousedown against the same fresh DOM node so the test does not
+  // race a legitimate CodeMirror widget re-render between visibility and
+  // boundingBox() calls.
+  const start = await header.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) throw new Error('Canvas drag header has no rendered geometry.');
+    const point = { x: rect.x + 40, y: rect.y + 14 };
+    element.dispatchEvent(new MouseEvent('mousedown', {
+      bubbles:true, cancelable:true, button:0, buttons:1,
+      clientX:point.x, clientY:point.y,
+    }));
+    return point;
+  });
+  const end = { x: start.x + 100, y: start.y + 60 };
 
   // CDP page.mouse injection does not consistently synthesize the DOM mouse
   // sequence used by this custom spatial surface. Dispatch the actual browser
   // events handled by the production fallback and certify both visual motion
   // and canonical persistence.
-  await header.dispatchEvent('mousedown', {
-    bubbles:true, cancelable:true, button:0, buttons:1,
-    clientX:start.x, clientY:start.y,
-  });
   await page.evaluate(({ x, y }) => {
     window.dispatchEvent(new MouseEvent('mousemove', {
       bubbles:true, cancelable:true, button:0, buttons:1, clientX:x, clientY:y,
