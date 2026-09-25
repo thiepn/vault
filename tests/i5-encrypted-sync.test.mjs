@@ -428,7 +428,7 @@ test('I5 push order is dependency-safe even when the durable outbox returns chil
   }finally{context.destroy();}
 });
 
-test('I5 foreign encrypted change racing dirty local work fails closed without cursor advance',async()=>{
+test('I6 upgrades the I5 foreign-change boundary to durable conflict capture with cursor progress',async()=>{
   const driver=new MemoryDriver();
   driver.stores.get('vaults').set(vaultId,cloudVault(2));
   const repository=new LocalRepository(driver);
@@ -454,12 +454,17 @@ test('I5 foreign encrypted change racing dirty local work fails closed without c
       updatedAt:'2026-09-23T12:05:00.000Z',
     };
     const opened=await decryptRemoteEntityV2({snapshot,crypto:context});
-    await assert.rejects(()=>replica.applyPage({
+    const applied=await replica.applyPage({
       accountId,epoch,expectedAfter:'0',through:'1',events:[opened],
-    }),error=>error?.code==='MERGE_REQUIRED');
-    assert.equal((await state.cursor(vaultId,accountId)).cursor,'0');
+    });
+    assert.equal(applied.conflictsCaptured,1);
+    assert.equal((await state.cursor(vaultId,accountId)).cursor,'1');
     assert.equal((await repository.read(note.id)).content.text,'local');
     assert.equal(driver.stores.get('dirty').size,1);
+    const conflicts=[...driver.stores.get('syncConflicts').values()];
+    assert.equal(conflicts.length,1);
+    assert.equal(conflicts[0].entryId,note.id);
+    assert.equal(conflicts[0].status,'open');
   }finally{context.destroy();}
 });
 
