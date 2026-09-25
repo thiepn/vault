@@ -22,8 +22,15 @@ async function createVault(page:Page,name:string){
   await confirmTextDialog(page,name);
 }
 
+async function ensureSidebarOpen(page:Page){
+  if(await page.locator('.sidebar-tabs').isVisible()) return;
+  await page.locator('[data-action="files"]').click();
+  await expect(page.locator('.workspace')).toHaveAttribute('data-sidebar-open','true');
+}
+
 async function createNote(page:Page,name:string,text:string){
-  await page.locator('[data-command="file.create"]').click();
+  await ensureSidebarOpen(page);
+  await page.locator('.sidebar [data-command="file.create"]').click();
   await confirmTextDialog(page,name);
   const editor=page.locator('.cm-content');
   await editor.click();
