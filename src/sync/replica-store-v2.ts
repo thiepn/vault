@@ -70,6 +70,7 @@ export interface ApplyEncryptedPageResult {
   localChangedAfterOwnPush: number;
   conflictsCaptured: number;
   autoMergedEntities: number;
+  attachmentConflictsPreserved: number;
   cursor: string;
 }
 
@@ -453,6 +454,80 @@ async function conflictSafeName(
   throw new VaultError('COLLISION','Vault could not create a conflict-safe copy name.');
 }
 
+async function attachmentConflictSafeName(
+  tx:StorageTransaction,
+  vaultId:VaultId,
+  parentId:EntryId|null,
+  source:string,
+  suffixSeed:string,
+  ignoreId?:EntryId,
+):Promise<string>{
+  const dot=source.lastIndexOf('.');
+  const stem=dot>0?source.slice(0,dot):source;
+  const ext=dot>0?source.slice(dot):'';
+  const compact=suffixSeed.replace(/-/gu,'').slice(0,6)||'copy';
+  for(let attempt=1;attempt<=999;attempt++){
+    const suffix=attempt===1?` (conflict ${compact})`:` (conflict ${compact} ${attempt})`;
+    const candidate=validateAttachmentName(stem+suffix+ext);
+    const key=activeKey(vaultId,parentId,candidate);
+    const collision=await tx.store('entries').fromIndex<Entry>('activeKey',key);
+    if(!collision||collision.id===ignoreId)return candidate;
+  }
+  throw new VaultError('COLLISION','Vault could not create a conflict-safe attachment name.');
+}
+
+async function safeAttachmentCopyParent(
+  tx:StorageTransaction,
+  local:LocalReplicaEntry,
+  pageById:ReadonlyMap<EntryId,DecryptedSyncEntityV2>,
+):Promise<EntryId|null>{
+  const parentId=local.entry.parentId;
+  if(!parentId)return null;
+  const incoming=pageById.get(parentId);
+  if(incoming?.entityType==='folder'&&incoming.deleted)return null;
+  const parent=await tx.store('entries').get<Entry>(parentId);
+  return parent&&parent.kind==='directory'&&parent.deletedAt===null&&parent.vaultId===local.entry.vaultId
+    ?parentId
+    :null;
+}
+
+async function preserveLocalAttachmentCopy(
+  tx:StorageTransaction,
+  local:LocalReplicaEntry,
+  pageById:ReadonlyMap<EntryId,DecryptedSyncEntityV2>,
+  touched:Set<EntryId>,
+):Promise<EntryId|null>{
+  if(local.entry.kind!=='attachment'||!local.attachment||local.entry.deletedAt!==null)return null;
+  const copyId=newUuidV7() as EntryId;
+  const parentId=await safeAttachmentCopyParent(tx,local,pageById);
+  const name=await attachmentConflictSafeName(
+    tx,local.entry.vaultId,parentId,local.entry.name,copyId,
+  );
+  const timestamp=new Date().toISOString();
+  const entry:Entry={
+    ...local.entry,
+    id:copyId,
+    parentId,
+    name,
+    createdAt:timestamp,
+    updatedAt:timestamp,
+    localVersion:1,
+    deletedAt:null,
+    deletionBatch:null,
+    activeKey:activeKey(local.entry.vaultId,parentId,name),
+  };
+  const attachment:AttachmentContent={
+    ...structuredClone(local.attachment),
+    entryId:copyId,
+    bytes:local.attachment.bytes.slice(),
+  };
+  await tx.store('entries').put(entry);
+  await tx.store('attachments').put(attachment);
+  await ensureDirty(tx,{entry});
+  touched.add(copyId);
+  return copyId;
+}
+
 function samePendingEntity(
   rows:readonly SyncOutboxRecordV2[],
   accountId:AccountId,
@@ -818,8 +893,9 @@ export class EncryptedReplicaStoreV2 {
     through:string;
     events:readonly DecryptedSyncEntityV2[];
     attachmentBytes?:ReadonlyMap<EntryId,Uint8Array>;
+    localAttachmentSha256?:ReadonlyMap<EntryId,string>;
   }):Promise<ApplyEncryptedPageResult>{
-    const {accountId,epoch,expectedAfter,through,events,attachmentBytes}=input;
+    const {accountId,epoch,expectedAfter,through,events,attachmentBytes,localAttachmentSha256}=input;
     if(!events.length) throw new VaultError('PROTOCOL','Protocol v2 pull page cannot be empty.');
     const vaultId=events[0]!.vaultId;
     for(const event of events){
@@ -870,6 +946,7 @@ export class EncryptedReplicaStoreV2 {
         let localChangedAfterOwnPush=0;
         let conflictsCaptured=0;
         let autoMergedEntities=0;
+        let attachmentConflictsPreserved=0;
         const observedOwn=new Set<string>();
 
         for(const event of events){
@@ -913,13 +990,56 @@ export class EncryptedReplicaStoreV2 {
           }
 
           if(event.entityType==='attachment'){
+            const bytes=attachmentBytes?.get(event.entityId);
+            if(!bytes) throw new VaultError('CORRUPT','Encrypted attachment bytes were not hydrated before canonical apply.');
+
             const dirty=await tx.store('dirty').get<DirtyEntry>(event.entityId);
             const pending=samePendingEntity(allOutbox,accountId,event.entityId);
             if(dirty||pending){
-              throw new VaultError('MERGE_REQUIRED','Concurrent encrypted Attachment change requires explicit reconciliation.');
+              if(!local||local.entry.kind!=='attachment'||!local.attachment){
+                throw new VaultError('CORRUPT','Dirty encrypted Attachment has no complete local replica.');
+              }
+              const sameBytes=localAttachmentSha256?.get(event.entityId)===event.payload.plaintextSha256;
+              const sameAuthored=sameBytes&&localMatchesDecryptedV2(local,event);
+              await removePendingForEntity(tx,allOutbox,accountId,event.entityId);
+              if(!sameAuthored){
+                await preserveLocalAttachmentCopy(tx,local,pageById,touched);
+                attachmentConflictsPreserved++;
+              }
             }
-            const bytes=attachmentBytes?.get(event.entityId);
-            if(!bytes) throw new VaultError('CORRUPT','Encrypted attachment bytes were not hydrated before canonical apply.');
+
+            // A different-ID concurrent local create can occupy the remote path.
+            // Move that local Attachment aside deterministically, preserving its
+            // identity/bytes and keeping it Dirty for the next encrypted push.
+            if(!event.deleted){
+              const desiredKey=activeKey(event.vaultId,event.parentId,event.payload.name);
+              const collision=await tx.store('entries').fromIndex<Entry>('activeKey',desiredKey);
+              if(collision&&collision.id!==event.entityId){
+                const collisionDirty=await tx.store('dirty').get<DirtyEntry>(collision.id);
+                const collisionPending=samePendingEntity(allOutbox,accountId,collision.id);
+                if(!collisionDirty&&!collisionPending||collision.kind!=='attachment'){
+                  throw new VaultError('COLLISION','Remote encrypted Attachment conflicts with an already-clean local path.');
+                }
+                const collisionLocal=await readLocalInTx(tx,collision.id);
+                if(!collisionLocal?.attachment)throw new VaultError('CORRUPT','Colliding local Attachment bytes are unavailable.');
+                await removePendingForEntity(tx,allOutbox,accountId,collision.id);
+                const safeName=await attachmentConflictSafeName(
+                  tx,collision.vaultId,collision.parentId,collision.name,collision.id,collision.id,
+                );
+                const moved:Entry={
+                  ...collision,
+                  name:safeName,
+                  updatedAt:new Date().toISOString(),
+                  localVersion:nextVersion(collision.localVersion),
+                  activeKey:activeKey(collision.vaultId,collision.parentId,safeName),
+                };
+                await tx.store('entries').put(moved);
+                await ensureDirty(tx,{entry:moved});
+                touched.add(moved.id);
+                attachmentConflictsPreserved++;
+              }
+            }
+
             const written=await writeAttachmentState(tx,event,local,bytes,pageById);
             await tx.store('dirty').delete(event.entityId);
             await tx.store('remoteShadows').put(cleanShadow);
@@ -1114,6 +1234,7 @@ export class EncryptedReplicaStoreV2 {
           localChangedAfterOwnPush,
           conflictsCaptured,
           autoMergedEntities,
+          attachmentConflictsPreserved,
           cursor:through,
         };
       },
