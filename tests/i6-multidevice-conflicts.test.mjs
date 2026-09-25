@@ -112,7 +112,7 @@ test('I6 divergent rename and move remain explicit structural conflicts',()=>{
   const move=reconcileSyncEntityV2(
     base,
     noteState({parentId:folderB}),
-    noteState({parentId:null}),
+    noteState({parentId:folderA}),
   );
   // remote == base in this case, so local move wins.
   assert.equal(move.kind,'local');
@@ -181,7 +181,7 @@ function indexValue(value,index){
 class MemoryStore{
   constructor(data,name){this.data=data;this.name=name;}
   async get(key){const v=this.data.get(JSON.stringify(key))??this.data.get(key);return v===undefined?undefined:structuredClone(v);}
-  async getAll(){return [...this.data.values()].map(structuredClone);}
+  async getAll(){return [...this.data.values()].map(value=>structuredClone(value));}
   async fromIndex(index,key){
     const v=[...this.data.values()].find(row=>{
       const actual=indexValue(row,index);
@@ -193,7 +193,7 @@ class MemoryStore{
     return [...this.data.values()].filter(row=>{
       const actual=indexValue(row,index);
       return Array.isArray(actual)?JSON.stringify(actual)===JSON.stringify(key):actual===key;
-    }).map(structuredClone);
+    }).map(value=>structuredClone(value));
   }
   async add(value){
     const key=keyFor(this.name,value);
