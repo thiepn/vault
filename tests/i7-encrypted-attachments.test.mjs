@@ -502,7 +502,7 @@ test('I7 backend contract isolates opaque ciphertext objects from legacy attachm
   assert.match(sql,/vault-e2ee-blobs/u);
   assert.match(sql,/public\.vault_sync_prepare_blob_v2/u);
   assert.match(sql,/public\.vault_sync_commit_blob_v2/u);
-  assert.match(sql,/p_blob_id !~ '\^\[A-Za-z0-9_-\]\{43\}\
+  assert.ok(sql.includes("p_blob_id !~ '^[A-Za-z0-9_-]{43}$'"));
   assert.match(sql,/p_key_generation<>v_active_generation/u);
   assert.match(sql,/v_object_size is distinct from p_ciphertext_size/u);
   assert.match(sql,/state='ready'/u);
