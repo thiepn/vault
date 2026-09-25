@@ -414,8 +414,8 @@ test('I7 large ciphertext uses 6 MiB TUS chunks and resumes from the server offs
       }
       assert.equal(offset,serverOffset);
       const body=init.body;
-      assert.ok(body instanceof Uint8Array);
-      serverOffset+=body.byteLength;
+      assert.ok(body instanceof Blob);
+      serverOffset+=(await body.arrayBuffer()).byteLength;
       return new Response(null,{status:204,headers:{'Upload-Offset':String(serverOffset)}});
     }
 
