@@ -43,13 +43,17 @@ function revision(value:string|null,label:string,allowNull=false):void{
   }
 }
 
+function validTimestamp(value:string|null):boolean{
+  return value===null||(typeof value==='string'&&Number.isFinite(Date.parse(value)));
+}
+
 function validateState(state:SyncEntityStateV2,label:string):void{
   if(!state||typeof state!=='object'||!state.entryId||!state.vaultId) throw new VaultError('CORRUPT',label+' identity is invalid.');
   if(state.entityType!=='note'&&state.entityType!=='folder') throw new VaultError('CORRUPT',label+' entity type is invalid.');
-  if(typeof state.name!=='string'||typeof state.createdAt!=='string'||typeof state.updatedAt!=='string'){
+  if(typeof state.parentId!=='string'&&state.parentId!==null) throw new VaultError('CORRUPT',label+' parent identity is invalid.');
+  if(typeof state.name!=='string'||!state.name||!validTimestamp(state.createdAt)||!validTimestamp(state.updatedAt)||!validTimestamp(state.deletedAt)){
     throw new VaultError('CORRUPT',label+' metadata is invalid.');
   }
-  if(state.deletedAt!==null&&typeof state.deletedAt!=='string') throw new VaultError('CORRUPT',label+' deletion state is invalid.');
   if(state.entityType==='note'&&typeof state.text!=='string') throw new VaultError('CORRUPT',label+' Markdown is missing.');
   if(state.entityType==='folder'&&state.text!==null) throw new VaultError('CORRUPT',label+' folder unexpectedly contains Markdown.');
 }
@@ -61,6 +65,7 @@ export function validateSyncConflictV2(record:SyncConflictRecordV2):void{
   if(!['markdown','structure','delete-edit','name','parent','concurrent-create'].includes(record.kind)){
     throw new VaultError('CORRUPT','Protocol v2 conflict kind is invalid.');
   }
+  if(record.source!=='pull'&&record.source!=='push') throw new VaultError('CORRUPT','Protocol v2 conflict source is invalid.');
   revision(record.baseRevision,'Protocol v2 conflict base revision',true);
   revision(record.remoteRevision,'Protocol v2 conflict remote revision');
   revision(record.remoteSequence,'Protocol v2 conflict remote sequence');
@@ -69,14 +74,66 @@ export function validateSyncConflictV2(record:SyncConflictRecordV2):void{
     ||!/^[0-9a-f]{64}$/u.test(record.remoteStateSha256)){
     throw new VaultError('CORRUPT','Protocol v2 conflict remote cryptographic metadata is invalid.');
   }
+  if(!Array.isArray(record.markdownConflictIds)||record.markdownConflictIds.some(id=>typeof id!=='string'||!id)){
+    throw new VaultError('CORRUPT','Protocol v2 conflict Markdown region metadata is invalid.');
+  }
   validateState(record.local,'Conflict LOCAL');
   validateState(record.remote,'Conflict REMOTE');
   if(record.base)validateState(record.base,'Conflict BASE');
-  if(record.local.entryId!==record.entryId||record.local.vaultId!==record.vaultId){
+
+  if(record.local.entryId!==record.entryId||record.local.vaultId!==record.vaultId||record.local.entityType!==record.entityType){
     throw new VaultError('CORRUPT','Protocol v2 conflict LOCAL identity is inconsistent.');
   }
-  if(record.base&&record.base.entryId!==record.entryId) throw new VaultError('CORRUPT','Protocol v2 conflict BASE identity is inconsistent.');
-  if(record.status==='resolved'&&!record.resolvedAt) throw new VaultError('CORRUPT','Resolved Protocol v2 conflict is missing resolution time.');
+  if(record.base){
+    if(record.base.entryId!==record.entryId||record.base.vaultId!==record.vaultId||record.base.entityType!==record.entityType){
+      throw new VaultError('CORRUPT','Protocol v2 conflict BASE identity is inconsistent.');
+    }
+  }
+  if((record.base===null)!==(record.baseRevision===null)){
+    throw new VaultError('CORRUPT','Protocol v2 conflict BASE revision/state are inconsistent.');
+  }
+  if(record.remote.vaultId!==record.vaultId){
+    throw new VaultError('CORRUPT','Protocol v2 conflict REMOTE crossed Vault identity.');
+  }
+  const crossIdentity=record.remote.entryId!==record.entryId;
+  if(crossIdentity&&record.kind!=='name'){
+    throw new VaultError('CORRUPT','Only a name collision may reference a different REMOTE entity identity.');
+  }
+  if(!crossIdentity&&record.remote.entityType!==record.entityType){
+    throw new VaultError('CORRUPT','Protocol v2 conflict REMOTE entity type is inconsistent.');
+  }
+  if(record.kind==='markdown'){
+    if(record.entityType!=='note'||crossIdentity||!record.base||record.markdownConflictIds.length===0){
+      throw new VaultError('CORRUPT','Protocol v2 Markdown conflict shape is invalid.');
+    }
+  }else if(record.markdownConflictIds.length!==0){
+    throw new VaultError('CORRUPT','Non-Markdown Protocol v2 conflict cannot contain Markdown conflict regions.');
+  }
+
+  const allowedResolution=record.resolution===null
+    ||['keep-local','keep-remote','manual','keep-both'].includes(record.resolution);
+  if(!allowedResolution) throw new VaultError('CORRUPT','Protocol v2 conflict resolution is invalid.');
+  if(!validTimestamp(record.createdAt)||!validTimestamp(record.updatedAt)||!validTimestamp(record.resolvedAt)){
+    throw new VaultError('CORRUPT','Protocol v2 conflict timestamps are invalid.');
+  }
+  if(record.status==='open'){
+    if(record.resolution!==null||record.resolutionText!==null||record.resolvedAt!==null){
+      throw new VaultError('CORRUPT','Open Protocol v2 conflict contains resolution state.');
+    }
+  }else if(record.status==='resolution-pending'){
+    if((record.resolution!=='keep-local'&&record.resolution!=='manual')||record.resolvedAt!==null){
+      throw new VaultError('CORRUPT','Pending Protocol v2 conflict resolution state is invalid.');
+    }
+  }else if(record.resolution===null||record.resolvedAt===null){
+    throw new VaultError('CORRUPT','Resolved Protocol v2 conflict is missing resolution state.');
+  }
+  if(record.resolution==='manual'){
+    if(record.entityType!=='note'||typeof record.resolutionText!=='string'){
+      throw new VaultError('CORRUPT','Manual Protocol v2 resolution requires Markdown text.');
+    }
+  }else if(record.resolutionText!==null){
+    throw new VaultError('CORRUPT','Non-manual Protocol v2 resolution cannot contain manual Markdown.');
+  }
 }
 
 async function rowsForEntry(tx:StorageTransaction,vaultId:VaultId,entryId:EntryId):Promise<SyncConflictRecordV2[]>{
