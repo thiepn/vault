@@ -338,6 +338,7 @@ export class SupabaseSyncTransport {
         if(recoveries>=MAX_TUS_RECOVERY_ATTEMPTS)throw error;
         recoveries++;
         offset=await this.resumeTusOffset(uploadUrl,authHeaders,bytes.byteLength);
+        if(offset===bytes.byteLength)return 'exists';
         continue;
       }
 
@@ -345,7 +346,7 @@ export class SupabaseSyncTransport {
         try{
           offset=await this.resumeTusOffset(uploadUrl,authHeaders,bytes.byteLength);
           recoveries++;
-          if(recoveries>MAX_TUS_RECOVERY_ATTEMPTS)return 'exists';
+          if(offset===bytes.byteLength||recoveries>MAX_TUS_RECOVERY_ATTEMPTS)return 'exists';
           continue;
         }catch{
           // A competing immutable upload may have completed this object path.
