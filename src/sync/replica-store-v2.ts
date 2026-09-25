@@ -598,7 +598,7 @@ async function cloneActiveSubtreeForKeepBoth(
         await tx.store('attachments').put({...structuredClone(attachment),entryId:cloneId} satisfies AttachmentContent);
       }
 
-      await ensureDirty(tx,{entry:clone,text});
+      await ensureDirty(tx,{entry:clone});
       touched.add(cloneId);
       idMap.set(child.id,cloneId);
       if(child.kind==='directory')queue.push(child.id);
