@@ -1565,8 +1565,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       const queued=await syncStateV2.count(vault.id,vault.cloud.accountId);
       const encrypted=latest && 'deferredAttachments' in latest ? latest : null;
       cachedSyncDetail=encrypted
-        ? `End-to-end encrypted · Protocol v2 · Cursor ${encrypted.cursor} · ${encrypted.pulledEvents} pulled · ${encrypted.pushedOperations} pushed · ${encrypted.deferredAttachments} attachment${encrypted.deferredAttachments===1?'':'s'} local-only · ${queued} queued`
-        : `End-to-end encrypted · Protocol v2 · Cursor ${cursor?.cursor ?? '0'} · Notes/Folders sync · attachments remain local until I7 · ${queued} queued`;
+        ? `End-to-end encrypted · Protocol v2 · Cursor ${encrypted.cursor} · ${encrypted.pulledEvents} pulled · ${encrypted.pushedOperations} pushed · ${encrypted.uploadedBlobs}↑/${encrypted.downloadedBlobs}↓ encrypted blobs · ${encrypted.reusedBlobs} reused · ${queued} queued`
+        : `End-to-end encrypted · Protocol v2 · Cursor ${cursor?.cursor ?? '0'} · Notes/Folders/Attachments encrypted sync · ${queued} queued`;
       return;
     }
     const cursor = await syncState.cursor(vault.id, cloudStatus.identity.userId);
@@ -1603,7 +1603,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     const selectedId = selected?.id;
     if (!background) {
       cloudMessage.textContent = vault.cloud.protocolVersion===2
-        ? 'Synchronizing end-to-end encrypted Notes and Folders…'
+        ? 'Synchronizing end-to-end encrypted Notes, Folders and Attachments…'
         : 'Synchronizing canonical files and attachments…';
     }
     cloudSyncNow.disabled = true;
@@ -1669,10 +1669,8 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
       await refreshBackgroundStatus();
       await refreshCloudSyncDetail();
-      if (vault?.id === activeVaultId && selected?.kind === 'markdown' && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
-        element<HTMLElement>('.save-status').textContent = encryptedSummary && encryptedSummary.deferredAttachments>0
-          ? 'Saved locally · Notes/Folders encrypted-synced · attachments local'
-          : 'Saved locally · synced';
+      if (vault?.id === activeVaultId && selected && !saver?.hasUnsavedChanges && summary.outboxRemaining === 0) {
+        element<HTMLElement>('.save-status').textContent = 'Saved locally · synced';
       }
       if(legacySummary){
         if (vault?.id === activeVaultId && selected?.id === selectedId && legacySummary.pushedOperations > 0 && crdtDocument) {
@@ -1684,7 +1682,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
       if (!background) {
         renderCloudDialog(encryptedSummary
-          ? `Encrypted sync complete: ${encryptedSummary.pulledEvents} pulled, ${encryptedSummary.pushedOperations} pushed, ${encryptedSummary.localChangedAfterOwnPush} newer local edit${encryptedSummary.localChangedAfterOwnPush===1?'':'s'} preserved, ${encryptedSummary.deferredAttachments} attachment${encryptedSummary.deferredAttachments===1?'':'s'} deferred to I7.`
+          ? `Encrypted sync complete: ${encryptedSummary.pulledEvents} pulled, ${encryptedSummary.pushedOperations} pushed, ${encryptedSummary.localChangedAfterOwnPush} newer local edit${encryptedSummary.localChangedAfterOwnPush===1?'':'s'} preserved, ${encryptedSummary.uploadedBlobs} encrypted blob${encryptedSummary.uploadedBlobs===1?'':'s'} uploaded, ${encryptedSummary.downloadedBlobs} downloaded, ${encryptedSummary.reusedBlobs} reused.`
           : `Sync complete: ${legacySummary!.pulledEvents} pulled, ${legacySummary!.pushedOperations} pushed, ${legacySummary!.autoMergedMarkdown} auto-merged, ${legacySummary!.conflictsPreserved} conflict${legacySummary!.conflictsPreserved === 1 ? '' : 's'} preserved.`);
       } else if (cloudDialog.open) {
         renderCloudDialog();
