@@ -121,7 +121,16 @@ begin
     p_vault_id,v_account,p_blob_id,p_key_generation,'pending',p_ciphertext_size
   )
   on conflict(vault_id,account_id,blob_id,key_generation)
-  do update set ciphertext_size=excluded.ciphertext_size;
+  do update set
+    ciphertext_size=excluded.ciphertext_size,
+    state=case
+      when vault_private.blob_refs.state='ready' then 'ready'
+      else 'pending'
+    end,
+    ready_at=case
+      when vault_private.blob_refs.state='ready' then vault_private.blob_refs.ready_at
+      else null
+    end;
 
   select nullif(o.metadata->>'size','')::bigint
   into v_object_size
