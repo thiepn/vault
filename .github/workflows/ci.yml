@@ -54,6 +54,8 @@ jobs:
         run: npm run benchmark:i4-remote-state
       - name: Multi-device reconciliation benchmark
         run: npm run benchmark:i6-conflicts
+      - name: Encrypted blob crypto benchmark
+        run: npm run benchmark:i7-blobs
       - name: Production build
         run: npm run build
       - name: Install Chromium
