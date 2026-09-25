@@ -518,18 +518,3 @@ test('I7 backend contract isolates opaque ciphertext objects from legacy attachm
   assert.match(lifecycle,/entity_heads_blob_lifecycle_v2/u);
   assert.doesNotMatch(lifecycle,/delete from storage\.objects/iu);
 });
-/u);
-  assert.match(sql,/p_key_generation<>v_active_generation/u);
-  assert.match(sql,/v_object_size is distinct from p_ciphertext_size/u);
-  assert.match(sql,/state='ready'/u);
-  assert.match(sql,/protocol_version=2/u);
-  assert.match(sql,/storage\.foldername\(storage\.objects\.name\)/u);
-  assert.doesNotMatch(sql,/for update\s+to authenticated/iu);
-  assert.doesNotMatch(sql,/for delete\s+to authenticated/iu);
-
-  const lifecycle=readFileSync(new URL('../backend/supabase/i7_blob_lifecycle.sql',import.meta.url),'utf8');
-  assert.match(lifecycle,/state='orphaned'/u);
-  assert.match(lifecycle,/state in \('ready','orphaned'\)/u);
-  assert.match(lifecycle,/entity_heads_blob_lifecycle_v2/u);
-  assert.doesNotMatch(lifecycle,/delete from storage\.objects/iu);
-});
