@@ -1,11 +1,13 @@
 import { VaultError } from '../domain/errors.js';
 import { newId, type AccountId, type DeviceId, type Entry, type EntryId, type OperationId, type Vault } from '../domain/model.js';
 import type { VaultCryptoContext } from '../crypto/context.js';
+import { validateAttachmentBytes } from '../media/attachments.js';
+import { sha256Hex } from '../storage/blob-store.js';
 import { decodeOperationV2, sealOperationV2, type SealedOperationV2, type SyncOperationV2 } from './protocol-v2.js';
 import type { SyncLocalStateV2, SyncOutboxRecordV2 } from './local-state-v2.js';
 import type { EncryptedReplicaStoreV2 } from './replica-store-v2.js';
 import type { LocalRepository } from '../storage/local-repository.js';
-import type { SupabaseSyncTransport } from './transport.js';
+import type { EncryptedBlobDescriptorV2, SupabaseSyncTransport } from './transport.js';
 import { decryptRemoteEntityV2, serializeLocalEntityV2, type DecryptedSyncEntityV2 } from './serialization-v2.js';
 
 export interface EncryptedSyncRunSummaryV2 {
@@ -17,6 +19,9 @@ export interface EncryptedSyncRunSummaryV2 {
   conflictsCaptured:number;
   autoMergedEntities:number;
   deferredAttachments:number;
+  uploadedBlobs:number;
+  downloadedBlobs:number;
+  reusedBlobs:number;
   outboxRemaining:number;
   cursor:string;
 }
@@ -28,7 +33,7 @@ export interface EncryptedSyncCryptoResolverV2 {
 
 type EncryptedTransportV2=Pick<
   SupabaseSyncTransport,
-  'pullV2'|'pushV2'|'ackV2'
+  'pullV2'|'pushV2'|'ackV2'|'prepareBlobV2'|'commitBlobV2'|'uploadEncryptedBlobV2'|'downloadEncryptedBlobV2'
 >;
 
 function requireV2Binding(vault:Vault,accountId:AccountId){
@@ -73,7 +78,7 @@ function conflictError(reason:string):VaultError{
     case 'cycle':
       return new VaultError('CYCLE','Encrypted synchronization rejected a folder cycle.');
     case 'blob':
-      return new VaultError('PROTOCOL','Encrypted attachment BlobId is not ready. Attachment replication begins in I7.');
+      return new VaultError('PROTOCOL','Encrypted attachment BlobId is not READY in the Protocol v2 blob registry.');
     default:
       return new VaultError('PROTOCOL','Encrypted synchronization rejected incompatible entity state.');
   }
@@ -121,6 +126,9 @@ export class EncryptedSyncEngineV2 {
       conflictsCaptured:0,
       autoMergedEntities:0,
       deferredAttachments:0,
+      uploadedBlobs:0,
+      downloadedBlobs:0,
+      reusedBlobs:0,
       outboxRemaining:0,
       cursor:cursor.cursor,
     };
@@ -150,9 +158,13 @@ export class EncryptedSyncEngineV2 {
     snapshots:readonly import('./remote-v2.js').EncryptedRemoteSnapshotV2[],
     active:VaultCryptoContext,
     crypto:EncryptedSyncCryptoResolverV2,
-  ):Promise<DecryptedSyncEntityV2[]>{
+    summary:EncryptedSyncRunSummaryV2,
+  ):Promise<{entities:DecryptedSyncEntityV2[];attachmentBytes:Map<EntryId,Uint8Array>}>{
     const byGeneration=new Map<number,VaultCryptoContext>([[active.keyGeneration,active]]);
-    const result:DecryptedSyncEntityV2[]=[];
+    const entities:DecryptedSyncEntityV2[]=[];
+    const attachmentBytes=new Map<EntryId,Uint8Array>();
+    const blobCache=new Map<string,Uint8Array>();
+
     for(const snapshot of snapshots){
       let context=byGeneration.get(snapshot.payload.keyGeneration);
       if(!context){
@@ -162,9 +174,41 @@ export class EncryptedSyncEngineV2 {
         }
         byGeneration.set(snapshot.payload.keyGeneration,context);
       }
-      result.push(await decryptRemoteEntityV2({snapshot,crypto:context}));
+
+      const entity=await decryptRemoteEntityV2({snapshot,crypto:context});
+      entities.push(entity);
+      if(entity.entityType!=='attachment') continue;
+
+      const existing=await this.replica.read(entity.entityId);
+      if(existing?.attachment
+        && existing.attachment.size===entity.payload.size
+        && existing.attachment.mimeType===entity.payload.mimeType
+        && await sha256Hex(existing.attachment.bytes)===entity.payload.plaintextSha256){
+        attachmentBytes.set(entity.entityId,existing.attachment.bytes.slice());
+        summary.reusedBlobs++;
+        continue;
+      }
+
+      const cacheKey=`${entity.keyGeneration}:${entity.blobId}`;
+      let plaintext=blobCache.get(cacheKey);
+      if(!plaintext){
+        const envelope=await this.transport.downloadEncryptedBlobV2(
+          vault.id,
+          entity.blobId,
+          entity.keyGeneration,
+        );
+        plaintext=await context.decryptBlob(entity.blobId,envelope);
+        validateAttachmentBytes(plaintext);
+        if(plaintext.byteLength!==entity.payload.size
+          ||await sha256Hex(plaintext)!==entity.payload.plaintextSha256){
+          throw new VaultError('CORRUPT','Decrypted attachment bytes do not match authenticated entity metadata.');
+        }
+        blobCache.set(cacheKey,plaintext);
+        summary.downloadedBlobs++;
+      }
+      attachmentBytes.set(entity.entityId,plaintext.slice());
     }
-    return result;
+    return {entities,attachmentBytes};
   }
 
   private async pullUntilCaughtUp(
@@ -182,13 +226,20 @@ export class EncryptedSyncEngineV2 {
       if(page.events.length){
         // Transport validation already checked event/snapshot identity and page
         // contiguity. Decrypt every event before opening the local write tx.
-        const decrypted=await this.decryptPage(vault,page.events.map(event=>event.snapshot),active,crypto);
+        const decrypted=await this.decryptPage(
+          vault,
+          page.events.map(event=>event.snapshot),
+          active,
+          crypto,
+          summary,
+        );
         const applied=await this.replica.applyPage({
           accountId,
           epoch:binding.epoch,
           expectedAfter:current,
           through:page.through,
-          events:decrypted,
+          events:decrypted.entities,
+          attachmentBytes:decrypted.attachmentBytes,
         });
         current=applied.cursor;
         summary.pulledEvents+=page.events.length;
@@ -238,11 +289,8 @@ export class EncryptedSyncEngineV2 {
     for(const item of dirty){
       const entry=byId.get(item.entryId);
       if(!entry) continue;
-      if(entry.kind==='attachment'){
-        summary.deferredAttachments++;
-        continue;
-      }
-      if(await this.replica.refreshConflictLocal(vault.id,item.entryId,accountId,binding.epoch)) continue;
+      if(entry.kind!=='attachment'
+        && await this.replica.refreshConflictLocal(vault.id,item.entryId,accountId,binding.epoch)) continue;
       if(await this.state.pendingForEntity(vault.id,accountId,item.entryId).then(rows=>rows.length>0)) continue;
 
       const local=await this.replica.read(item.entryId);
@@ -255,14 +303,55 @@ export class EncryptedSyncEngineV2 {
       });
 
       // Encryption happens outside IndexedDB. Re-read the canonical local entry
-      // before sealing so a concurrent edit can never be represented by stale
-      // ciphertext queued under the newer local state.
-      const latest=await this.replica.read(item.entryId);
+      // before any remote blob work so obviously stale attachment bytes never
+      // acquire a remote READY reference.
+      let latest=await this.replica.read(item.entryId);
       if(!latest||latest.entry.localVersion!==candidate.localVersion) continue;
 
       if(shadow&&candidate.stateHash===shadow.baseStateSha256){
         await this.replica.clearDirty(item.entryId);
         continue;
+      }
+
+      if(candidate.blob){
+        const envelope=await active.encryptBlob(candidate.blob.blobId,candidate.blob.bytes);
+        const descriptor=await this.transport.prepareBlobV2(
+          vault.id,
+          deviceId,
+          candidate.blob.blobId,
+          active.keyGeneration,
+          envelope.byteLength,
+        );
+        if(descriptor.status==='upload'){
+          const upload=await this.transport.uploadEncryptedBlobV2(descriptor,envelope);
+          if(upload==='exists'){
+            await this.verifyExistingEncryptedBlob(
+              vault,
+              descriptor,
+              active,
+              candidate.blob.plaintextSha256,
+              candidate.blob.plaintextSize,
+            );
+            summary.reusedBlobs++;
+          }else{
+            summary.uploadedBlobs++;
+          }
+          await this.transport.commitBlobV2(
+            vault.id,
+            deviceId,
+            candidate.blob.blobId,
+            active.keyGeneration,
+            envelope.byteLength,
+          );
+        }else{
+          summary.reusedBlobs++;
+        }
+
+        // Blob upload/commit may take time. The immutable READY object is safe
+        // to leave behind if the local Attachment changed meanwhile, but stale
+        // entity ciphertext must never enter the outbox.
+        latest=await this.replica.read(item.entryId);
+        if(!latest||latest.entry.localVersion!==candidate.localVersion) continue;
       }
 
       const operation:SyncOperationV2={
@@ -279,6 +368,29 @@ export class EncryptedSyncEngineV2 {
     return count;
   }
 
+  private async verifyExistingEncryptedBlob(
+    vault:Vault,
+    descriptor:EncryptedBlobDescriptorV2,
+    context:VaultCryptoContext,
+    expectedPlaintextSha256:string,
+    expectedPlaintextSize:number,
+  ):Promise<void>{
+    const existing=await this.transport.downloadEncryptedBlobV2(
+      vault.id,
+      descriptor.blobId,
+      descriptor.keyGeneration,
+    );
+    if(existing.byteLength!==descriptor.ciphertextSize){
+      throw new VaultError('CORRUPT','Existing encrypted blob size does not match its prepared descriptor.');
+    }
+    const plaintext=await context.decryptBlob(descriptor.blobId,existing);
+    validateAttachmentBytes(plaintext);
+    if(plaintext.byteLength!==expectedPlaintextSize
+      ||await sha256Hex(plaintext)!==expectedPlaintextSha256){
+      throw new VaultError('CORRUPT','Existing encrypted blob does not decrypt to the expected attachment bytes.');
+    }
+  }
+
   private async pushPending(
     vault:Vault,
     accountId:AccountId,
@@ -289,7 +401,7 @@ export class EncryptedSyncEngineV2 {
     const mutationByOperation=new Map(rows.map(row=>{
       const decoded=decodeOperationV2(row.wire);
       if(decoded.mutations.length!==1){
-        throw new VaultError('PROTOCOL','I5 outbox rows must contain exactly one encrypted entity mutation.');
+        throw new VaultError('PROTOCOL','Protocol v2 outbox rows must contain exactly one encrypted entity mutation.');
       }
       return [row.id,decoded.mutations[0]!] as const;
     }));
