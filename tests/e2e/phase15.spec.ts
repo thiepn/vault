@@ -725,9 +725,9 @@ test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrat
       new Promise<any>((resolve,reject)=>{bytesReq.onsuccess=()=>resolve(bytesReq.result);bytesReq.onerror=()=>reject(bytesReq.error);}),
     ]);
     db.close();
-    return {entry,attachment};
+    return {entry,attachment:{...attachment,bytes:[...attachment.bytes]}};
   },attachmentId);
   expect(restored.entry.name).toBe('secret-contract.bin');
   expect(restored.attachment.mimeType).toBe('application/octet-stream');
-  expect(Buffer.from(restored.attachment.bytes)).toEqual(secret);
+  expect(restored.attachment.bytes).toEqual([...secret]);
 });
