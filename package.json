@@ -27,7 +27,8 @@
     "benchmark:crdt": "npm run build:core && node scripts/benchmark-phase20.mjs",
     "benchmark:conflicts": "npm run build:core && node scripts/benchmark-phase22.mjs",
     "benchmark:i4-remote-state": "npm run build:core && node scripts/benchmark-i4.mjs",
-    "benchmark:i6-conflicts": "npm run build:core && node scripts/benchmark-i6.mjs"
+    "benchmark:i6-conflicts": "npm run build:core && node scripts/benchmark-i6.mjs",
+    "benchmark:i7-blobs": "npm run build:core && node scripts/benchmark-i7.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
