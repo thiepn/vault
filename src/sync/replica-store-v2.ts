@@ -1,6 +1,7 @@
 import { VaultError } from '../domain/errors.js';
 import { asCanonicalId, canonicalIdFromEntry, entryIdFromCanonical, newUuidV7 } from '../domain/canonical.js';
 import { activeKey, markdownName, validateName } from '../domain/paths.js';
+import { validateAttachmentName } from '../media/attachments.js';
 import { nextVersion } from '../domain/integrity.js';
 import type {
   AccountId,
@@ -30,8 +31,13 @@ import {
   syncEntityAuthoredEqualV2,
   type SyncEntityStateV2,
 } from './reconcile-v2.js';
-import type { DecryptedSyncEntityV2, SyncPlaintextPayloadV1 } from './serialization-v2.js';
+import type {
+  DecryptedAttachmentEntityV2,
+  DecryptedSyncEntityV2,
+  SyncPlaintextPayloadV1,
+} from './serialization-v2.js';
 import { localMatchesDecryptedV2 } from './serialization-v2.js';
+import type { LocalReplicaEntry } from './replica-store.js';
 
 export interface SyncRemoteShadowV2 {
   protocolVersion: 2;
@@ -39,7 +45,7 @@ export interface SyncRemoteShadowV2 {
   vaultId: VaultId;
   accountId: AccountId;
   epoch: string;
-  entityType: 'folder' | 'note';
+  entityType: 'folder' | 'note' | 'attachment';
   /** Last clean merge base. Never overwritten merely because a conflict was observed. */
   remoteRevision: string;
   remoteSequence: string;
@@ -81,7 +87,7 @@ function shadowFor(accountId:AccountId,epoch:string,remote:DecryptedSyncEntityV2
       parentId:remote.parentId ? canonicalIdFromEntry('folder',remote.parentId) : null,
       nameToken:remote.nameToken,
       deleted:remote.deleted,
-      blobId:null,
+      blobId:remote.blobId,
     },
     basePayload:structuredClone(remote.payload),
     baseStateSha256:remote.stateHash,
@@ -100,7 +106,7 @@ function observedShadow(base:SyncRemoteShadowV2,remote:DecryptedSyncEntityV2):Sy
       parentId:remote.parentId ? canonicalIdFromEntry('folder',remote.parentId) : null,
       nameToken:remote.nameToken,
       deleted:remote.deleted,
-      blobId:null,
+      blobId:remote.blobId,
     },
     observedPayload:structuredClone(remote.payload),
     observedStateSha256:remote.stateHash,
@@ -110,26 +116,39 @@ function observedShadow(base:SyncRemoteShadowV2,remote:DecryptedSyncEntityV2):Sy
 }
 
 function kindFor(remote:DecryptedSyncEntityV2):Entry['kind']{
-  return remote.entityType==='note'?'markdown':'directory';
+  return remote.entityType==='note'?'markdown':remote.entityType==='attachment'?'attachment':'directory';
 }
 
 function canonicalName(remote:DecryptedSyncEntityV2):string{
-  return remote.entityType==='note' ? markdownName(remote.payload.name) : validateName(remote.payload.name);
+  return remote.entityType==='note'
+    ? markdownName(remote.payload.name)
+    : remote.entityType==='attachment'
+      ? validateAttachmentName(remote.payload.name)
+      : validateName(remote.payload.name);
 }
 
-async function readLocalInTx(tx:StorageTransaction,entryId:EntryId):Promise<{entry:Entry;text:string|null}|null>{
+async function readLocalInTx(tx:StorageTransaction,entryId:EntryId):Promise<LocalReplicaEntry|null>{
   const entry=await tx.store('entries').get<Entry>(entryId);
   if(!entry) return null;
   const content=entry.kind==='markdown'
     ? await tx.store('contents').get<MarkdownContent>(entryId)
     : undefined;
+  const attachment=entry.kind==='attachment'
+    ? await tx.store('attachments').get<AttachmentContent>(entryId)
+    : undefined;
   if(entry.kind==='markdown' && (!content || content.localVersion!==entry.localVersion)){
     throw new VaultError('CORRUPT','Local Markdown replica is inconsistent.');
   }
-  return {entry,text:content?.text ?? null};
+  if(entry.kind==='attachment' && (!attachment
+    ||attachment.entryId!==entry.id
+    ||attachment.vaultId!==entry.vaultId
+    ||attachment.size!==attachment.bytes.byteLength)){
+    throw new VaultError('CORRUPT','Local attachment replica is inconsistent.');
+  }
+  return {entry,text:content?.text ?? null,attachment:attachment??null};
 }
 
-async function recordCheckpoint(tx:StorageTransaction,local:{entry:Entry;text:string|null}):Promise<void>{
+async function recordCheckpoint(tx:StorageTransaction,local:LocalReplicaEntry):Promise<void>{
   if(local.entry.kind!=='markdown'||local.text===null) return;
   const id=`${local.entry.id}:${local.entry.localVersion}:checkpoint`;
   if(await tx.store('revisions').get(id)) return;
@@ -144,14 +163,13 @@ async function recordCheckpoint(tx:StorageTransaction,local:{entry:Entry;text:st
   } satisfies LocalRevision);
 }
 
-function localView(local:{entry:Entry;text:string|null}|null){
-  if(!local) return null;
-  return {entry:local.entry,text:local.text,attachment:null};
+function localView(local:LocalReplicaEntry|null):LocalReplicaEntry|null{
+  return local;
 }
 
-function stateFromLocal(local:{entry:Entry;text:string|null}):SyncEntityStateV2{
+function stateFromLocal(local:LocalReplicaEntry):SyncEntityStateV2{
   const entityType=local.entry.kind==='markdown'?'note':local.entry.kind==='directory'?'folder':null;
-  if(!entityType) throw new VaultError('UNSUPPORTED','I6 reconciles Notes and Folders only.');
+  if(!entityType) throw new VaultError('UNSUPPORTED','I6 semantic reconciliation applies to Notes and Folders; I7 handles Attachment transport separately.');
   if(entityType==='note'&&local.text===null) throw new VaultError('CORRUPT','Local Note is missing Markdown.');
   return {
     entryId:local.entry.id,
@@ -167,6 +185,7 @@ function stateFromLocal(local:{entry:Entry;text:string|null}):SyncEntityStateV2{
 }
 
 function stateFromRemote(remote:DecryptedSyncEntityV2):SyncEntityStateV2{
+  if(remote.entityType==='attachment') throw new VaultError('UNSUPPORTED','Attachment state is applied by the I7 binary path.');
   return {
     entryId:remote.entityId,
     vaultId:remote.vaultId,
@@ -181,6 +200,7 @@ function stateFromRemote(remote:DecryptedSyncEntityV2):SyncEntityStateV2{
 }
 
 function stateFromShadow(shadow:SyncRemoteShadowV2):SyncEntityStateV2{
+  if(shadow.entityType==='attachment') throw new VaultError('UNSUPPORTED','Attachment shadows are not semantic I6 merge bases.');
   const parentId=shadow.structural.parentId
     ? entryIdFromCanonical(asCanonicalId('folder',shadow.structural.parentId))
     : null;
@@ -225,7 +245,7 @@ async function removePendingForEntity(
   return removed;
 }
 
-async function ensureDirty(tx:StorageTransaction,local:{entry:Entry;text:string|null}):Promise<void>{
+async function ensureDirty(tx:StorageTransaction,local:LocalReplicaEntry):Promise<void>{
   const existing=await tx.store('dirty').get<DirtyEntry>(local.entry.id);
   if(existing&&existing.localVersion===local.entry.localVersion) return;
   await tx.store('dirty').put({
@@ -277,9 +297,9 @@ async function pathCollision(
 async function writeState(
   tx:StorageTransaction,
   state:SyncEntityStateV2,
-  local:{entry:Entry;text:string|null}|null,
+  local:LocalReplicaEntry|null,
   pageById:ReadonlyMap<EntryId,DecryptedSyncEntityV2>,
-):Promise<{entry:Entry;text:string|null}>{
+):Promise<LocalReplicaEntry>{
   await assertParentAvailable(tx,state,pageById);
   const collision=await pathCollision(tx,state);
   if(collision) throw new VaultError('COLLISION','Merged encrypted state collides with another local path.');
@@ -313,7 +333,61 @@ async function writeState(
     await tx.store('contents').delete(state.entryId);
   }
   await tx.store('attachments').delete(state.entryId);
-  return {entry:updated,text:state.entityType==='note'?state.text:null};
+  return {entry:updated,text:state.entityType==='note'?state.text:null,attachment:null};
+}
+
+async function writeAttachmentState(
+  tx:StorageTransaction,
+  remote:DecryptedAttachmentEntityV2,
+  local:LocalReplicaEntry|null,
+  bytes:Uint8Array,
+  pageById:ReadonlyMap<EntryId,DecryptedSyncEntityV2>,
+):Promise<LocalReplicaEntry>{
+  if(bytes.byteLength!==remote.payload.size){
+    throw new VaultError('CORRUPT','Hydrated encrypted attachment size does not match authenticated metadata.');
+  }
+  if(remote.deleted===false&&remote.parentId!==null){
+    const existingParent=await tx.store('entries').get<Entry>(remote.parentId);
+    const incomingParent=pageById.get(remote.parentId);
+    if(!(existingParent&&existingParent.vaultId===remote.vaultId&&existingParent.kind==='directory'&&existingParent.deletedAt===null)
+      &&!(incomingParent&&incomingParent.entityType==='folder'&&!incomingParent.deleted)){
+      throw new VaultError('INVALID_PARENT','Encrypted attachment references a parent folder that is not locally available.');
+    }
+  }
+  const name=validateAttachmentName(remote.payload.name);
+  const key=remote.deleted?undefined:activeKey(remote.vaultId,remote.parentId,name);
+  if(key){
+    const collision=await tx.store('entries').fromIndex<Entry>('activeKey',key);
+    if(collision&&collision.id!==remote.entityId){
+      throw new VaultError('COLLISION','Encrypted attachment collides with another local path.');
+    }
+  }
+  if(local&&local.entry.kind!=='attachment') throw new VaultError('PROTOCOL','Protocol v2 entity type is immutable.');
+  const localVersion=local?nextVersion(local.entry.localVersion):1;
+  const entry:Entry={
+    id:remote.entityId,
+    vaultId:remote.vaultId,
+    parentId:remote.parentId,
+    name,
+    kind:'attachment',
+    createdAt:remote.payload.createdAt,
+    updatedAt:remote.payload.updatedAt,
+    localVersion,
+    deletedAt:remote.payload.deletedAt,
+    deletionBatch:null,
+    ...(key?{activeKey:key}:{}),
+  };
+  await tx.store('entries').put(entry);
+  await tx.store('contents').delete(remote.entityId);
+  const attachment:AttachmentContent={
+    entryId:remote.entityId,
+    vaultId:remote.vaultId,
+    mimeType:remote.payload.mimeType,
+    size:remote.payload.size,
+    bytes:bytes.slice(),
+  };
+  await tx.store('attachments').put(attachment);
+  return {entry,text:null,attachment};
 }
 
 function payloadFromState(state:SyncEntityStateV2):SyncPlaintextPayloadV1{
@@ -482,9 +556,8 @@ export class EncryptedReplicaStoreV2 {
   }
 
   async read(entryId:EntryId):Promise<import('./replica-store.js').LocalReplicaEntry|null>{
-    return this.driver.transaction(['entries','contents'],'readonly',async tx=>{
-      const local=await readLocalInTx(tx,entryId);
-      return local ? {entry:local.entry,text:local.text,attachment:null} : null;
+    return this.driver.transaction(['entries','contents','attachments'],'readonly',async tx=>{
+      return readLocalInTx(tx,entryId);
     });
   }
 
@@ -744,8 +817,9 @@ export class EncryptedReplicaStoreV2 {
     expectedAfter:string;
     through:string;
     events:readonly DecryptedSyncEntityV2[];
+    attachmentBytes?:ReadonlyMap<EntryId,Uint8Array>;
   }):Promise<ApplyEncryptedPageResult>{
-    const {accountId,epoch,expectedAfter,through,events}=input;
+    const {accountId,epoch,expectedAfter,through,events,attachmentBytes}=input;
     if(!events.length) throw new VaultError('PROTOCOL','Protocol v2 pull page cannot be empty.');
     const vaultId=events[0]!.vaultId;
     for(const event of events){
@@ -835,6 +909,22 @@ export class EncryptedReplicaStoreV2 {
               localChangedAfterOwnPush++;
             }
             touched.add(event.entityId);
+            continue;
+          }
+
+          if(event.entityType==='attachment'){
+            const dirty=await tx.store('dirty').get<DirtyEntry>(event.entityId);
+            const pending=samePendingEntity(allOutbox,accountId,event.entityId);
+            if(dirty||pending){
+              throw new VaultError('MERGE_REQUIRED','Concurrent encrypted Attachment change requires explicit reconciliation.');
+            }
+            const bytes=attachmentBytes?.get(event.entityId);
+            if(!bytes) throw new VaultError('CORRUPT','Encrypted attachment bytes were not hydrated before canonical apply.');
+            const written=await writeAttachmentState(tx,event,local,bytes,pageById);
+            await tx.store('dirty').delete(event.entityId);
+            await tx.store('remoteShadows').put(cleanShadow);
+            appliedRemoteEntities++;
+            touched.add(written.entry.id);
             continue;
           }
 
