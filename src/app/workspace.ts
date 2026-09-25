@@ -1475,7 +1475,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let awaitableMembersCache: Awaited<ReturnType<CloudFoundation['listMembers']>> = [];
   type WorkspaceSyncSummary = SyncRunSummary | EncryptedSyncRunSummaryV2;
   const isEncryptedSyncSummary=(summary:WorkspaceSyncSummary):summary is EncryptedSyncRunSummaryV2=>
-    'deferredAttachments' in summary;
+    'attachmentConflictsPreserved' in summary;
   const isLegacySyncSummary=(summary:WorkspaceSyncSummary):summary is SyncRunSummary=>
     !isEncryptedSyncSummary(summary);
   let lastSyncSummary: { vaultId: VaultId; summary: WorkspaceSyncSummary } | null = null;
@@ -1563,7 +1563,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if(vault.cloud.protocolVersion===2){
       const cursor=await syncStateV2.cursor(vault.id,vault.cloud.accountId);
       const queued=await syncStateV2.count(vault.id,vault.cloud.accountId);
-      const encrypted=latest && 'deferredAttachments' in latest ? latest : null;
+      const encrypted=latest && 'attachmentConflictsPreserved' in latest ? latest : null;
       cachedSyncDetail=encrypted
         ? `End-to-end encrypted · Protocol v2 · Cursor ${encrypted.cursor} · ${encrypted.pulledEvents} pulled · ${encrypted.pushedOperations} pushed · ${encrypted.uploadedBlobs}↑/${encrypted.downloadedBlobs}↓ encrypted blobs · ${encrypted.reusedBlobs} reused · ${encrypted.attachmentConflictsPreserved} attachment conflict cop${encrypted.attachmentConflictsPreserved===1?'y':'ies'} preserved · ${queued} queued`
         : `End-to-end encrypted · Protocol v2 · Cursor ${cursor?.cursor ?? '0'} · Notes/Folders/Attachments encrypted sync · ${queued} queued`;
@@ -1571,7 +1571,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     const cursor = await syncState.cursor(vault.id, cloudStatus.identity.userId);
     const queued = await syncState.count(vault.id);
-    const legacy=latest && !('deferredAttachments' in latest) ? latest : null;
+    const legacy=latest && !('attachmentConflictsPreserved' in latest) ? latest : null;
     const background=backgroundLabel();
     cachedSyncDetail = legacy
       ? `${realtimeLabel()} · ${background} · Cursor ${legacy.cursor} · ${legacy.pulledEvents} pulled · ${legacy.pushedOperations} pushed · ${legacy.autoMergedMarkdown} auto-merged · ${legacy.conflictsPreserved} conflicts preserved · ${legacy.uploadedBlobs}↑/${legacy.downloadedBlobs}↓ blobs · ${queued} queued`
