@@ -3737,9 +3737,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       keepRemote.disabled = pending;
       keepBoth.disabled = pending;
       openCopy.textContent = 'Open mine';
-      openCanonical.textContent = 'Open remote item';
+      const remoteIsSameIdentity = record.remote.entryId === record.entryId;
+      openCanonical.textContent = remoteIsSameIdentity ? 'Remote snapshot' : 'Open remote item';
       openCopy.disabled = !entries.some(entry => entry.id === record.entryId);
-      openCanonical.disabled = !entries.some(entry => entry.id === record.remote.entryId);
+      openCanonical.disabled = remoteIsSameIdentity || !entries.some(entry => entry.id === record.remote.entryId);
       const title = entries.find(entry => entry.id === record.entryId)?.name ?? record.local.name;
       conflictMeta.textContent = title
         + ' · ' + record.kind.replace(/-/gu, ' ')
@@ -3961,9 +3962,78 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     if (conflictSelect.options.length) conflictSelect.focus();
   }
 
+  async function applyEncryptedConflictResolution(
+    record: SyncConflictRecordV2,
+    resolution: 'keep-local' | 'keep-remote' | 'manual' | 'keep-both',
+    manualText?: string,
+  ): Promise<void> {
+    if (!vault || vault.id !== record.vaultId || vault.mode !== 'cloud' || !vault.cloud
+      || vault.cloud.protocolVersion !== 2 || !encryptedReplicaV2) {
+      throw new VaultError('CONFIGURATION', 'Encrypted conflict resolution is unavailable for the active Vault.');
+    }
+
+    await finalizeCrdtBeforeDetach();
+    if (saver) await saver.flush();
+    const selectedId = selected?.id;
+    const result = await encryptedReplicaV2.resolveConflict({
+      vaultId: record.vaultId,
+      entryId: record.entryId,
+      accountId: record.accountId,
+      epoch: record.epoch,
+      resolution,
+      ...(manualText === undefined ? {} : { manualText }),
+      conflictId: record.id,
+      expectedUpdatedAt: record.updatedAt,
+    });
+
+    await refresh();
+    if (selectedId && entries.some(entry => entry.id === selectedId && entry.deletedAt === null)) {
+      await openEntry(selectedId, true);
+    }
+
+    openSyncConflictsV2 = await syncConflictStoreV2.listOpen(vault.id);
+    renderConflictIndicator();
+    syncCoordinator?.request('local-change', 0);
+
+    if (!openSyncConflictsV2.length) {
+      conflictDialog.close('resolved');
+      element<HTMLElement>('.save-status').textContent = resolution === 'keep-both' && result.createdCopyId
+        ? 'Conflict resolved · both versions preserved'
+        : 'Conflict resolved';
+      return;
+    }
+
+    conflictSelect.replaceChildren();
+    for (const item of openSyncConflictsV2) {
+      conflictSelect.add(new Option(
+        item.local.name + ' · ' + item.kind.replace(/-/gu, ' ') + ' · rev ' + item.remoteRevision,
+        item.id,
+      ));
+    }
+    activeConflictId = openSyncConflictsV2.find(item => item.id === result.conflict.id)?.id
+      ?? openSyncConflictsV2[0]!.id;
+    conflictChoices.clear();
+    renderConflictSelection(false);
+    conflictStatus.textContent = result.conflict.status === 'resolution-pending'
+      ? 'Resolution saved locally. The entity remains conflict-blocked until its ordered encrypted sync event is observed.'
+      : 'Resolved. Continue with the next conflict.';
+  }
+
   async function resolveActiveConflict(): Promise<void> {
     const record = activeConflictRecord();
     if (!record || record.status !== 'open') throw new VaultError('NOT_FOUND', 'The conflict is no longer unresolved.');
+
+    if (isProtocolV2Conflict(record)) {
+      if (record.entityType !== 'note' || record.kind !== 'markdown') {
+        throw new VaultError('UNSUPPORTED', 'Manual merge is available only for encrypted Markdown conflicts.');
+      }
+      const plan = buildMarkdownConflictPlan(record.base?.text ?? '', record.local.text ?? '', record.remote.text ?? '');
+      const missing = plan.conflictIds.filter(id => !conflictChoices.has(id));
+      if (missing.length) throw new VaultError('STALE_WRITE', 'Choose a resolution for every conflicting Markdown region first.');
+      const resolvedText = plan.autoMergedText ?? resolveMarkdownConflictPlan(plan, conflictChoiceObject());
+      await applyEncryptedConflictResolution(record, 'manual', resolvedText);
+      return;
+    }
 
     const plan = buildMarkdownConflictPlan(record.baseText, record.localText, record.remoteText);
     const missing = plan.conflictIds.filter(id => !conflictChoices.has(id));
@@ -4048,7 +4118,6 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       ? 'Resolved. The preserved local copy was edited after capture, so Vault kept it.'
       : 'Resolved. Continue with the next conflict.';
   }
-
   async function openRecovery(): Promise<void> {
     if (!vault) return;
     // Recovery inspection remains available even when the current canonical writer failed.
@@ -5100,6 +5169,27 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       }
       const record = activeConflictRecord();
       if (!record) return;
+      if (isProtocolV2Conflict(record)) {
+        if (action === 'open-copy') {
+          conflictDialog.close('navigate');
+          perform(() => openEntry(record.entryId, true));
+          return;
+        }
+        if (action === 'open-canonical') {
+          if (record.remote.entryId === record.entryId) {
+            conflictStatus.textContent = 'The remote snapshot is preserved inside this resolver and is not a separate local file.';
+            return;
+          }
+          conflictDialog.close('navigate');
+          perform(() => openEntry(record.remote.entryId, true));
+          return;
+        }
+        if (action === 'keep-local' || action === 'keep-remote' || action === 'keep-both') {
+          perform(() => applyEncryptedConflictResolution(record, action));
+          return;
+        }
+        return;
+      }
       if (action === 'open-copy' || action === 'open-canonical') {
         const target = action === 'open-copy' ? record.conflictEntryId : record.entryId;
         conflictDialog.close('navigate');
