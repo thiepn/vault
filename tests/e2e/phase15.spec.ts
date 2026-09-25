@@ -721,7 +721,7 @@ test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrat
   await expect.poll(()=>remote.v2BlobDownloadCount,{timeout:20_000}).toBeGreaterThanOrEqual(1);
   await expect(dialog.locator('.cloud-message')).toContainText('Encrypted sync complete',{timeout:20_000});
 
-  const restored=await expect.poll(async()=>page.evaluate(async attachmentId=>{
+  await expect.poll(async()=>page.evaluate(async attachmentId=>{
     const request=indexedDB.open('vault:local');
     const db:IDBDatabase=await new Promise((resolve,reject)=>{
       request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
@@ -734,9 +734,8 @@ test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrat
       new Promise<any>((resolve,reject)=>{bytesReq.onsuccess=()=>resolve(bytesReq.result);bytesReq.onerror=()=>reject(bytesReq.error);}),
     ]);
     db.close();
-    if(!entry||!attachment)return null;
-    return {entry,attachment:{...attachment,bytes:[...attachment.bytes]}};
-  },attachmentId),{timeout:20_000}).not.toBeNull();
+    return !!entry&&!!attachment;
+  },attachmentId),{timeout:20_000}).toBe(true);
 
   const restored=await page.evaluate(async attachmentId=>{
     const request=indexedDB.open('vault:local');
