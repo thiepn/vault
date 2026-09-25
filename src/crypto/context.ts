@@ -4,6 +4,7 @@ import type { VaultId } from '../domain/model.js';
 import type { EncryptedPayloadV1, NameToken, RemoteBlobId } from '../sync/protocol-v2.js';
 import { createBlobId, createNameToken, generateVaultMasterKey, assertVaultMasterKey } from './keys.js';
 import { decryptEntityPayloadV1, encryptEntityPayloadV1, type EntityAadMetadataV1 } from './entity.js';
+import { decryptBlobPayloadV1, encryptBlobPayloadV1 } from './blob.js';
 
 /**
  * In-memory convenience wrapper. I2 deliberately does not persist raw VMKs;
@@ -50,6 +51,26 @@ export class VaultCryptoContext {
       vaultId: this.vaultId,
       plaintextSha256,
       keyGeneration: this.keyGeneration,
+    });
+  }
+
+  async encryptBlob(blobId: RemoteBlobId, plaintext: Uint8Array): Promise<Uint8Array> {
+    return encryptBlobPayloadV1({
+      vmk: this.key(),
+      vaultId: this.vaultId,
+      blobId,
+      keyGeneration: this.keyGeneration,
+      plaintext,
+    });
+  }
+
+  async decryptBlob(blobId: RemoteBlobId, envelope: Uint8Array): Promise<Uint8Array> {
+    return decryptBlobPayloadV1({
+      vmk: this.key(),
+      vaultId: this.vaultId,
+      blobId,
+      keyGeneration: this.keyGeneration,
+      envelope,
     });
   }
 
