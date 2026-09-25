@@ -355,6 +355,13 @@ export class EncryptedSyncEngineV2 {
             envelope.byteLength,
           );
         }else{
+          await this.verifyExistingEncryptedBlob(
+            vault,
+            descriptor,
+            active,
+            candidate.blob.plaintextSha256,
+            candidate.blob.plaintextSize,
+          );
           summary.reusedBlobs++;
         }
 
