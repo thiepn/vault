@@ -718,8 +718,25 @@ test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrat
   });
 
   await dialog.locator('[data-cloud-action="sync"]').click();
+  await expect.poll(()=>remote.v2BlobDownloadCount,{timeout:20_000}).toBeGreaterThanOrEqual(1);
   await expect(dialog.locator('.cloud-message')).toContainText('Encrypted sync complete',{timeout:20_000});
-  expect(remote.v2BlobDownloadCount).toBeGreaterThanOrEqual(1);
+
+  const restored=await expect.poll(async()=>page.evaluate(async attachmentId=>{
+    const request=indexedDB.open('vault:local');
+    const db:IDBDatabase=await new Promise((resolve,reject)=>{
+      request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+    });
+    const tx=db.transaction(['entries','attachments'],'readonly');
+    const entryReq=tx.objectStore('entries').get(attachmentId);
+    const bytesReq=tx.objectStore('attachments').get(attachmentId);
+    const [entry,attachment]=await Promise.all([
+      new Promise<any>((resolve,reject)=>{entryReq.onsuccess=()=>resolve(entryReq.result);entryReq.onerror=()=>reject(entryReq.error);}),
+      new Promise<any>((resolve,reject)=>{bytesReq.onsuccess=()=>resolve(bytesReq.result);bytesReq.onerror=()=>reject(bytesReq.error);}),
+    ]);
+    db.close();
+    if(!entry||!attachment)return null;
+    return {entry,attachment:{...attachment,bytes:[...attachment.bytes]}};
+  },attachmentId),{timeout:20_000}).not.toBeNull();
 
   const restored=await page.evaluate(async attachmentId=>{
     const request=indexedDB.open('vault:local');
