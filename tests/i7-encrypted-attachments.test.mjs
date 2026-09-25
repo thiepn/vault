@@ -358,6 +358,68 @@ test('I7 lost upload response recovers idempotently from immutable existing ciph
   }finally{context.destroy();}
 });
 
+test('I7 concurrent Attachment metadata changes preserve local bytes as a conflict-safe copy and advance',async()=>{
+  const driver=new MemoryDriver();
+  driver.stores.get('vaults').set(vaultId,cloudVault());
+  const repository=new LocalRepository(driver);
+  const source=Uint8Array.from([4,5,6,7]);
+  const entry=await repository.createAttachment(vaultId,null,'Base.bin','application/octet-stream',source);
+  const state=new SyncLocalStateV2(driver);
+  await state.initializeCursor(vaultId,accountId,epoch);
+  const server=new FakeBlobServer();
+  const context=VaultCryptoContext.generate(vaultId,1);
+  const replica=new EncryptedReplicaStoreV2(driver);
+  try{
+    await new EncryptedSyncEngineV2(server,state,replica,repository).sync(
+      cloudVault(),accountId,{active:async()=>context,forGeneration:async()=>context},
+    );
+    const clean=await repository.read(entry.id);
+    await repository.move(entry.id,null,'Mine.bin',clean.entry.localVersion);
+
+    const shadow=await replica.shadow(entry.id,accountId,epoch);
+    assert.ok(shadow);
+    const digestHex=bytesToHex(await sha256(source));
+    const remote={
+      entityId:entry.id,vaultId,entityType:'attachment',
+      remoteRevision:'2',sequence:'2',schemaVersion:1,parentId:null,
+      nameToken:shadow.structural.nameToken,blobId:shadow.structural.blobId,
+      deleted:false,keyGeneration:1,
+      payload:{
+        ...shadow.basePayload,
+        entityType:'attachment',
+        name:'Remote.bin',
+        updatedAt:'2026-09-25T12:05:00.000Z',
+        mimeType:'application/octet-stream',
+        size:source.byteLength,
+        plaintextSha256:digestHex,
+      },
+      operationId:'77777777-7777-4777-8777-777777777777',
+      updatedByDevice:'88888888-8888-4888-8888-888888888888',
+      updatedAt:'2026-09-25T12:05:00.000Z',
+      stateHash:'b'.repeat(64),
+    };
+    const applied=await replica.applyPage({
+      accountId,epoch,expectedAfter:'1',through:'2',events:[remote],
+      attachmentBytes:new Map([[entry.id,source]]),
+      localAttachmentSha256:new Map([[entry.id,digestHex]]),
+    });
+    assert.equal(applied.attachmentConflictsPreserved,1);
+    assert.equal(applied.cursor,'2');
+
+    const canonical=await repository.read(entry.id);
+    assert.equal(canonical.entry.name,'Remote.bin');
+    assert.deepEqual([...canonical.attachment.bytes],[...source]);
+
+    const all=await repository.listEntries(vaultId,true);
+    const copy=all.find(item=>item.id!==entry.id&&item.kind==='attachment'&&item.name.includes('conflict'));
+    assert.ok(copy);
+    assert.match(copy.name,/Mine \(conflict /u);
+    assert.deepEqual([...(await repository.read(copy.id)).attachment.bytes],[...source]);
+    assert.ok(driver.stores.get('dirty').has(copy.id));
+    assert.equal(driver.stores.get('dirty').has(entry.id),false);
+  }finally{context.destroy();}
+});
+
 test('I7 corrupt remote ciphertext fails before cursor advance or local canonical apply',async()=>{
   const sourceDriver=new MemoryDriver();
   sourceDriver.stores.get('vaults').set(vaultId,cloudVault());
