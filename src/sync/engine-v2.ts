@@ -18,6 +18,7 @@ export interface EncryptedSyncRunSummaryV2 {
   localChangedAfterOwnPush:number;
   conflictsCaptured:number;
   autoMergedEntities:number;
+  attachmentConflictsPreserved:number;
   deferredAttachments:number;
   uploadedBlobs:number;
   downloadedBlobs:number;
@@ -125,6 +126,7 @@ export class EncryptedSyncEngineV2 {
       localChangedAfterOwnPush:0,
       conflictsCaptured:0,
       autoMergedEntities:0,
+      attachmentConflictsPreserved:0,
       deferredAttachments:0,
       uploadedBlobs:0,
       downloadedBlobs:0,
@@ -159,10 +161,15 @@ export class EncryptedSyncEngineV2 {
     active:VaultCryptoContext,
     crypto:EncryptedSyncCryptoResolverV2,
     summary:EncryptedSyncRunSummaryV2,
-  ):Promise<{entities:DecryptedSyncEntityV2[];attachmentBytes:Map<EntryId,Uint8Array>}>{
+  ):Promise<{
+    entities:DecryptedSyncEntityV2[];
+    attachmentBytes:Map<EntryId,Uint8Array>;
+    localAttachmentSha256:Map<EntryId,string>;
+  }>{
     const byGeneration=new Map<number,VaultCryptoContext>([[active.keyGeneration,active]]);
     const entities:DecryptedSyncEntityV2[]=[];
     const attachmentBytes=new Map<EntryId,Uint8Array>();
+    const localAttachmentSha256=new Map<EntryId,string>();
     const blobCache=new Map<string,Uint8Array>();
 
     for(const snapshot of snapshots){
@@ -180,10 +187,12 @@ export class EncryptedSyncEngineV2 {
       if(entity.entityType!=='attachment') continue;
 
       const existing=await this.replica.read(entity.entityId);
+      const existingSha=existing?.attachment ? await sha256Hex(existing.attachment.bytes) : null;
+      if(existingSha)localAttachmentSha256.set(entity.entityId,existingSha);
       if(existing?.attachment
         && existing.attachment.size===entity.payload.size
         && existing.attachment.mimeType===entity.payload.mimeType
-        && await sha256Hex(existing.attachment.bytes)===entity.payload.plaintextSha256){
+        && existingSha===entity.payload.plaintextSha256){
         attachmentBytes.set(entity.entityId,existing.attachment.bytes.slice());
         summary.reusedBlobs++;
         continue;
@@ -208,7 +217,7 @@ export class EncryptedSyncEngineV2 {
       }
       attachmentBytes.set(entity.entityId,plaintext.slice());
     }
-    return {entities,attachmentBytes};
+    return {entities,attachmentBytes,localAttachmentSha256};
   }
 
   private async pullUntilCaughtUp(
@@ -240,6 +249,7 @@ export class EncryptedSyncEngineV2 {
           through:page.through,
           events:decrypted.entities,
           attachmentBytes:decrypted.attachmentBytes,
+          localAttachmentSha256:decrypted.localAttachmentSha256,
         });
         current=applied.cursor;
         summary.pulledEvents+=page.events.length;
@@ -248,6 +258,7 @@ export class EncryptedSyncEngineV2 {
         summary.localChangedAfterOwnPush+=applied.localChangedAfterOwnPush;
         summary.conflictsCaptured+=applied.conflictsCaptured;
         summary.autoMergedEntities+=applied.autoMergedEntities;
+        summary.attachmentConflictsPreserved+=applied.attachmentConflictsPreserved;
 
         // Acknowledgement is operational metadata. Local canonical state/cursor
         // are already durable; an ack network failure must not roll them back.
