@@ -34,7 +34,7 @@ with check (
   and exists(
     select 1
     from public.vault_cloud_vaults v
-    where v.id::text=(storage.foldername(name))[1]
+    where v.id::text=(storage.foldername(storage.objects.name))[1]
       and v.auth_user_id=(select auth.uid())
       and v.protocol_version=2
       and v.disabled_at is null
@@ -55,7 +55,7 @@ using (
   and exists(
     select 1
     from public.vault_cloud_vaults v
-    where v.id::text=(storage.foldername(name))[1]
+    where v.id::text=(storage.foldername(storage.objects.name))[1]
       and v.auth_user_id=(select auth.uid())
       and v.protocol_version=2
       and v.disabled_at is null
