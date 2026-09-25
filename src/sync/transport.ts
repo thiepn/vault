@@ -332,7 +332,7 @@ export class SupabaseSyncTransport {
             'Upload-Offset':String(offset),
             'Content-Type':'application/offset+octet-stream',
           },
-          body:chunk,
+          body:new Blob([chunk],{type:'application/offset+octet-stream'}),
         });
       }catch(error){
         if(recoveries>=MAX_TUS_RECOVERY_ATTEMPTS)throw error;
