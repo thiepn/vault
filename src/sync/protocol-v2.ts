@@ -188,14 +188,30 @@ export function validateEncryptedEntityMutationV2(value: unknown): EncryptedEnti
   const baseRemoteRevision = value.baseRemoteRevision === null
     ? null
     : pgBigint(value.baseRemoteRevision, 'Base remote revision', false);
+  const type=value.entityType as CanonicalEntityType;
+  const structural=validateStructural(value.structural);
+  const payload=validatePayload(value.payload);
+  const fileBacked=type==='note'||type==='folder'||type==='attachment';
+  if(fileBacked){
+    if(structural.nameToken===null){
+      throw new VaultError('PROTOCOL','Protocol v2 filesystem entities require an opaque NameToken.');
+    }
+    if(type==='attachment'){
+      if(structural.blobId===null) throw new VaultError('PROTOCOL','Protocol v2 Attachment entities require an opaque BlobId.');
+    }else if(structural.blobId!==null){
+      throw new VaultError('PROTOCOL','Protocol v2 Note/Folder entities cannot reference attachment BlobIds.');
+    }
+  }else if(structural.parentId!==null||structural.nameToken!==null||structural.blobId!==null){
+    throw new VaultError('PROTOCOL','Non-filesystem Protocol v2 entities cannot expose filesystem structural metadata.');
+  }
   return {
     kind: 'put',
     entityId: value.entityId as CanonicalEntityId,
-    entityType: value.entityType,
+    entityType: type,
     baseRemoteRevision,
     schemaVersion: positiveInteger(value.schemaVersion, 'Entity schema version'),
-    structural: validateStructural(value.structural),
-    payload: validatePayload(value.payload),
+    structural,
+    payload,
   };
 }
 
