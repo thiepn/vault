@@ -3,7 +3,7 @@ import { asCanonicalId, canonicalIdFromEntry, entryIdFromCanonical } from '../do
 import { markdownName, validateName } from '../domain/paths.js';
 import type { EntryId, VaultId } from '../domain/model.js';
 import type { VaultCryptoContext } from '../crypto/context.js';
-import { bytesToHex } from '../crypto/encoding.js';
+import { bytesToHex, hexToBytes } from '../crypto/encoding.js';
 import { sha256, sha256Hex } from '../crypto/primitives.js';
 import {
   MAX_ATTACHMENT_BYTES,
@@ -402,9 +402,7 @@ export async function decryptRemoteEntityV2(input:{
     const blobId=snapshot.structural.blobId;
     if(!blobId) throw new VaultError('PROTOCOL','Encrypted attachment snapshot is missing BlobId.');
     const attachmentPayload=payload as AttachmentPayloadV1;
-    const expectedBlobId=await crypto.blobId(
-      Uint8Array.from(attachmentPayload.plaintextSha256.match(/../gu)!.map(pair=>Number.parseInt(pair,16))),
-    );
+    const expectedBlobId=await crypto.blobId(hexToBytes(attachmentPayload.plaintextSha256));
     if(expectedBlobId!==blobId){
       throw new VaultError('CORRUPT','Encrypted attachment BlobId does not match its authenticated plaintext hash.');
     }
