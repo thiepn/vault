@@ -403,6 +403,37 @@ test('I6 Keep Local rebases on latest remote and stays blocked until its own res
   assert.equal(await replica.refreshConflictLocal(vaultId,noteId,accountId,epoch),true);
 });
 
+test('I6 rejects a resolver decision when the conflict changed after the UI snapshot',async()=>{
+  const driver=new MemoryDriver();
+  const base=noteState();
+  const local=noteState({text:'alpha LOCAL\n\nbeta\n\ngamma\n'});
+  const remote=noteState({text:'alpha REMOTE\n\nbeta\n\ngamma\n'});
+  seedBase(driver,base,local,2);
+  const replica=new EncryptedReplicaStoreV2(driver);
+  await replica.applyPage({accountId,epoch,expectedAfter:'1',through:'2',events:[eventFromState(remote)]});
+
+  const store=new SyncConflictStoreV2(driver);
+  const snapshot=await store.openForEntry(vaultId,noteId);
+  assert.ok(snapshot);
+
+  const stored=driver.stores.get('syncConflicts').get(snapshot.id);
+  driver.stores.get('syncConflicts').set(snapshot.id,{
+    ...stored,
+    updatedAt:'2026-09-23T12:05:00.000Z',
+  });
+
+  await assert.rejects(
+    ()=>replica.resolveConflict({
+      vaultId,entryId:noteId,accountId,epoch,resolution:'keep-local',
+      conflictId:snapshot.id,expectedUpdatedAt:snapshot.updatedAt,
+    }),
+    error=>error?.code==='STALE_WRITE'&&/changed after the resolver opened/u.test(error.message),
+  );
+  assert.equal((await store.openForEntry(vaultId,noteId)).status,'open');
+  assert.equal(driver.stores.get('contents').get(noteId).text,local.text);
+});
+
+
 test('I6 cross-ID same-name create becomes durable name conflict and Keep Both preserves both entities',async()=>{
   const driver=new MemoryDriver();
   const local=noteState({entryId:noteId,name:'Same.md',text:'LOCAL\n'});
