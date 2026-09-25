@@ -407,6 +407,7 @@ test('I7 backend contract isolates opaque ciphertext objects from legacy attachm
   assert.match(sql,/v_object_size is distinct from p_ciphertext_size/u);
   assert.match(sql,/state='ready'/u);
   assert.match(sql,/protocol_version=2/u);
+  assert.match(sql,/storage\.foldername\(storage\.objects\.name\)/u);
   assert.doesNotMatch(sql,/for update\s+to authenticated/iu);
   assert.doesNotMatch(sql,/for delete\s+to authenticated/iu);
 });
