@@ -358,6 +358,44 @@ test('I7 lost upload response recovers idempotently from immutable existing ciph
   }finally{context.destroy();}
 });
 
+test('I7 READY blob reuse is authenticated before a new Attachment entity may reference it',async()=>{
+  const driver=new MemoryDriver();
+  driver.stores.get('vaults').set(vaultId,cloudVault());
+  const repository=new LocalRepository(driver);
+  await repository.createAttachment(
+    vaultId,null,'dedup.bin','application/octet-stream',Uint8Array.from([2,4,6,8]),
+  );
+  const state=new SyncLocalStateV2(driver);
+  await state.initializeCursor(vaultId,accountId,epoch);
+  const server=new FakeBlobServer();
+  const context=VaultCryptoContext.generate(vaultId,1);
+  const engine=new EncryptedSyncEngineV2(server,state,new EncryptedReplicaStoreV2(driver),repository);
+  try{
+    // Seed a valid immutable object, then corrupt it while leaving the backend's
+    // READY registry intact. A later deduplicating push must fail closed.
+    const local=await new EncryptedReplicaStoreV2(driver).read(
+      [...driver.stores.get('entries').values()].find(entry=>entry.kind==='attachment').id,
+    );
+    const serialized=await serializeLocalEntityV2({local,crypto:context,baseRemoteRevision:null});
+    const envelope=await context.encryptBlob(serialized.blob.blobId,serialized.blob.bytes);
+    const key=server.blobKey(serialized.blob.blobId,context.keyGeneration);
+    const corrupt=envelope.slice();
+    corrupt[corrupt.length-1]^=1;
+    server.objects.set(key,corrupt);
+    server.ready.add(key);
+
+    await assert.rejects(
+      ()=>engine.sync(cloudVault(),accountId,{
+        active:async()=>context,forGeneration:async()=>context,
+      }),
+      /failed authentication/,
+    );
+    assert.equal(server.events.length,0);
+    assert.equal(await state.count(vaultId,accountId),0);
+    assert.equal(driver.stores.get('dirty').size,1);
+  }finally{context.destroy();}
+});
+
 test('I7 concurrent Attachment metadata changes preserve local bytes as a conflict-safe copy and advance',async()=>{
   const driver=new MemoryDriver();
   driver.stores.get('vaults').set(vaultId,cloudVault());
