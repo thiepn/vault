@@ -36,6 +36,10 @@ class MockSyncCloud {
   v2Events:any[]=[];
   v2Operations=new Map<string,{wire:string;sha:string;result:any}>();
   v2Wires:string[]=[];
+  v2Blobs=new Map<string,Buffer>();
+  v2BlobReady=new Set<string>();
+  v2BlobUploadCount=0;
+  v2BlobDownloadCount=0;
   entries=new Map<string,any>();
   events:any[]=[];
   operations=new Map<string,{sha:string;result:any}>();
@@ -132,6 +136,10 @@ class MockSyncCloud {
           contractVersion:1,
           protocolVersions:[1,2],
           encryptedContentV2:{contractAvailable:true,acceptingContent:true},
+          encryptedBlobsV2:{
+            contractAvailable:true,acceptingContent:true,bucket:'vault-e2ee-blobs',
+            maxCiphertextBytes:134217764,
+          },
           maxMutations:1000,
           maxPageEvents:1000,
         });
@@ -201,6 +209,38 @@ class MockSyncCloud {
         return json(route,{vaultId:this.remoteVaultId,epoch,protocolVersion:2});
       }
 
+      if(url.pathname==='/rest/v1/rpc/vault_sync_prepare_blob_v2' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        const path=`${body.p_vault_id}/${body.p_key_generation}/${body.p_blob_id}`;
+        const existing=this.v2Blobs.get(path);
+        if(existing){
+          expect(existing.byteLength).toBe(body.p_ciphertext_size);
+          this.v2BlobReady.add(path);
+        }
+        return json(route,{
+          status:existing?'ready':'upload',
+          bucket:'vault-e2ee-blobs',
+          path,
+          blobId:body.p_blob_id,
+          keyGeneration:body.p_key_generation,
+          ciphertextSize:body.p_ciphertext_size,
+        });
+      }
+
+      if(url.pathname==='/rest/v1/rpc/vault_sync_commit_blob_v2' && request.method()==='POST'){
+        const body=JSON.parse(request.postData()??'{}');
+        const path=`${body.p_vault_id}/${body.p_key_generation}/${body.p_blob_id}`;
+        const existing=this.v2Blobs.get(path);
+        expect(existing).toBeTruthy();
+        expect(existing!.byteLength).toBe(body.p_ciphertext_size);
+        this.v2BlobReady.add(path);
+        return json(route,{
+          status:'ready',bucket:'vault-e2ee-blobs',path,
+          blobId:body.p_blob_id,keyGeneration:body.p_key_generation,
+          ciphertextSize:body.p_ciphertext_size,
+        });
+      }
+
       if(url.pathname==='/rest/v1/rpc/vault_sync_pull_v2' && request.method()==='POST'){
         const body=JSON.parse(request.postData()??'{}');
         expect(body.p_vault_id).toBe(this.remoteVaultId);
@@ -237,6 +277,10 @@ class MockSyncCloud {
         const snapshots:any[]=[];
         const first=String(this.v2Events.length+1);
         for(const mutation of operation.mutations){
+          if(mutation.entityType==='attachment'){
+            const blobPath=`${this.remoteVaultId}/${mutation.payload.keyGeneration}/${mutation.structural.blobId}`;
+            if(!this.v2BlobReady.has(blobPath)) throw new Error('encrypted attachment entity arrived before READY blob');
+          }
           const priorHead=this.v2Heads.get(mutation.entityId);
           const revision=priorHead?Number(priorHead.remoteRevision)+1:1;
           const sequence=String(this.v2Events.length+1);
@@ -348,6 +392,28 @@ class MockSyncCloud {
         const result={status:'ok',operationId:operation.id,through,snapshots};
         this.operations.set(operation.id,{sha:envelope.p_sha256,result:clone(result)});
         return json(route,result);
+      }
+
+      const encryptedStoragePrefix='/storage/v1/object/vault-e2ee-blobs/';
+      if(url.pathname.startsWith(encryptedStoragePrefix)){
+        const path=url.pathname.slice(encryptedStoragePrefix.length).split('/').map(decodeURIComponent).join('/');
+        if(request.method()==='POST'){
+          if(this.v2Blobs.has(path)) return json(route,{message:'already exists'},409);
+          const bytes=request.postDataBuffer()??Buffer.alloc(0);
+          this.v2Blobs.set(path,Buffer.from(bytes));
+          this.v2BlobUploadCount++;
+          return json(route,{Key:path},201);
+        }
+        if(request.method()==='GET'){
+          const bytes=this.v2Blobs.get(path);
+          if(!bytes)return json(route,{message:'not found'},404);
+          this.v2BlobDownloadCount++;
+          return route.fulfill({
+            status:200,
+            headers:{...corsHeaders,'Content-Type':'application/octet-stream'},
+            body:bytes,
+          });
+        }
       }
 
       const storagePrefix='/storage/v1/object/vault-sync/';
@@ -551,4 +617,117 @@ test('I5 browser activates E2EE and syncs Note content only as Protocol v2 ciphe
   await quickOpen(page,'Cipher Note');
   expect(await sourceText(page)).toContain('private sentence 4917');
   await expect(page.locator('.save-status')).toContainText('synced');
+});
+
+
+test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrates exact plaintext',async({page},testInfo)=>{
+  test.skip(testInfo.project.name!=='chromium-desktop');
+  test.setTimeout(60_000);
+  const remote=new MockSyncCloud();
+  await remote.attach(page);
+
+  const secret=Buffer.from('I7-BROWSER-PLAINTEXT-ATTACHMENT-4917','utf8');
+  await createVault(page,'Encrypted Attachment Vault');
+  await createNote(page,'Carrier','# encrypted attachment carrier');
+  await page.locator('.attachment-file-input').setInputFiles({
+    name:'secret-contract.bin',
+    mimeType:'application/octet-stream',
+    buffer:secret,
+  });
+  await expect(page.locator('.save-status')).toContainText('Saved locally');
+
+  const attachmentId=await page.evaluate(async()=>{
+    const request=indexedDB.open('vault:local');
+    const db:IDBDatabase=await new Promise((resolve,reject)=>{
+      request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+    });
+    const tx=db.transaction('entries','readonly');
+    const req=tx.objectStore('entries').getAll();
+    const rows=await new Promise<any[]>((resolve,reject)=>{
+      req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+    });
+    db.close();
+    return rows.find(row=>row.name==='secret-contract.bin')?.id as string;
+  });
+  expect(attachmentId).toMatch(/^[0-9a-f-]{36}$/u);
+
+  const dialog=await signIn(page);
+  await dialog.locator('[data-cloud-action="adopt"]').click();
+  await dialog.locator('[data-cloud-action="activate-encrypted"]').click();
+  const recovery=dialog.locator('textarea[aria-label="Vault Recovery Code"]');
+  await expect(recovery).toBeVisible({timeout:20_000});
+  await dialog.locator('.cloud-vault-state input[type="checkbox"]').check();
+  await dialog.getByRole('button',{name:'Enable encrypted sync'}).click();
+  await expect(dialog.locator('.cloud-vault-state')).toContainText('End-to-end encrypted',{timeout:20_000});
+
+  await dialog.locator('[data-cloud-action="sync"]').click();
+  await expect(dialog.locator('.cloud-message')).toContainText('Encrypted sync complete',{timeout:20_000});
+  await expect(dialog.locator('.cloud-message')).toContainText('encrypted blob');
+  expect(remote.v2BlobUploadCount).toBe(1);
+  expect(remote.v2Blobs.size).toBe(1);
+
+  const [blobPath,blobBytes]=[...remote.v2Blobs.entries()][0];
+  expect(blobPath).toMatch(new RegExp('^'+remote.remoteVaultId+'/1/[A-Za-z0-9_-]{43}$','u'));
+  expect(blobPath).not.toContain('secret-contract');
+  expect(blobBytes.includes(secret)).toBe(false);
+  expect(blobBytes.toString('utf8')).not.toContain('I7-BROWSER-PLAINTEXT-ATTACHMENT-4917');
+
+  const attachmentWire=remote.v2Wires
+    .map(wire=>({wire,operation:JSON.parse(wire)}))
+    .find(item=>item.operation.mutations.some((mutation:any)=>mutation.entityType==='attachment'));
+  expect(attachmentWire).toBeTruthy();
+  expect(attachmentWire!.wire).not.toContain('secret-contract.bin');
+  expect(attachmentWire!.wire).not.toContain('application/octet-stream');
+  expect(attachmentWire!.wire).not.toContain('I7-BROWSER-PLAINTEXT-ATTACHMENT-4917');
+
+  const attachmentEvent=remote.v2Events.find(event=>event.entityId===attachmentId);
+  expect(attachmentEvent).toBeTruthy();
+
+  // Simulate a clean device that has metadata/key material but lacks this local
+  // Attachment replica. Rewind only to the event immediately before the
+  // Attachment and require authenticated hydration on the next sync.
+  await page.evaluate(async({attachmentId,cursor})=>{
+    const request=indexedDB.open('vault:local');
+    const db:IDBDatabase=await new Promise((resolve,reject)=>{
+      request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+    });
+    const tx=db.transaction(['entries','attachments','dirty','remoteShadows','syncCursors'],'readwrite');
+    tx.objectStore('entries').delete(attachmentId);
+    tx.objectStore('attachments').delete(attachmentId);
+    tx.objectStore('dirty').delete(attachmentId);
+    tx.objectStore('remoteShadows').delete(attachmentId);
+    const cursorStore=tx.objectStore('syncCursors');
+    const currentReq=cursorStore.get(remote.remoteVaultId);
+    const current=await new Promise<any>((resolve,reject)=>{
+      currentReq.onsuccess=()=>resolve(currentReq.result);currentReq.onerror=()=>reject(currentReq.error);
+    });
+    cursorStore.put({...current,cursor:String(cursor),updatedAt:new Date().toISOString()});
+    await new Promise<void>((resolve,reject)=>{
+      tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);tx.onerror=()=>reject(tx.error);
+    });
+    db.close();
+  },{attachmentId,cursor:Number(attachmentEvent.sequence)-1});
+
+  await dialog.locator('[data-cloud-action="sync"]').click();
+  await expect(dialog.locator('.cloud-message')).toContainText('Encrypted sync complete',{timeout:20_000});
+  expect(remote.v2BlobDownloadCount).toBeGreaterThanOrEqual(1);
+
+  const restored=await page.evaluate(async attachmentId=>{
+    const request=indexedDB.open('vault:local');
+    const db:IDBDatabase=await new Promise((resolve,reject)=>{
+      request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+    });
+    const tx=db.transaction(['entries','attachments'],'readonly');
+    const entryReq=tx.objectStore('entries').get(attachmentId);
+    const bytesReq=tx.objectStore('attachments').get(attachmentId);
+    const [entry,attachment]=await Promise.all([
+      new Promise<any>((resolve,reject)=>{entryReq.onsuccess=()=>resolve(entryReq.result);entryReq.onerror=()=>reject(entryReq.error);}),
+      new Promise<any>((resolve,reject)=>{bytesReq.onsuccess=()=>resolve(bytesReq.result);bytesReq.onerror=()=>reject(bytesReq.error);}),
+    ]);
+    db.close();
+    return {entry,attachment};
+  },attachmentId);
+  expect(restored.entry.name).toBe('secret-contract.bin');
+  expect(restored.attachment.mimeType).toBe('application/octet-stream');
+  expect(Buffer.from(restored.attachment.bytes)).toEqual(secret);
 });
