@@ -9,6 +9,7 @@ import {
 } from '../build/core/sync/replica-store-v2.js';
 import {
   SyncConflictStoreV2,
+  validateSyncConflictV2,
 } from '../build/core/sync/conflict-store-v2.js';
 
 const accountId='11111111-1111-4111-8111-111111111111';
@@ -296,6 +297,27 @@ function seedBase(driver,base,local=base,localVersion=1){
     });
   }
 }
+
+test('I6 persisted conflict validation rejects cross-Vault REMOTE state before resolution or archive restore',()=>{
+  const local=noteState({text:'LOCAL\n'});
+  const base=noteState({text:'BASE\n'});
+  const remote=noteState({text:'REMOTE\n'});
+  const record={
+    protocolVersion:2,
+    id:'019c0000-0000-7000-8000-000000000098',
+    vaultId,entryId:noteId,accountId,epoch,entityType:'note',kind:'markdown',
+    status:'open',baseRevision:'1',remoteRevision:'2',remoteSequence:'2',
+    remoteNameToken:token,remoteKeyGeneration:1,remoteStateSha256:hash,
+    base,local,remote:{...remote,vaultId:'99999999-9999-4999-8999-999999999999'},
+    markdownConflictIds:['block:0'],source:'pull',resolution:null,resolutionText:null,
+    createdAt:at,updatedAt:at,resolvedAt:null,
+  };
+  assert.throws(
+    ()=>validateSyncConflictV2(record),
+    error=>error?.code==='CORRUPT'&&/REMOTE crossed Vault identity/u.test(error.message),
+  );
+});
+
 
 test('I6 page apply auto-merges disjoint concurrent Markdown and advances clean base/cursor',async()=>{
   const driver=new MemoryDriver();
