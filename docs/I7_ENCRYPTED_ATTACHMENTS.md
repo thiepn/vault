@@ -73,6 +73,21 @@ Attachment publication is ordered:
 
 A blob upload can therefore never become a canonical Attachment merely because the object exists.
 
+### Large / resumable uploads
+
+Ciphertext objects up to 6 MiB use the immutable standard Storage upload path.
+
+Larger ciphertext uses Supabase TUS through the direct `<project>.storage.supabase.co` hostname:
+
+- fixed 6 MiB chunks;
+- `x-upsert: false`;
+- a unique TUS upload URL;
+- HEAD `Upload-Offset` recovery after an interrupted PATCH;
+- bounded retry/recovery attempts;
+- immutable-path collision falls back to authenticated existing-object verification.
+
+A failed resumable upload never creates the canonical Attachment entity until the object is complete and the READY commit succeeds.
+
 ## Idempotency and deduplication
 
 The object key is:
