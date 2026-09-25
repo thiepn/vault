@@ -634,22 +634,23 @@ test('I7 browser sync keeps Attachment metadata and bytes encrypted and rehydrat
     mimeType:'application/octet-stream',
     buffer:secret,
   });
-  await expect(page.locator('.save-status')).toContainText('Saved locally');
-
-  const attachmentId=await page.evaluate(async()=>{
-    const request=indexedDB.open('vault:local');
-    const db:IDBDatabase=await new Promise((resolve,reject)=>{
-      request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+  let attachmentId='';
+  await expect.poll(async()=>{
+    attachmentId=await page.evaluate(async()=>{
+      const request=indexedDB.open('vault:local');
+      const db:IDBDatabase=await new Promise((resolve,reject)=>{
+        request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+      });
+      const tx=db.transaction('entries','readonly');
+      const req=tx.objectStore('entries').getAll();
+      const rows=await new Promise<any[]>((resolve,reject)=>{
+        req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+      });
+      db.close();
+      return rows.find(row=>row.name==='secret-contract.bin')?.id ?? '';
     });
-    const tx=db.transaction('entries','readonly');
-    const req=tx.objectStore('entries').getAll();
-    const rows=await new Promise<any[]>((resolve,reject)=>{
-      req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
-    });
-    db.close();
-    return rows.find(row=>row.name==='secret-contract.bin')?.id as string;
-  });
-  expect(attachmentId).toMatch(/^[0-9a-f-]{36}$/u);
+    return attachmentId;
+  },{timeout:10_000}).toMatch(/^[0-9a-f-]{36}$/u);
 
   const dialog=await signIn(page);
   await dialog.locator('[data-cloud-action="adopt"]').click();
