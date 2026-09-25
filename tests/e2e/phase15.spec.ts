@@ -10,7 +10,7 @@ const REFRESH='phase15-refresh-token';
 
 const corsHeaders={
   'Access-Control-Allow-Origin':'*',
-  'Access-Control-Allow-Headers':'authorization,apikey,content-type,prefer',
+  'Access-Control-Allow-Headers':'authorization,apikey,content-type,prefer,x-upsert,cache-control',
   'Access-Control-Allow-Methods':'GET,POST,PATCH,OPTIONS',
 };
 
