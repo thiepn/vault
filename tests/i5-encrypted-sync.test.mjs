@@ -79,7 +79,7 @@ class MemoryDriver{
     this.stores=new Map([
       'vaults','entries','contents','attachments','dirty','outbox','revisions','drafts',
       'settings','remoteShadows','syncCursors','knowledge','entities','noteBodies',
-      'blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts','syncConflicts',
+      'blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts','syncConflicts','syncBootstrap',
     ].map(name=>[name,new Map()]));
   }
   async transaction(names,mode,body){
