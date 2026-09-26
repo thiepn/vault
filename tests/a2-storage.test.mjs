@@ -23,8 +23,8 @@ const ids = [
 ];
 
 test('A2 schema adds canonical, background-replication and conflict-resolution stores', () => {
-  assert.equal(SCHEMA_VERSION, 7);
-  for (const store of ['entities','noteBodies','blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts','syncConflicts']) {
+  assert.equal(SCHEMA_VERSION, 8);
+  for (const store of ['entities','noteBodies','blobPayloads','migrationState','backgroundRuntime','remoteInbox','conflicts','syncConflicts','syncBootstrap']) {
     assert.ok(STORES.includes(store), store);
   }
 });
