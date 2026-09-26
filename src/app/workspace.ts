@@ -5371,6 +5371,57 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refreshCloudStatus(role ? `Member changed to ${role}.` : 'Member access revoked.');
           return;
         }
+        if(action==='request-encrypted-access'){
+          if(!vault?.cloud||vault.cloud.protocolVersion!==2||!keyDistribution||!cloudStatus.account||!cloudStatus.device){
+            throw new VaultError('CONFIGURATION','Encrypted Device approval is unavailable.');
+          }
+          const request=await keyDistribution.requestAccess({
+            accountId:vault.cloud.accountId,
+            vaultId:vault.id,
+            deviceId:vault.cloud.deviceId,
+          });
+          await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId),request.requestId);
+          currentAccessRequestId=request.requestId;
+          await refreshEncryptedDeviceAccess();
+          renderCloudDialog('Encrypted Device approval requested. Approve this request from an already authorized Device, then return here and complete approval.');
+          return;
+        }
+        if(action==='complete-encrypted-access'){
+          if(!vault?.cloud||vault.cloud.protocolVersion!==2||!keyDistribution||!currentAccessRequestId){
+            throw new VaultError('NOT_FOUND','No pending encrypted Device approval is stored on this browser.');
+          }
+          const completed=await keyDistribution.completePendingAccess({
+            accountId:vault.cloud.accountId,
+            requestId:currentAccessRequestId,
+            deviceId:vault.cloud.deviceId,
+          });
+          completed.context.destroy();
+          await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId),null);
+          currentAccessRequestId=null;
+          await refreshCloudStatus('Device approved. Starting authenticated encrypted bootstrap…');
+          await runCurrentCloudSync();
+          return;
+        }
+        if(action==='approve-encrypted-device'){
+          if(!vault?.cloud||vault.cloud.protocolVersion!==2||!keyDistribution||!cloudStatus.device){
+            throw new VaultError('CONFIGURATION','Encrypted Device approval is unavailable.');
+          }
+          const requestId=cloudAction.dataset.accessRequestId;
+          const request=pendingDeviceAccessRequests.find(item=>item.requestId===requestId);
+          if(!request)throw new VaultError('NOT_FOUND','That encrypted Device request is no longer pending.');
+          await keyDistribution.approveAccessRequest({
+            accountId:vault.cloud.accountId,
+            approverDeviceId:vault.cloud.deviceId,
+            request,
+          });
+          await refreshCloudStatus('Encrypted Device approved. The new Device can now confirm possession and bootstrap the Vault.');
+          return;
+        }
+        if(action==='resume-encrypted-bootstrap'){
+          if(!vault?.cloud||vault.cloud.protocolVersion!==2)throw new VaultError('NOT_FOUND','Choose the encrypted Vault first.');
+          await runCurrentCloudSync();
+          return;
+        }
         if (action === 'activate-encrypted') {
           if(!vault||vault.mode!=='cloud'||!vault.cloud) throw new VaultError('NOT_FOUND','Choose the cloud-linked Vault first.');
           if(!activationV2||!keyDistribution||!keyRegistry) throw new VaultError('CONFIGURATION','Encrypted synchronization is unavailable in this browser.');
@@ -5458,17 +5509,43 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           filterText = '';
           lastSyncSummary = null;
           await setting('lastVault', vault.id);
+          if(vault.cloud?.protocolVersion===2){
+            await syncStateV2.initializeCursor(vault.id,vault.cloud.accountId,vault.cloud.epoch);
+          }
           await refresh();
           cloudStatus = await cloud.status();
           await reloadCloudBindingCache();
+          await refreshEncryptedDeviceAccess();
           awaitableDevicesCache = await cloud.listDevices();
           await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCollaborationSubscription();
           await refreshCrdtSession();
           await refreshCloudSyncDetail();
-          renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
           renderCloudIndicator();
+
+          if(vault.cloud?.protocolVersion===2){
+            if(!keyDistribution||!cloudStatus.account||!cloudStatus.device){
+              throw new VaultError('CONFIGURATION','Encrypted Device approval is unavailable.');
+            }
+            if(!currentKeyReadiness?.ready){
+              const request=await keyDistribution.requestAccess({
+                accountId:vault.cloud.accountId,
+                vaultId:vault.id,
+                deviceId:vault.cloud.deviceId,
+              });
+              await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId),request.requestId);
+              currentAccessRequestId=request.requestId;
+              await refreshEncryptedDeviceAccess();
+              renderCloudDialog('Encrypted Vault added locally. Approve this Device from an existing authorized Device, then complete approval here.');
+              return;
+            }
+            renderCloudDialog('Encrypted Vault added. Starting fixed-snapshot bootstrap…');
+            await runCurrentCloudSync();
+            return;
+          }
+
+          renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
           await runCurrentCloudSync();
           return;
         }
