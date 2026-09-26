@@ -1600,6 +1600,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
     if(vault.cloud.protocolVersion===2){
+      currentBootstrapState=await syncStateV2.bootstrap(vault.id,vault.cloud.accountId).catch(()=>null);
       const cursor=await syncStateV2.cursor(vault.id,vault.cloud.accountId);
       const queued=await syncStateV2.count(vault.id,vault.cloud.accountId);
       const encrypted=latest && 'attachmentConflictsPreserved' in latest ? latest : null;
@@ -1766,6 +1767,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     try {
       cloudStatus = await cloud.status();
       await reloadCloudBindingCache();
+      await refreshEncryptedDeviceAccess();
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
       await refreshCloudMembers();
       await refreshRealtimeSubscription();
