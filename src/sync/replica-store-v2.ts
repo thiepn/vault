@@ -25,7 +25,7 @@ import {
   type SyncConflictRecordV2,
 } from './conflict-store-v2.js';
 import { decodeOperationV2, type EncryptedEntityStructural, type NameToken } from './protocol-v2.js';
-import type { SyncOutboxRecordV2 } from './local-state-v2.js';
+import type { SyncBootstrapRecordV2, SyncOutboxRecordV2 } from './local-state-v2.js';
 import {
   reconcileSyncEntityV2,
   syncEntityAuthoredEqualV2,
@@ -606,6 +606,93 @@ async function cloneActiveSubtreeForKeepBoth(
   }
 }
 
+
+async function writeBootstrapEntity(
+  tx:StorageTransaction,
+  accountId:AccountId,
+  epoch:string,
+  remote:DecryptedSyncEntityV2,
+  bytes:Uint8Array|null,
+):Promise<Entry>{
+  const existing=await tx.store('entries').get<Entry>(remote.entityId);
+  if(existing) throw new VaultError('STALE_WRITE','Fresh-device bootstrap encountered pre-existing local content.');
+
+  const name=canonicalName(remote);
+  const key=remote.deleted?undefined:activeKey(remote.vaultId,remote.parentId,name);
+  if(key){
+    const collision=await tx.store('entries').fromIndex<Entry>('activeKey',key);
+    if(collision) throw new VaultError('COLLISION','Encrypted bootstrap contains a duplicate active path.');
+  }
+
+  const entry:Entry={
+    id:remote.entityId,
+    vaultId:remote.vaultId,
+    parentId:remote.parentId,
+    name,
+    kind:kindFor(remote),
+    createdAt:remote.payload.createdAt,
+    updatedAt:remote.payload.updatedAt,
+    localVersion:1,
+    deletedAt:remote.payload.deletedAt,
+    deletionBatch:null,
+    ...(key?{activeKey:key}:{}),
+  };
+  await tx.store('entries').put(entry);
+  await tx.store('contents').delete(entry.id);
+  await tx.store('attachments').delete(entry.id);
+
+  if(remote.entityType==='note'){
+    await tx.store('contents').put({
+      entryId:entry.id,
+      text:remote.payload.text,
+      localVersion:1,
+    } satisfies MarkdownContent);
+  }else if(remote.entityType==='attachment'){
+    if(!bytes||bytes.byteLength!==remote.payload.size){
+      throw new VaultError('CORRUPT','Encrypted bootstrap Attachment bytes are missing or inconsistent.');
+    }
+    await tx.store('attachments').put({
+      entryId:entry.id,
+      vaultId:entry.vaultId,
+      mimeType:remote.payload.mimeType,
+      size:remote.payload.size,
+      bytes:bytes.slice(),
+    } satisfies AttachmentContent);
+  }
+
+  await tx.store('remoteShadows').put(shadowFor(accountId,epoch,remote));
+  return entry;
+}
+
+async function validateBootstrappedTree(
+  tx:StorageTransaction,
+  vaultId:VaultId,
+):Promise<void>{
+  const entries=await tx.store('entries').allFromIndex<Entry>('vaultId',vaultId);
+  const byId=new Map(entries.map(entry=>[entry.id,entry]));
+  for(const entry of entries){
+    if(entry.parentId!==null){
+      const parent=byId.get(entry.parentId);
+      if(!parent||parent.kind!=='directory'||parent.vaultId!==vaultId){
+        throw new VaultError('CORRUPT','Encrypted bootstrap contains an unavailable or invalid parent folder.');
+      }
+      if(entry.deletedAt===null&&parent.deletedAt!==null){
+        throw new VaultError('CORRUPT','Encrypted bootstrap contains an active child under a deleted parent.');
+      }
+    }
+    const seen=new Set<EntryId>();
+    let current:Entry|undefined=entry;
+    while(current?.parentId){
+      if(seen.has(current.parentId)||seen.size>=255){
+        throw new VaultError('CYCLE','Encrypted bootstrap contains a folder cycle.');
+      }
+      seen.add(current.parentId);
+      current=byId.get(current.parentId);
+      if(!current)break;
+    }
+  }
+}
+
 export class EncryptedReplicaStoreV2 {
   private readonly driver:LocalStorageDriver;
 
@@ -614,6 +701,159 @@ export class EncryptedReplicaStoreV2 {
     private readonly a2?:Pick<A2Persistence,'syncEntry'|'markRepairNeeded'>,
   ){
     this.driver=storageDriver(database);
+  }
+
+  async freshBootstrapEligible(
+    vaultId:VaultId,
+    accountId:AccountId,
+    epoch:string,
+  ):Promise<boolean>{
+    return this.driver.transaction(
+      ['vaults','entries','dirty','outbox','remoteShadows','syncCursors','syncConflicts','syncBootstrap'],
+      'readonly',
+      async tx=>{
+        const vault=await tx.store('vaults').get<Vault>(vaultId);
+        if(!vault||vault.mode!=='cloud'||!vault.cloud||vault.cloud.protocolVersion!==2
+          ||vault.cloud.accountId!==accountId||vault.cloud.epoch!==epoch){
+          throw new VaultError('ACCOUNT_MISMATCH','Fresh-device bootstrap does not match the local encrypted Vault binding.');
+        }
+        const entries=await tx.store('entries').allFromIndex<Entry>('vaultId',vaultId);
+        const dirty=await tx.store('dirty').allFromIndex<DirtyEntry>('vaultId',vaultId);
+        const outbox=await tx.store('outbox').allFromIndex<SyncOutboxRecordV2>('vaultId',vaultId);
+        const shadows=(await tx.store('remoteShadows').getAll<SyncRemoteShadowV2>())
+          .filter(row=>row.vaultId===vaultId);
+        const conflicts=(await tx.store('syncConflicts').getAll<SyncConflictRecordV2>())
+          .filter(row=>row.vaultId===vaultId&&row.status!=='resolved');
+        const cursor=await tx.store('syncCursors').get<{protocolVersion?:number;accountId?:AccountId;epoch?:string;cursor?:string}>(vaultId);
+        const bootstrap=await tx.store('syncBootstrap').get<SyncBootstrapRecordV2>(vaultId);
+
+        if(bootstrap){
+          if(bootstrap.accountId!==accountId||bootstrap.epoch!==epoch) throw new VaultError('ACCOUNT_MISMATCH','Bootstrap state belongs to another Account/epoch.');
+          return bootstrap.status!=='complete';
+        }
+        return entries.length===0
+          &&dirty.length===0
+          &&outbox.length===0
+          &&shadows.length===0
+          &&conflicts.length===0
+          &&(!cursor||(cursor.protocolVersion===2&&cursor.accountId===accountId&&cursor.epoch===epoch&&cursor.cursor==='0'));
+      },
+    );
+  }
+
+  async applyBootstrapPage(input:{
+    accountId:AccountId;
+    epoch:string;
+    snapshotSequence:string;
+    expectedAfterEntityId:import('../domain/canonical.js').CanonicalEntityId|null;
+    nextAfterEntityId:import('../domain/canonical.js').CanonicalEntityId|null;
+    done:boolean;
+    items:readonly DecryptedSyncEntityV2[];
+    attachmentBytes:ReadonlyMap<EntryId,Uint8Array>;
+  }):Promise<SyncBootstrapRecordV2>{
+    const {accountId,epoch,snapshotSequence,expectedAfterEntityId,nextAfterEntityId,done,items,attachmentBytes}=input;
+    if(!items.length&&!done) throw new VaultError('PROTOCOL','Incomplete bootstrap page cannot be empty.');
+    const vaultId=items[0]?.vaultId;
+    if(!vaultId) throw new VaultError('PROTOCOL','Bootstrap page must contain an entity unless it is completed separately.');
+    const touched=new Set<EntryId>();
+
+    const result=await this.driver.transaction(
+      ['vaults','entries','contents','attachments','dirty','outbox','remoteShadows','syncCursors','syncConflicts','syncBootstrap'],
+      'readwrite',
+      async tx=>{
+        const state=await tx.store('syncBootstrap').get<SyncBootstrapRecordV2>(vaultId);
+        if(!state||state.accountId!==accountId||state.epoch!==epoch){
+          throw new VaultError('NOT_FOUND','Fresh-device bootstrap state is unavailable.');
+        }
+        if(state.status!=='running'){
+          throw new VaultError('STALE_WRITE','Fresh-device bootstrap is not accepting another page.');
+        }
+        if(state.snapshotSequence!==snapshotSequence||state.afterEntityId!==expectedAfterEntityId){
+          throw new VaultError('STALE_WRITE','Fresh-device bootstrap page no longer matches durable progress.');
+        }
+        const cursor=await tx.store('syncCursors').get<{protocolVersion:number;accountId:AccountId;epoch:string;cursor:string}>(vaultId);
+        if(!cursor||cursor.protocolVersion!==2||cursor.accountId!==accountId||cursor.epoch!==epoch||cursor.cursor!=='0'){
+          throw new VaultError('STALE_WRITE','Live cursor changed during fresh-device bootstrap.');
+        }
+        if((await tx.store('dirty').allFromIndex<DirtyEntry>('vaultId',vaultId)).length
+          ||(await tx.store('outbox').allFromIndex<SyncOutboxRecordV2>('vaultId',vaultId)).length){
+          throw new VaultError('STALE_WRITE','Local authored work appeared during fresh-device bootstrap.');
+        }
+
+        for(const item of items){
+          if(item.vaultId!==vaultId) throw new VaultError('PROTOCOL','Bootstrap page crosses Vault identity.');
+          const bytes=item.entityType==='attachment' ? attachmentBytes.get(item.entityId)??null : null;
+          const entry=await writeBootstrapEntity(tx,accountId,epoch,item,bytes);
+          touched.add(entry.id);
+        }
+
+        const appliedCount=state.appliedCount+items.length;
+        if(appliedCount>state.entityCount||done!== (appliedCount===state.entityCount)){
+          throw new VaultError('PROTOCOL','Bootstrap page count does not match its fixed descriptor.');
+        }
+        const next:SyncBootstrapRecordV2={
+          ...state,
+          appliedCount,
+          afterEntityId:nextAfterEntityId,
+          status:done?'finalizing':'running',
+          updatedAt:new Date().toISOString(),
+          lastError:null,
+        };
+        await tx.store('syncBootstrap').put(next);
+        return next;
+      },
+    );
+
+    if(this.a2){
+      for(const id of touched){
+        try{await this.a2.syncEntry(id);}
+        catch(error){await this.a2.markRepairNeeded(error).catch(()=>undefined);}
+      }
+    }
+    return result;
+  }
+
+  async finalizeBootstrap(input:{
+    vaultId:VaultId;
+    accountId:AccountId;
+    epoch:string;
+    snapshotSequence:string;
+  }):Promise<SyncBootstrapRecordV2>{
+    const {vaultId,accountId,epoch,snapshotSequence}=input;
+    return this.driver.transaction(
+      ['entries','dirty','outbox','remoteShadows','syncCursors','syncConflicts','syncBootstrap'],
+      'readwrite',
+      async tx=>{
+        const state=await tx.store('syncBootstrap').get<SyncBootstrapRecordV2>(vaultId);
+        if(!state||state.accountId!==accountId||state.epoch!==epoch||state.snapshotSequence!==snapshotSequence){
+          throw new VaultError('NOT_FOUND','Fresh-device bootstrap state no longer matches this snapshot.');
+        }
+        if(state.status==='complete')return state;
+        if(state.status!=='finalizing'||state.appliedCount!==state.entityCount||state.afterEntityId!==null){
+          throw new VaultError('STALE_WRITE','Fresh-device bootstrap is not ready for live handoff.');
+        }
+        if((await tx.store('dirty').allFromIndex<DirtyEntry>('vaultId',vaultId)).length
+          ||(await tx.store('outbox').allFromIndex<SyncOutboxRecordV2>('vaultId',vaultId)).length
+          ||(await tx.store('syncConflicts').getAll<SyncConflictRecordV2>()).some(row=>row.vaultId===vaultId&&row.status!=='resolved')){
+          throw new VaultError('STALE_WRITE','Fresh-device bootstrap cannot finalize while local authored/conflict state exists.');
+        }
+        await validateBootstrappedTree(tx,vaultId);
+        const cursor=await tx.store('syncCursors').get<{protocolVersion:number;accountId:AccountId;epoch:string;cursor:string;updatedAt:string}>(vaultId);
+        if(!cursor||cursor.protocolVersion!==2||cursor.accountId!==accountId||cursor.epoch!==epoch||cursor.cursor!=='0'){
+          throw new VaultError('STALE_WRITE','Fresh-device bootstrap live cursor is not at its untouched baseline.');
+        }
+        await tx.store('syncCursors').put({...cursor,cursor:snapshotSequence,updatedAt:new Date().toISOString()});
+        const completed:SyncBootstrapRecordV2={
+          ...state,
+          status:'complete',
+          completedAt:new Date().toISOString(),
+          updatedAt:new Date().toISOString(),
+          lastError:null,
+        };
+        await tx.store('syncBootstrap').put(completed);
+        return completed;
+      },
+    );
   }
 
   async shadow(entryId:EntryId,accountId:AccountId,epoch:string):Promise<SyncRemoteShadowV2|null>{

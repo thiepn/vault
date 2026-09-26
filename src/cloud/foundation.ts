@@ -107,7 +107,7 @@ export class CloudFoundation {
       projectRef:projectRefFromUrl(this.projectUrl),
       remoteVaultId:remote.id,
       epoch:remote.epoch,
-      protocolVersion:1,
+      protocolVersion:remote.protocolVersion,
       deviceId:this.deviceId,
       adoptedAt:new Date().toISOString(),
     };
@@ -116,14 +116,15 @@ export class CloudFoundation {
   }
 
   async addRemoteVault(remote: RemoteCloudVault): Promise<Vault> {
-    if(remote.protocolVersion===2){
-      throw new VaultError('UNSUPPORTED','Adding an encrypted remote Vault on a second Device begins in I8 after encrypted bootstrap certification.');
-    }
     const initialized=await this.initializeIdentity();
     if (!initialized) throw new VaultError('ACCOUNT_MISMATCH','Sign in before adding a cloud Vault to this device.');
     if (this.device?.revokedAt) throw new VaultError('ACCOUNT_MISMATCH','This device has been revoked.');
     if (remote.accountId !== initialized.account.id || remote.authUserId !== initialized.identity.userId || remote.disabledAt) {
       throw new VaultError('ACCOUNT_MISMATCH','That remote Vault is not available to this account.');
+    }
+    if(remote.protocolVersion===2
+      &&(remote.accessRole!=='owner'||remote.ownerAccountId!==initialized.account.id||remote.ownerAuthUserId!==initialized.identity.userId)){
+      throw new VaultError('PERMISSION','Cross-account encrypted Vault bootstrap is not enabled yet.');
     }
     const binding: CloudVaultBinding={
       accountId:initialized.account.id as AccountId,
@@ -139,7 +140,9 @@ export class CloudFoundation {
       adoptedAt:new Date().toISOString(),
     };
     const vault=await this.vaults.createCloudReplica(remote.name,binding);
-    await this.syncState.initializeCursor(vault.id,initialized.identity.userId,remote.epoch);
+    if(remote.protocolVersion===1){
+      await this.syncState.initializeCursor(vault.id,initialized.identity.userId,remote.epoch);
+    }
     return vault;
   }
 

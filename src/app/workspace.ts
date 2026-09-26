@@ -40,13 +40,13 @@ import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-
 import { browserCloudConfiguration, projectRefFromUrl } from '../cloud/config.js';
 import { SupabaseRestAuth } from '../cloud/auth-rest.js';
 import { SupabaseCloudRegistry } from '../cloud/supabase-registry.js';
-import { SupabaseKeyRegistry } from '../cloud/key-registry.js';
+import { SupabaseKeyRegistry, type DeviceAccessRequest, type VaultKeyReadiness } from '../cloud/key-registry.js';
 import { CloudFoundation, type CloudFoundationStatus } from '../cloud/foundation.js';
 import { SyncLocalState } from '../sync/local-state.js';
 import { SupabaseSyncTransport } from '../sync/transport.js';
 import { SyncReplicaStore } from '../sync/replica-store.js';
 import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
-import { SyncLocalStateV2 } from '../sync/local-state-v2.js';
+import { SyncLocalStateV2, type SyncBootstrapRecordV2 } from '../sync/local-state-v2.js';
 import { EncryptedReplicaStoreV2 } from '../sync/replica-store-v2.js';
 import { EncryptedSyncEngineV2, type EncryptedSyncRunSummaryV2 } from '../sync/engine-v2.js';
 import { ProtocolV2Activation } from '../sync/activation-v2.js';
@@ -113,6 +113,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let crdtRecoveryText: string | null = null;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
+  let currentKeyReadiness:VaultKeyReadiness|null=null;
+  let currentBootstrapState:SyncBootstrapRecordV2|null=null;
+  let currentAccessRequestId:string|null=null;
+  let pendingDeviceAccessRequests:DeviceAccessRequest[]=[];
   try {
     const auth = new SupabaseRestAuth(cloudConfig, window.localStorage);
     const workerRuntime=await backgroundState.runtime().catch(()=>null);
@@ -868,7 +872,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     return !!vault && (vault.mode === 'local' || cloudBindingCanRead(vault.cloud));
   }
   function currentVaultWritable(): boolean {
-    return !!vault && (vault.mode === 'local' || cloudBindingCanWrite(vault.cloud));
+    if(!vault)return false;
+    if(vault.mode==='local')return true;
+    if(!cloudBindingCanWrite(vault.cloud))return false;
+    if(vault.cloud?.protocolVersion===2){
+      if(currentKeyReadiness?.vaultId!==vault.id||!currentKeyReadiness.ready)return false;
+      if(currentBootstrapState?.vaultId===vault.id&&currentBootstrapState.status!=='complete')return false;
+    }
+    return true;
   }
   async function reloadCloudBindingCache(): Promise<void> {
     const currentId=vault?.id;
@@ -1356,8 +1367,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       && vault.cloud.authUserId === cloudStatus.identity.userId
       && cloudBindingCanRead(vault.cloud);
     const encryptedPending=syncEligible && activeRole==='owner' && vault?.cloud?.protocolVersion===1;
+    const encryptedReady = vault?.cloud?.protocolVersion!==2
+      || (currentKeyReadiness?.vaultId===vault.id
+        && currentKeyReadiness.ready
+        && (!currentBootstrapState||currentBootstrapState.status==='complete'));
     cloudSyncNow.disabled = !syncEligible
       || encryptedPending
+      || !encryptedReady
       || (vault?.cloud?.protocolVersion===2 ? !syncEngineV2 : !syncEngine);
     cloudSyncDetail.textContent = syncEligible
       ? (encryptedPending ? 'Cloud linked · end-to-end encryption setup required before first upload.' : (cachedSyncDetail || 'Ready to synchronize.'))
@@ -1382,14 +1398,36 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudAdopt.dataset.cloudAction='activate-encrypted';
       cloudAdopt.textContent = 'Set up end-to-end encrypted sync';
     } else if (syncEligible && vault.cloud!.protocolVersion===2) {
-      cloudVaultState.append(cloudRow(
-        vault.name,
-        `End-to-end encrypted · Protocol v2 · owner · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`,
-        'adopted',
-      ));
-      cloudAdopt.disabled = true;
-      cloudAdopt.dataset.cloudAction='activate-encrypted';
-      cloudAdopt.textContent = 'End-to-end encryption enabled';
+      const ready=currentKeyReadiness?.vaultId===vault.id&&currentKeyReadiness.ready;
+      const bootstrap=currentBootstrapState?.vaultId===vault.id?currentBootstrapState:null;
+      if(!ready){
+        cloudVaultState.append(cloudRow(
+          vault.name,
+          `End-to-end encrypted · this device is not authorized yet · device ${vault.cloud!.deviceId.slice(0,8)}…`,
+          'warning',
+        ));
+        cloudAdopt.disabled=!keyDistribution||!keyRegistry;
+        cloudAdopt.dataset.cloudAction=currentAccessRequestId?'complete-encrypted-access':'request-encrypted-access';
+        cloudAdopt.textContent=currentAccessRequestId?'Complete trusted-device approval':'Request trusted-device approval';
+      }else if(bootstrap&&bootstrap.status!=='complete'){
+        cloudVaultState.append(cloudRow(
+          vault.name,
+          `Encrypted bootstrap ${bootstrap.status} · ${bootstrap.appliedCount.toLocaleString()} / ${bootstrap.entityCount.toLocaleString()} entities · snapshot ${bootstrap.snapshotSequence}`,
+          bootstrap.status==='failed'?'warning':'adopted',
+        ));
+        cloudAdopt.disabled=false;
+        cloudAdopt.dataset.cloudAction='resume-encrypted-bootstrap';
+        cloudAdopt.textContent=bootstrap.status==='failed'?'Retry encrypted bootstrap':'Resume encrypted bootstrap';
+      }else{
+        cloudVaultState.append(cloudRow(
+          vault.name,
+          `End-to-end encrypted · Protocol v2 · owner · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`,
+          'adopted',
+        ));
+        cloudAdopt.disabled = true;
+        cloudAdopt.dataset.cloudAction='activate-encrypted';
+        cloudAdopt.textContent = 'End-to-end encryption enabled';
+      }
     } else if (syncEligible) {
       cloudVaultState.append(cloudRow(vault.name, `Legacy cloud sync · ${effectiveCloudRole(vault.cloud!)} · protocol v1`, 'adopted'));
       cloudAdopt.disabled = true;
@@ -1419,8 +1457,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           add.type = 'button';
           add.dataset.cloudAction = 'add-remote-vault';
           add.dataset.remoteVaultId = remote.id;
-          add.disabled = remote.protocolVersion===2;
-          add.textContent = remote.protocolVersion===2 ? 'Encrypted bootstrap in I8' : 'Add to this device';
+          const encryptedOwner=remote.protocolVersion===2
+            &&remote.accessRole==='owner'
+            &&remote.ownerAccountId===cloudStatus.account.id
+            &&remote.ownerAuthUserId===cloudStatus.identity.userId;
+          add.disabled = remote.protocolVersion===2&&!encryptedOwner;
+          add.textContent = remote.protocolVersion===2
+            ? encryptedOwner?'Add encrypted Vault':'Encrypted sharing not available yet'
+            : 'Add to this device';
           row.append(add);
         }
         cloudRemoteVaults.append(row);
@@ -1468,6 +1512,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         row.append(revoke);
       }
       cloudDevices.append(row);
+    }
+
+    if(activeRole==='owner'&&currentKeyReadiness?.ready){
+      for(const request of pendingDeviceAccessRequests){
+        const row=cloudRow(
+          `Pending encrypted device ${request.deviceId.slice(0,8)}…`,
+          `Requested ${new Date(request.createdAt).toLocaleString()} · expires ${new Date(request.expiresAt).toLocaleString()}`,
+          'warning',
+        );
+        const approve=document.createElement('button');
+        approve.type='button';
+        approve.dataset.cloudAction='approve-encrypted-device';
+        approve.dataset.accessRequestId=request.requestId;
+        approve.textContent='Approve encrypted device';
+        row.append(approve);
+        cloudDevices.append(row);
+      }
     }
   }
 
@@ -1546,6 +1607,34 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     realtimeStatus = realtimeWake.currentStatus;
   }
 
+  function accessRequestSettingKey(vaultId:VaultId,deviceId:DeviceId):string{
+    return `e2eeAccessRequest:${vaultId}:${deviceId}`;
+  }
+
+  async function refreshEncryptedDeviceAccess():Promise<void>{
+    currentKeyReadiness=null;
+    currentBootstrapState=null;
+    currentAccessRequestId=null;
+    pendingDeviceAccessRequests=[];
+    if(!cloudStatus.signedIn||!cloudStatus.identity||!cloudStatus.account||!cloudStatus.device
+      ||!vault?.cloud||vault.cloud.protocolVersion!==2||!keyRegistry||!keyDistribution)return;
+    if(vault.cloud.accountId!==cloudStatus.account.id||vault.cloud.authUserId!==cloudStatus.identity.userId)return;
+
+    currentBootstrapState=await syncStateV2.bootstrap(vault.id,vault.cloud.accountId).catch(()=>null);
+    currentKeyReadiness=await keyRegistry.readiness(vault.id,vault.cloud.deviceId).catch(()=>null);
+    const stored=await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId));
+    currentAccessRequestId=typeof stored==='string'&&stored?stored:null;
+
+    if(currentKeyReadiness?.ready){
+      if(currentAccessRequestId){
+        await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId),null);
+        currentAccessRequestId=null;
+      }
+      pendingDeviceAccessRequests=(await keyRegistry.listAccessRequests(vault.id,vault.cloud.deviceId))
+        .filter(request=>request.status==='pending');
+    }
+  }
+
   async function refreshCloudMembers(): Promise<void> {
     awaitableMembersCache=[];
     if(!cloud || !cloudStatus.signedIn || !cloudStatus.identity || !vault?.cloud) return;
@@ -1561,6 +1650,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     const latest = lastSyncSummary?.vaultId === vault.id ? lastSyncSummary.summary : null;
     if(vault.cloud.protocolVersion===2){
+      currentBootstrapState=await syncStateV2.bootstrap(vault.id,vault.cloud.accountId).catch(()=>null);
       const cursor=await syncStateV2.cursor(vault.id,vault.cloud.accountId);
       const queued=await syncStateV2.count(vault.id,vault.cloud.accountId);
       const encrypted=latest && 'attachmentConflictsPreserved' in latest ? latest : null;
@@ -1727,6 +1817,7 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     try {
       cloudStatus = await cloud.status();
       await reloadCloudBindingCache();
+      await refreshEncryptedDeviceAccess();
       awaitableDevicesCache = cloudStatus.signedIn ? await cloud.listDevices() : [];
       await refreshCloudMembers();
       await refreshRealtimeSubscription();
@@ -5280,6 +5371,57 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           await refreshCloudStatus(role ? `Member changed to ${role}.` : 'Member access revoked.');
           return;
         }
+        if(action==='request-encrypted-access'){
+          if(!vault?.cloud||vault.cloud.protocolVersion!==2||!keyDistribution||!cloudStatus.account||!cloudStatus.device){
+            throw new VaultError('CONFIGURATION','Encrypted Device approval is unavailable.');
+          }
+          const request=await keyDistribution.requestAccess({
+            accountId:vault.cloud.accountId,
+            vaultId:vault.id,
+            deviceId:vault.cloud.deviceId,
+          });
+          await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId),request.requestId);
+          currentAccessRequestId=request.requestId;
+          await refreshEncryptedDeviceAccess();
+          renderCloudDialog('Encrypted Device approval requested. Approve this request from an already authorized Device, then return here and complete approval.');
+          return;
+        }
+        if(action==='complete-encrypted-access'){
+          if(!vault?.cloud||vault.cloud.protocolVersion!==2||!keyDistribution||!currentAccessRequestId){
+            throw new VaultError('NOT_FOUND','No pending encrypted Device approval is stored on this browser.');
+          }
+          const completed=await keyDistribution.completePendingAccess({
+            accountId:vault.cloud.accountId,
+            requestId:currentAccessRequestId,
+            deviceId:vault.cloud.deviceId,
+          });
+          completed.context.destroy();
+          await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId),null);
+          currentAccessRequestId=null;
+          await refreshCloudStatus('Device approved. Starting authenticated encrypted bootstrap…');
+          await runCurrentCloudSync();
+          return;
+        }
+        if(action==='approve-encrypted-device'){
+          if(!vault?.cloud||vault.cloud.protocolVersion!==2||!keyDistribution||!cloudStatus.device){
+            throw new VaultError('CONFIGURATION','Encrypted Device approval is unavailable.');
+          }
+          const requestId=cloudAction.dataset.accessRequestId;
+          const request=pendingDeviceAccessRequests.find(item=>item.requestId===requestId);
+          if(!request)throw new VaultError('NOT_FOUND','That encrypted Device request is no longer pending.');
+          await keyDistribution.approveAccessRequest({
+            accountId:vault.cloud.accountId,
+            approverDeviceId:vault.cloud.deviceId,
+            request,
+          });
+          await refreshCloudStatus('Encrypted Device approved. The new Device can now confirm possession and bootstrap the Vault.');
+          return;
+        }
+        if(action==='resume-encrypted-bootstrap'){
+          if(!vault?.cloud||vault.cloud.protocolVersion!==2)throw new VaultError('NOT_FOUND','Choose the encrypted Vault first.');
+          await runCurrentCloudSync();
+          return;
+        }
         if (action === 'activate-encrypted') {
           if(!vault||vault.mode!=='cloud'||!vault.cloud) throw new VaultError('NOT_FOUND','Choose the cloud-linked Vault first.');
           if(!activationV2||!keyDistribution||!keyRegistry) throw new VaultError('CONFIGURATION','Encrypted synchronization is unavailable in this browser.');
@@ -5367,17 +5509,43 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           filterText = '';
           lastSyncSummary = null;
           await setting('lastVault', vault.id);
+          if(vault.cloud?.protocolVersion===2){
+            await syncStateV2.initializeCursor(vault.id,vault.cloud.accountId,vault.cloud.epoch);
+          }
           await refresh();
           cloudStatus = await cloud.status();
           await reloadCloudBindingCache();
+          await refreshEncryptedDeviceAccess();
           awaitableDevicesCache = await cloud.listDevices();
           await refreshCloudMembers();
           await refreshRealtimeSubscription();
           await refreshCollaborationSubscription();
           await refreshCrdtSession();
           await refreshCloudSyncDetail();
-          renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
           renderCloudIndicator();
+
+          if(vault.cloud?.protocolVersion===2){
+            if(!keyDistribution||!cloudStatus.account||!cloudStatus.device){
+              throw new VaultError('CONFIGURATION','Encrypted Device approval is unavailable.');
+            }
+            if(!currentKeyReadiness?.ready){
+              const request=await keyDistribution.requestAccess({
+                accountId:vault.cloud.accountId,
+                vaultId:vault.id,
+                deviceId:vault.cloud.deviceId,
+              });
+              await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId),request.requestId);
+              currentAccessRequestId=request.requestId;
+              await refreshEncryptedDeviceAccess();
+              renderCloudDialog('Encrypted Vault added locally. Approve this Device from an existing authorized Device, then complete approval here.');
+              return;
+            }
+            renderCloudDialog('Encrypted Vault added. Starting fixed-snapshot bootstrap…');
+            await runCurrentCloudSync();
+            return;
+          }
+
+          renderCloudDialog('Cloud Vault added to this device. Downloading its canonical history…');
           await runCurrentCloudSync();
           return;
         }

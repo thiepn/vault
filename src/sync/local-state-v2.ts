@@ -1,5 +1,7 @@
 import { VaultError } from '../domain/errors.js';
 import type { AccountId, OperationId, VaultId } from '../domain/model.js';
+import type { CanonicalEntityId } from '../domain/canonical.js';
+import type { BootstrapDescriptorV2 } from './remote-v2.js';
 import { storageDriver, type LocalStorageDriver } from '../storage/driver.js';
 import {
   assertAccountV2,
@@ -30,6 +32,22 @@ export interface SyncCursorRecordV2 {
   epoch: string;
   cursor: CursorV2;
   updatedAt: string;
+}
+
+export interface SyncBootstrapRecordV2 {
+  protocolVersion: 2;
+  vaultId: VaultId;
+  accountId: AccountId;
+  epoch: string;
+  snapshotSequence: CursorV2;
+  entityCount: number;
+  appliedCount: number;
+  afterEntityId: CanonicalEntityId | null;
+  status: 'running' | 'finalizing' | 'complete' | 'failed';
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  lastError: string | null;
 }
 
 interface LegacyOutboxLike {
@@ -258,6 +276,93 @@ export class SyncLocalStateV2 {
       const updated: SyncCursorRecordV2 = { ...v2, cursor: next, updatedAt: new Date().toISOString() };
       await tx.store('syncCursors').put(updated);
       return updated;
+    });
+  }
+
+  async bootstrap(vaultId: VaultId, accountId: AccountId): Promise<SyncBootstrapRecordV2 | null> {
+    const row=await this.driver.transaction(
+      ['syncBootstrap'],
+      'readonly',
+      tx=>tx.store('syncBootstrap').get<SyncBootstrapRecordV2>(vaultId),
+    );
+    if(!row)return null;
+    if(row.protocolVersion!==2||row.vaultId!==vaultId||row.accountId!==accountId){
+      throw new VaultError('ACCOUNT_MISMATCH','Fresh-device bootstrap state belongs to another Account/Vault.');
+    }
+    bigintCursor(row.snapshotSequence);
+    if(!Number.isSafeInteger(row.entityCount)||row.entityCount<0
+      ||!Number.isSafeInteger(row.appliedCount)||row.appliedCount<0||row.appliedCount>row.entityCount){
+      throw new VaultError('CORRUPT','Fresh-device bootstrap progress is invalid.');
+    }
+    return row;
+  }
+
+  async beginBootstrap(
+    accountId:AccountId,
+    epoch:string,
+    descriptor:BootstrapDescriptorV2,
+  ):Promise<SyncBootstrapRecordV2>{
+    const cursor=await this.initializeCursor(descriptor.vaultId,accountId,epoch);
+    if(cursor.cursor!=='0') throw new VaultError('PROTOCOL','Fresh-device bootstrap requires an untouched live cursor.');
+    const existing=await this.bootstrap(descriptor.vaultId,accountId);
+    if(existing){
+      if(existing.epoch!==epoch
+        ||existing.snapshotSequence!==descriptor.snapshotSequence
+        ||existing.entityCount!==descriptor.entityCount){
+        throw new VaultError('STALE_WRITE','A different fixed bootstrap snapshot is already in progress.');
+      }
+      if(existing.status==='complete') return existing;
+      return existing.status==='failed'
+        ? {...existing,status:'running',lastError:null,updatedAt:new Date().toISOString()}
+        : existing;
+    }
+    const timestamp=new Date().toISOString();
+    const row:SyncBootstrapRecordV2={
+      protocolVersion:2,
+      vaultId:descriptor.vaultId,
+      accountId,
+      epoch,
+      snapshotSequence:descriptor.snapshotSequence,
+      entityCount:descriptor.entityCount,
+      appliedCount:0,
+      afterEntityId:null,
+      status:descriptor.entityCount===0?'finalizing':'running',
+      startedAt:timestamp,
+      updatedAt:timestamp,
+      completedAt:null,
+      lastError:null,
+    };
+    await this.driver.transaction(['syncBootstrap'],'readwrite',tx=>tx.store('syncBootstrap').add(row));
+    return row;
+  }
+
+  async resumeBootstrap(vaultId:VaultId,accountId:AccountId):Promise<SyncBootstrapRecordV2>{
+    return this.driver.transaction(['syncBootstrap'],'readwrite',async tx=>{
+      const row=await tx.store('syncBootstrap').get<SyncBootstrapRecordV2>(vaultId);
+      if(!row||row.accountId!==accountId) throw new VaultError('NOT_FOUND','No fresh-device bootstrap is available to resume.');
+      if(row.status==='complete') return row;
+      const next:SyncBootstrapRecordV2={
+        ...row,
+        status:row.appliedCount===row.entityCount?'finalizing':'running',
+        updatedAt:new Date().toISOString(),
+        lastError:null,
+      };
+      await tx.store('syncBootstrap').put(next);
+      return next;
+    });
+  }
+
+  async markBootstrapFailed(vaultId:VaultId,accountId:AccountId,error:unknown):Promise<void>{
+    await this.driver.transaction(['syncBootstrap'],'readwrite',async tx=>{
+      const row=await tx.store('syncBootstrap').get<SyncBootstrapRecordV2>(vaultId);
+      if(!row)return;
+      if(row.accountId!==accountId) throw new VaultError('ACCOUNT_MISMATCH','Fresh-device bootstrap state belongs to another Account.');
+      await tx.store('syncBootstrap').put({
+        ...row,
+        status:'failed',
+        updatedAt:new Date().toISOString(),
+        lastError:error instanceof Error?error.message:String(error),
+      } satisfies SyncBootstrapRecordV2);
     });
   }
 
