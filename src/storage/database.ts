@@ -2,14 +2,11 @@ import { VaultError } from '../domain/errors.js';
 import type { Principal } from '../domain/model.js';
 
 /**
- * Schema v7 adds Protocol v2 multi-device conflict records without rewriting the
- * legacy Phase 22 plaintext conflict store. Both remain restorable during the
- * transition, while syncConflicts becomes the E2EE reconciliation authority.
- * Phase 1–11 stores stay intact while canonical entities/note bodies/blobs are
- * populated and verified before a later cut-over. This makes upgrade rollback
- * possible without re-identifying existing content.
+ * Schema v8 adds resumable Protocol-v2 fresh-device bootstrap state. Bootstrap
+ * progress is separate from the live sync cursor so a crash can resume the same
+ * fixed remote snapshot without pretending partially materialized state is live.
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 export const STORES = [
   'vaults',
   'entries',
@@ -31,6 +28,7 @@ export const STORES = [
   'remoteInbox',
   'conflicts',
   'syncConflicts',
+  'syncBootstrap',
 ] as const;
 export type StoreName = typeof STORES[number];
 
@@ -113,6 +111,11 @@ export async function openDatabase(name = databaseName({ kind: 'local' })): Prom
         syncConflicts.createIndex('entryId', 'entryId');
         syncConflicts.createIndex('status', 'status');
         syncConflicts.createIndex('vaultEntry', ['vaultId', 'entryId']);
+      }
+      if (event.oldVersion < 8) {
+        const bootstrap = db.createObjectStore('syncBootstrap', { keyPath: 'vaultId' });
+        bootstrap.createIndex('status', 'status');
+        bootstrap.createIndex('accountId', 'accountId');
       }
     };
     req.onsuccess = () => {
