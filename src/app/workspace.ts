@@ -1367,8 +1367,13 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       && vault.cloud.authUserId === cloudStatus.identity.userId
       && cloudBindingCanRead(vault.cloud);
     const encryptedPending=syncEligible && activeRole==='owner' && vault?.cloud?.protocolVersion===1;
+    const encryptedReady = vault?.cloud?.protocolVersion!==2
+      || (currentKeyReadiness?.vaultId===vault.id
+        && currentKeyReadiness.ready
+        && (!currentBootstrapState||currentBootstrapState.status==='complete'));
     cloudSyncNow.disabled = !syncEligible
       || encryptedPending
+      || !encryptedReady
       || (vault?.cloud?.protocolVersion===2 ? !syncEngineV2 : !syncEngine);
     cloudSyncDetail.textContent = syncEligible
       ? (encryptedPending ? 'Cloud linked · end-to-end encryption setup required before first upload.' : (cachedSyncDetail || 'Ready to synchronize.'))
@@ -1393,14 +1398,36 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
       cloudAdopt.dataset.cloudAction='activate-encrypted';
       cloudAdopt.textContent = 'Set up end-to-end encrypted sync';
     } else if (syncEligible && vault.cloud!.protocolVersion===2) {
-      cloudVaultState.append(cloudRow(
-        vault.name,
-        `End-to-end encrypted · Protocol v2 · owner · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`,
-        'adopted',
-      ));
-      cloudAdopt.disabled = true;
-      cloudAdopt.dataset.cloudAction='activate-encrypted';
-      cloudAdopt.textContent = 'End-to-end encryption enabled';
+      const ready=currentKeyReadiness?.vaultId===vault.id&&currentKeyReadiness.ready;
+      const bootstrap=currentBootstrapState?.vaultId===vault.id?currentBootstrapState:null;
+      if(!ready){
+        cloudVaultState.append(cloudRow(
+          vault.name,
+          `End-to-end encrypted · this device is not authorized yet · device ${vault.cloud!.deviceId.slice(0,8)}…`,
+          'warning',
+        ));
+        cloudAdopt.disabled=!keyDistribution||!keyRegistry;
+        cloudAdopt.dataset.cloudAction=currentAccessRequestId?'complete-encrypted-access':'request-encrypted-access';
+        cloudAdopt.textContent=currentAccessRequestId?'Complete trusted-device approval':'Request trusted-device approval';
+      }else if(bootstrap&&bootstrap.status!=='complete'){
+        cloudVaultState.append(cloudRow(
+          vault.name,
+          `Encrypted bootstrap ${bootstrap.status} · ${bootstrap.appliedCount.toLocaleString()} / ${bootstrap.entityCount.toLocaleString()} entities · snapshot ${bootstrap.snapshotSequence}`,
+          bootstrap.status==='failed'?'warning':'adopted',
+        ));
+        cloudAdopt.disabled=false;
+        cloudAdopt.dataset.cloudAction='resume-encrypted-bootstrap';
+        cloudAdopt.textContent=bootstrap.status==='failed'?'Retry encrypted bootstrap':'Resume encrypted bootstrap';
+      }else{
+        cloudVaultState.append(cloudRow(
+          vault.name,
+          `End-to-end encrypted · Protocol v2 · owner · epoch ${vault.cloud!.epoch.slice(0, 8)}… · device ${vault.cloud!.deviceId.slice(0, 8)}…`,
+          'adopted',
+        ));
+        cloudAdopt.disabled = true;
+        cloudAdopt.dataset.cloudAction='activate-encrypted';
+        cloudAdopt.textContent = 'End-to-end encryption enabled';
+      }
     } else if (syncEligible) {
       cloudVaultState.append(cloudRow(vault.name, `Legacy cloud sync · ${effectiveCloudRole(vault.cloud!)} · protocol v1`, 'adopted'));
       cloudAdopt.disabled = true;
@@ -1430,8 +1457,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
           add.type = 'button';
           add.dataset.cloudAction = 'add-remote-vault';
           add.dataset.remoteVaultId = remote.id;
-          add.disabled = remote.protocolVersion===2;
-          add.textContent = remote.protocolVersion===2 ? 'Encrypted bootstrap in I8' : 'Add to this device';
+          const encryptedOwner=remote.protocolVersion===2
+            &&remote.accessRole==='owner'
+            &&remote.ownerAccountId===cloudStatus.account.id
+            &&remote.ownerAuthUserId===cloudStatus.identity.userId;
+          add.disabled = remote.protocolVersion===2&&!encryptedOwner;
+          add.textContent = remote.protocolVersion===2
+            ? encryptedOwner?'Add encrypted Vault':'Encrypted sharing not available yet'
+            : 'Add to this device';
           row.append(add);
         }
         cloudRemoteVaults.append(row);
@@ -1479,6 +1512,23 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
         row.append(revoke);
       }
       cloudDevices.append(row);
+    }
+
+    if(activeRole==='owner'&&currentKeyReadiness?.ready){
+      for(const request of pendingDeviceAccessRequests){
+        const row=cloudRow(
+          `Pending encrypted device ${request.deviceId.slice(0,8)}…`,
+          `Requested ${new Date(request.createdAt).toLocaleString()} · expires ${new Date(request.expiresAt).toLocaleString()}`,
+          'warning',
+        );
+        const approve=document.createElement('button');
+        approve.type='button';
+        approve.dataset.cloudAction='approve-encrypted-device';
+        approve.dataset.accessRequestId=request.requestId;
+        approve.textContent='Approve encrypted device';
+        row.append(approve);
+        cloudDevices.append(row);
+      }
     }
   }
 
