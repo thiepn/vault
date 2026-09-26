@@ -40,13 +40,13 @@ import { SpatialCanvasView, type CanvasNoteResolution } from '../canvas/spatial-
 import { browserCloudConfiguration, projectRefFromUrl } from '../cloud/config.js';
 import { SupabaseRestAuth } from '../cloud/auth-rest.js';
 import { SupabaseCloudRegistry } from '../cloud/supabase-registry.js';
-import { SupabaseKeyRegistry } from '../cloud/key-registry.js';
+import { SupabaseKeyRegistry, type DeviceAccessRequest, type VaultKeyReadiness } from '../cloud/key-registry.js';
 import { CloudFoundation, type CloudFoundationStatus } from '../cloud/foundation.js';
 import { SyncLocalState } from '../sync/local-state.js';
 import { SupabaseSyncTransport } from '../sync/transport.js';
 import { SyncReplicaStore } from '../sync/replica-store.js';
 import { SyncEngine, type SyncRunSummary } from '../sync/engine.js';
-import { SyncLocalStateV2 } from '../sync/local-state-v2.js';
+import { SyncLocalStateV2, type SyncBootstrapRecordV2 } from '../sync/local-state-v2.js';
 import { EncryptedReplicaStoreV2 } from '../sync/replica-store-v2.js';
 import { EncryptedSyncEngineV2, type EncryptedSyncRunSummaryV2 } from '../sync/engine-v2.js';
 import { ProtocolV2Activation } from '../sync/activation-v2.js';
@@ -113,6 +113,10 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
   let crdtRecoveryText: string | null = null;
   let cloudBootstrapError = '';
   let oauthCompleted = false;
+  let currentKeyReadiness:VaultKeyReadiness|null=null;
+  let currentBootstrapState:SyncBootstrapRecordV2|null=null;
+  let currentAccessRequestId:string|null=null;
+  let pendingDeviceAccessRequests:DeviceAccessRequest[]=[];
   try {
     const auth = new SupabaseRestAuth(cloudConfig, window.localStorage);
     const workerRuntime=await backgroundState.runtime().catch(()=>null);
@@ -868,7 +872,14 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     return !!vault && (vault.mode === 'local' || cloudBindingCanRead(vault.cloud));
   }
   function currentVaultWritable(): boolean {
-    return !!vault && (vault.mode === 'local' || cloudBindingCanWrite(vault.cloud));
+    if(!vault)return false;
+    if(vault.mode==='local')return true;
+    if(!cloudBindingCanWrite(vault.cloud))return false;
+    if(vault.cloud?.protocolVersion===2){
+      if(currentKeyReadiness?.vaultId!==vault.id||!currentKeyReadiness.ready)return false;
+      if(currentBootstrapState?.vaultId===vault.id&&currentBootstrapState.status!=='complete')return false;
+    }
+    return true;
   }
   async function reloadCloudBindingCache(): Promise<void> {
     const currentId=vault?.id;
@@ -1544,6 +1555,34 @@ export async function mountWorkspace(root: HTMLElement, options: WorkspaceOption
     }
     await realtimeWake.subscribe(vault.id, vault.cloud.epoch);
     realtimeStatus = realtimeWake.currentStatus;
+  }
+
+  function accessRequestSettingKey(vaultId:VaultId,deviceId:DeviceId):string{
+    return `e2eeAccessRequest:${vaultId}:${deviceId}`;
+  }
+
+  async function refreshEncryptedDeviceAccess():Promise<void>{
+    currentKeyReadiness=null;
+    currentBootstrapState=null;
+    currentAccessRequestId=null;
+    pendingDeviceAccessRequests=[];
+    if(!cloudStatus.signedIn||!cloudStatus.identity||!cloudStatus.account||!cloudStatus.device
+      ||!vault?.cloud||vault.cloud.protocolVersion!==2||!keyRegistry||!keyDistribution)return;
+    if(vault.cloud.accountId!==cloudStatus.account.id||vault.cloud.authUserId!==cloudStatus.identity.userId)return;
+
+    currentBootstrapState=await syncStateV2.bootstrap(vault.id,vault.cloud.accountId).catch(()=>null);
+    currentKeyReadiness=await keyRegistry.readiness(vault.id,vault.cloud.deviceId).catch(()=>null);
+    const stored=await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId));
+    currentAccessRequestId=typeof stored==='string'&&stored?stored:null;
+
+    if(currentKeyReadiness?.ready){
+      if(currentAccessRequestId){
+        await setting(accessRequestSettingKey(vault.id,vault.cloud.deviceId),null);
+        currentAccessRequestId=null;
+      }
+      pendingDeviceAccessRequests=(await keyRegistry.listAccessRequests(vault.id,vault.cloud.deviceId))
+        .filter(request=>request.status==='pending');
+    }
   }
 
   async function refreshCloudMembers(): Promise<void> {
