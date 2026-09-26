@@ -19,6 +19,9 @@ export interface EncryptedSyncRunSummaryV2 {
   conflictsCaptured:number;
   autoMergedEntities:number;
   attachmentConflictsPreserved:number;
+  bootstrappedEntities:number;
+  bootstrapSnapshot:string|null;
+  bootstrapResumed:boolean;
   uploadedBlobs:number;
   downloadedBlobs:number;
   reusedBlobs:number;
@@ -33,7 +36,8 @@ export interface EncryptedSyncCryptoResolverV2 {
 
 type EncryptedTransportV2=Pick<
   SupabaseSyncTransport,
-  'pullV2'|'pushV2'|'ackV2'|'prepareBlobV2'|'commitBlobV2'|'uploadEncryptedBlobV2'|'downloadEncryptedBlobV2'
+  'pullV2'|'pushV2'|'ackV2'|'beginBootstrapV2'|'bootstrapPageV2'
+  |'prepareBlobV2'|'commitBlobV2'|'uploadEncryptedBlobV2'|'downloadEncryptedBlobV2'
 >;
 
 function requireV2Binding(vault:Vault,accountId:AccountId){
@@ -126,6 +130,9 @@ export class EncryptedSyncEngineV2 {
       conflictsCaptured:0,
       autoMergedEntities:0,
       attachmentConflictsPreserved:0,
+      bootstrappedEntities:0,
+      bootstrapSnapshot:null,
+      bootstrapResumed:false,
       uploadedBlobs:0,
       downloadedBlobs:0,
       reusedBlobs:0,
@@ -136,7 +143,11 @@ export class EncryptedSyncEngineV2 {
     const active=await crypto.active();
     if(active.vaultId!==vault.id) throw new VaultError('ACCOUNT_MISMATCH','Active Vault crypto context belongs to another Vault.');
 
-    let current=await this.pullUntilCaughtUp(vault,accountId,cursor.cursor,active,crypto,summary);
+    let current=cursor.cursor;
+    if(current==='0'&&await this.replica.freshBootstrapEligible(vault.id,accountId,binding.epoch)){
+      current=await this.bootstrapFreshDevice(vault,accountId,active,crypto,summary);
+    }
+    current=await this.pullUntilCaughtUp(vault,accountId,current,active,crypto,summary);
 
     // Two bounded push cycles are enough to observe an accepted operation and
     // then synthesize one newer edit that happened while that immutable wire was
@@ -216,6 +227,84 @@ export class EncryptedSyncEngineV2 {
       attachmentBytes.set(entity.entityId,plaintext.slice());
     }
     return {entities,attachmentBytes,localAttachmentSha256};
+  }
+
+  private async bootstrapFreshDevice(
+    vault:Vault,
+    accountId:AccountId,
+    active:VaultCryptoContext,
+    crypto:EncryptedSyncCryptoResolverV2,
+    summary:EncryptedSyncRunSummaryV2,
+  ):Promise<string>{
+    const binding=requireV2Binding(vault,accountId);
+    let progress=await this.state.bootstrap(vault.id,accountId);
+
+    if(!progress){
+      const descriptor=await this.transport.beginBootstrapV2(
+        vault.id,
+        binding.epoch,
+        binding.deviceId,
+      );
+      progress=await this.state.beginBootstrap(accountId,binding.epoch,descriptor);
+    }else if(progress.status==='failed'){
+      progress=await this.state.resumeBootstrap(vault.id,accountId);
+      summary.bootstrapResumed=true;
+    }else if(progress.status!=='complete'){
+      summary.bootstrapResumed=progress.appliedCount>0;
+    }
+
+    summary.bootstrapSnapshot=progress.snapshotSequence;
+    if(progress.status==='complete')return progress.snapshotSequence;
+
+    try{
+      for(let pageIndex=0;progress.status==='running'&&pageIndex<100_000;pageIndex++){
+        const page=await this.transport.bootstrapPageV2(
+          vault.id,
+          binding.epoch,
+          binding.deviceId,
+          progress.snapshotSequence,
+          progress.afterEntityId,
+          250,
+        );
+        const decrypted=await this.decryptPage(vault,page.items,active,crypto,summary);
+        progress=await this.replica.applyBootstrapPage({
+          accountId,
+          epoch:binding.epoch,
+          snapshotSequence:progress.snapshotSequence,
+          expectedAfterEntityId:page.afterEntityId,
+          nextAfterEntityId:page.nextAfterEntityId,
+          done:page.done,
+          items:decrypted.entities,
+          attachmentBytes:decrypted.attachmentBytes,
+        });
+        summary.bootstrappedEntities+=page.items.length;
+      }
+
+      if(progress.status==='running'){
+        throw new VaultError('PROTOCOL','Fresh-device bootstrap exceeded the page safety limit.');
+      }
+      if(progress.status==='finalizing'){
+        progress=await this.replica.finalizeBootstrap({
+          vaultId:vault.id,
+          accountId,
+          epoch:binding.epoch,
+          snapshotSequence:progress.snapshotSequence,
+        });
+      }
+      if(progress.status!=='complete'){
+        throw new VaultError('PROTOCOL','Fresh-device bootstrap did not reach a complete live handoff.');
+      }
+      await this.transport.ackV2(
+        vault.id,
+        binding.epoch,
+        binding.deviceId,
+        progress.snapshotSequence,
+      ).catch(()=>undefined);
+      return progress.snapshotSequence;
+    }catch(error){
+      await this.state.markBootstrapFailed(vault.id,accountId,error).catch(()=>undefined);
+      throw error;
+    }
   }
 
   private async pullUntilCaughtUp(
