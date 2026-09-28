@@ -79,7 +79,7 @@ test('A2 task identity survives reload and note duplication rekeys copied tasks'
   expect(copiedTaskId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7/u);
 });
 
-test('A2 PWA cold-starts offline and opens durable local data', async ({ page, context }, testInfo) => {
+test.only('A2 PWA cold-starts offline and opens durable local data', async ({ page, context }, testInfo) => {
   test.skip(testInfo.project.name !== 'chromium-desktop');
 
   await createVault(page, 'Offline A2');
